@@ -1,0 +1,811 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<title>台股漲停自動交易系統</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "Microsoft JhengHei", "微軟正黑體", sans-serif;
+    background: #11111b;
+    color: #cdd6f4;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    font-size: 13px;
+  }
+
+  /* ── 標題列 ── */
+  .titlebar {
+    background: #181825;
+    padding: 0 12px;
+    height: 42px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    border-bottom: 1px solid #313244;
+    flex-shrink: 0;
+  }
+  .titlebar-title {
+    font-size: 13px;
+    font-weight: 700;
+    color: #cdd6f4;
+    flex: 1;
+  }
+  .status-dot { font-size: 14px; }
+  .status-dot.online { color: #a6e3a1; }
+  .status-dot.offline { color: #f38ba8; }
+  .status-text { font-size: 12px; color: #6c7086; }
+  .btn {
+    border: none;
+    border-radius: 5px;
+    padding: 5px 14px;
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: opacity .15s;
+  }
+  .btn:hover { opacity: .85; }
+  .btn-start { background: #a6e3a1; color: #1e1e2e; }
+  .btn-stop  { background: #f38ba8; color: #1e1e2e; }
+  .btn-stop:disabled { opacity: .35; cursor: default; }
+
+  /* ── 分頁 ── */
+  .tabs {
+    display: flex;
+    background: #181825;
+    border-bottom: 1px solid #313244;
+    flex-shrink: 0;
+  }
+  .tab {
+    padding: 9px 20px;
+    cursor: pointer;
+    color: #6c7086;
+    font-size: 12px;
+    font-weight: 600;
+    border-bottom: 2px solid transparent;
+    transition: color .15s, border-color .15s;
+    user-select: none;
+  }
+  .tab:hover { color: #cdd6f4; }
+  .tab.active { color: rgb(85, 119, 230); border-bottom-color: rgb(85, 119, 230); }
+
+  /* ── 分頁內容 ── */
+  .tab-content { display: none; flex: 1; overflow: auto; }
+  .tab-content.active { display: flex; flex-direction: column; }
+
+  /* ── 設定頁 ── */
+  .settings-scroll {
+    flex: 1;
+    overflow-y: auto;
+    padding: 14px 20px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .section {
+    background: #1e1e2e;
+    border: 1px solid #313244;
+    border-radius: 8px;
+    overflow: hidden;
+    flex-shrink: 0;
+  }
+  .section-header {
+    background: #181825;
+    padding: 8px 14px;
+    font-size: 12px;
+    font-weight: 700;
+    color: rgb(85, 119, 230);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .section-toggle {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: #6c7086;
+    cursor: pointer;
+  }
+  .toggle-switch {
+    width: 32px; height: 18px;
+    background: #313244;
+    border-radius: 9px;
+    position: relative;
+    transition: background .2s;
+    cursor: pointer;
+  }
+  .toggle-switch.on { background: rgb(85, 119, 230); }
+  .toggle-switch::after {
+    content: '';
+    position: absolute;
+    width: 12px; height: 12px;
+    background: #1e1e2e;
+    border-radius: 50%;
+    top: 3px; left: 3px;
+    transition: left .2s;
+  }
+  .toggle-switch.on::after { left: 17px; }
+  .section-body {
+    padding: 12px 14px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .section-row {
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+  .field { display: flex; flex-direction: column; gap: 5px; flex: 1; min-width: 180px; }
+  .field.full { flex: 100%; min-width: 100%; }
+  .field label { font-size: 11px; color: rgb(136, 150, 195); }
+  .field input, .field select {
+    background: #313244;
+    border: 1px solid #45475a;
+    border-radius: 5px;
+    color: #cdd6f4;
+    padding: 7px 10px;
+    font-family: inherit;
+    font-size: 12px;
+    outline: none;
+    transition: border-color .15s;
+    width: 100%;
+    height: 32px;
+  }
+  .field input:focus, .field select:focus { border-color: rgb(85, 119, 230); }
+  .field input[type="password"] { letter-spacing: 2px; }
+  .checkbox-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 2px 0;
+  }
+  .checkbox-row input[type="checkbox"] { accent-color: rgb(85, 119, 230); width: 14px; height: 14px; }
+  .hint { font-size: 11px; color: #45475a; padding: 2px 0; }
+  .save-bar {
+    padding: 14px 20px;
+    flex-shrink: 0;
+    border-top: 1px solid #313244;
+    display: flex;
+    gap: 10px;
+  }
+  .btn-save {
+    background: rgb(33, 77, 222);
+    color: #1e1e2e;
+    font-weight: 700;
+    border: none;
+    border-radius: 6px;
+    padding: 8px 24px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 13px;
+    transition: opacity .15s;
+  }
+  .btn-save:hover { opacity: .85; }
+  .btn-reset {
+    background: #313244;
+    color: #cdd6f4;
+    border: none;
+    border-radius: 6px;
+    padding: 8px 16px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 12px;
+  }
+
+  /* ── 監控頁 ── */
+  .monitor-wrap { flex: 1; overflow: auto; padding: 14px; }
+  .monitor-stats {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 10px;
+    margin-bottom: 14px;
+  }
+  .stat-card {
+    background: #1e1e2e;
+    border: 1px solid #313244;
+    border-radius: 8px;
+    padding: 12px 14px;
+  }
+  .stat-label { font-size: 11px; color: #6c7086; margin-bottom: 4px; }
+  .stat-val { font-size: 22px; font-weight: 700; }
+  .stat-val.green { color: #a6e3a1; }
+  .stat-val.red   { color: #f38ba8; }
+  .stat-val.blue  { color: #89b4fa; }
+  .stat-val.yellow{ color: #f9e2af; }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+  }
+  thead th {
+    background: #181825;
+    color: #6c7086;
+    font-weight: 700;
+    padding: 8px 10px;
+    text-align: center;
+    border-bottom: 1px solid #313244;
+    position: sticky;
+    top: 0;
+  }
+  tbody tr { border-bottom: 1px solid #1e1e2e; transition: background .1s; }
+  tbody tr:hover { background: #1e1e2e; }
+  tbody td { padding: 7px 10px; text-align: center; }
+  .badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 99px;
+    font-size: 11px;
+    font-weight: 700;
+  }
+  .badge-green  { background: #a6e3a122; color: #a6e3a1; }
+  .badge-red    { background: #f38ba822; color: #f38ba8; }
+  .badge-yellow { background: #f9e2af22; color: #f9e2af; }
+  .badge-blue   { background: #89b4fa22; color: #89b4fa; }
+  .badge-gray   { background: #31324422; color: #6c7086; }
+
+  /* ── 日誌頁 ── */
+  .log-wrap { flex: 1; overflow: auto; padding: 14px; }
+  .log-box {
+    background: #11111b;
+    border: 1px solid #313244;
+    border-radius: 8px;
+    padding: 12px;
+    font-family: "Consolas", monospace;
+    font-size: 11.5px;
+    line-height: 1.8;
+    height: calc(100% - 4px);
+    overflow-y: auto;
+  }
+  .log-info  { color: #89b4fa; }
+  .log-warn  { color: #f9e2af; }
+  .log-error { color: #f38ba8; }
+  .log-trade { color: #a6e3a1; font-weight: 700; }
+
+  /* ── 交易紀錄頁 ── */
+  .trades-wrap { flex: 1; overflow: auto; padding: 14px; }
+
+  /* ── scrollbar ── */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: #11111b; }
+  ::-webkit-scrollbar-thumb { background: #45475a; border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<!-- 標題列 -->
+<div class="titlebar">
+  <span class="status-dot offline" id="statusDot">●</span>
+  <span class="titlebar-title">台股漲停自動交易系統 v1.0</span>
+  <span class="status-text" id="statusText">未連線</span>
+  <button class="btn btn-stop" id="btnStop" disabled onclick="stopTrading()">■ 停止</button>
+  <button class="btn btn-start" id="btnStart" onclick="startTrading()">▶ 啟動交易</button>
+</div>
+
+<!-- 分頁列 -->
+<div class="tabs">
+  <div class="tab active" onclick="switchTab('settings',this)">⚙ 設定</div>
+  <div class="tab" onclick="switchTab('monitor',this)">📊 即時監控</div>
+  <div class="tab" onclick="switchTab('log',this)">📋 系統日誌</div>
+  <div class="tab" onclick="switchTab('trades',this)">💹 交易紀錄</div>
+</div>
+
+<!-- ════════════════════ 設定頁 ════════════════════ -->
+<div class="tab-content active" id="tab-settings">
+  <div class="settings-scroll">
+
+    <!-- 帳號 -->
+    <div class="section">
+      <div class="section-header">🔐 券商帳號</div>
+      <div class="section-body">
+        <div class="section-row">
+          <div class="field"><label>API Key</label><input type="text" placeholder="輸入 API Key"></div>
+          <div class="field"><label>Secret Key</label><input type="password" placeholder="輸入 Secret Key"></div>
+        </div>
+        <div class="section-row">
+          <div class="field full"><label>憑證路徑（選填）</label><input type="text" placeholder="C:\cert\..."></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 功能 1 -->
+    <div class="section">
+      <div class="section-header">
+        ① 時間 + 委賣篩選（10點前漲停才進場）
+        <div class="section-toggle" onclick="toggleSection(this)">
+          <span>啟用</span>
+          <div class="toggle-switch on" id="toggle-f1"></div>
+        </div>
+      </div>
+      <div class="section-body">
+        <div class="section-row">
+          <div class="field">
+            <label>進場截止時間（HH:MM）</label>
+            <input type="text" value="10:00" id="entry_before_time">
+          </div>
+          <div class="field">
+            <label>漲停委賣張數上限（低於此數才進場）</label>
+            <input type="number" value="100" id="ask_queue_threshold">
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 功能 2 -->
+    <div class="section">
+      <div class="section-header">② 市場選擇</div>
+      <div class="section-body">
+        <div class="section-row">
+          <div class="checkbox-row">
+            <input type="checkbox" id="mkt_tse" checked>
+            <label for="mkt_tse">上市（TSE）</label>
+          </div>
+          <div class="checkbox-row">
+            <input type="checkbox" id="mkt_otc" checked>
+            <label for="mkt_otc">上櫃（OTC）</label>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 功能 3 -->
+    <div class="section">
+      <div class="section-header">③ 每隻股票投入金額</div>
+      <div class="section-body">
+        <div class="section-row">
+          <div class="field">
+            <label>金額（元）</label>
+            <input type="number" value="100000" id="per_stock_amount">
+          </div>
+          <div class="field">
+            <label>說明</label>
+            <input type="text" readonly value="依漲停價自動計算張數" style="color:#6c7086;">
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 功能 4 -->
+    <div class="section">
+      <div class="section-header">
+        ④ 持倉出場：委買漲停 → 市價賣出
+        <div class="section-toggle" onclick="toggleSection(this)">
+          <span>啟用</span>
+          <div class="toggle-switch on" id="toggle-f4"></div>
+        </div>
+      </div>
+      <div class="section-body">
+        <div class="hint">買進後，若委買價格變為漲停價（市場打開），立即市價賣出。</div>
+      </div>
+    </div>
+
+    <!-- 功能 5 -->
+    <div class="section">
+      <div class="section-header">
+        ⑤ 持倉出場：1秒成交量爆量賣出
+        <div class="section-toggle" onclick="toggleSection(this)">
+          <span>啟用</span>
+          <div class="toggle-switch on" id="toggle-f5"></div>
+        </div>
+      </div>
+      <div class="section-body">
+        <div class="section-row">
+          <div class="field">
+            <label>1秒成交張數門檻（超過則市價賣出）</label>
+            <input type="number" value="499" id="vol_sell">
+          </div>
+          <div class="field"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 功能 6 -->
+    <div class="section">
+      <div class="section-header">
+        ⑥ 委託中取消：1秒成交量爆量取消委託
+        <div class="section-toggle" onclick="toggleSection(this)">
+          <span>啟用</span>
+          <div class="toggle-switch on" id="toggle-f6"></div>
+        </div>
+      </div>
+      <div class="section-body">
+        <div class="section-row">
+          <div class="field">
+            <label>1秒成交張數門檻（超過則取消委託）</label>
+            <input type="number" value="499" id="vol_cancel">
+          </div>
+          <div class="field"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 功能 7 -->
+    <div class="section">
+      <div class="section-header">
+        ⑦ 只買起漲第幾根 K 棒
+        <div class="section-toggle" onclick="toggleSection(this)">
+          <span>啟用</span>
+          <div class="toggle-switch on" id="toggle-f7"></div>
+        </div>
+      </div>
+      <div class="section-body">
+        <div class="section-row">
+          <div class="field">
+            <label>最多第幾根（1 = 只買第1根，2 = 第1或第2根）</label>
+            <input type="number" value="2" min="1" max="5" id="candle_limit">
+          </div>
+          <div class="field"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 功能 8 -->
+    <div class="section">
+      <div class="section-header">
+        ⑧ 當天成交量門檻（幾張以上才進場）
+        <div class="section-toggle" onclick="toggleSection(this)">
+          <span>啟用</span>
+          <div class="toggle-switch on" id="toggle-f8"></div>
+        </div>
+      </div>
+      <div class="section-body">
+        <div class="section-row">
+          <div class="field">
+            <label>當天最低成交量（張，低於此數不進場）</label>
+            <input type="number" value="500" id="daily_volume_min">
+          </div>
+          <div class="field">
+            <label>說明</label>
+            <input type="text" readonly value="避免流動性不足的冷門股" style="color:#6c7086;">
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 功能 9 -->
+    <div class="section">
+      <div class="section-header">
+        ⑨ 股價區間篩選（只買此價格區間內的股票）
+        <div class="section-toggle" onclick="toggleSection(this)">
+          <span>啟用</span>
+          <div class="toggle-switch on" id="toggle-f9"></div>
+        </div>
+      </div>
+      <div class="section-body">
+        <div class="section-row">
+          <div class="field">
+            <label>最低股價（元，低於此價不進場）</label>
+            <input type="number" value="10" id="price_min">
+          </div>
+          <div class="field">
+            <label>最高股價（元，高於此價不進場）</label>
+            <input type="number" value="500" id="price_max">
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 功能 10 -->
+    <div class="section">
+      <div class="section-header">
+        ⑩ 委賣價 + 即時成交量雙重確認進場
+        <div class="section-toggle" onclick="toggleSection(this)">
+          <span>啟用</span>
+          <div class="toggle-switch on" id="toggle-f10"></div>
+        </div>
+      </div>
+      <div class="section-body">
+        <div class="section-row">
+          <div class="field">
+            <label>委賣價必須 ≤ 漲停價 × 倍率（例：1.0 = 恰好漲停）</label>
+            <input type="number" value="1.0" step="0.01" min="0.9" max="1.1" id="ask_price_ratio">
+          </div>
+          <div class="field">
+            <label>該檔 1 秒內成交量必須達到（張）才進場</label>
+            <input type="number" value="50" id="entry_volume_confirm">
+          </div>
+        </div>
+        <div class="hint">兩個條件須同時成立才進場，可搭配功能①使用。</div>
+      </div>
+    </div>
+
+  </div>
+  <div class="save-bar">
+    <button class="btn-save" onclick="saveSettings()">💾 儲存設定</button>
+    <button class="btn-reset" onclick="resetSettings()">↩ 還原預設</button>
+  </div>
+</div>
+
+<!-- ════════════════════ 監控頁 ════════════════════ -->
+<div class="tab-content" id="tab-monitor">
+  <div class="monitor-wrap">
+    <div class="monitor-stats">
+      <div class="stat-card">
+        <div class="stat-label">監控中股票</div>
+        <div class="stat-val blue" id="stat-watching">0</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">持倉</div>
+        <div class="stat-val green" id="stat-positions">0</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">委託中</div>
+        <div class="stat-val yellow" id="stat-pending">0</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">今日成交筆數</div>
+        <div class="stat-val" id="stat-trades">0</div>
+      </div>
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th>股票代號</th><th>股票名稱</th><th>漲停根數</th>
+          <th>持倉(張)</th><th>委託中</th><th>1秒量(張)</th><th>狀態</th>
+        </tr>
+      </thead>
+      <tbody id="monitor-body">
+        <tr><td colspan="7" style="color:#45475a;padding:30px;">尚未啟動交易，點擊「▶ 啟動交易」開始</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ════════════════════ 日誌頁 ════════════════════ -->
+<div class="tab-content" id="tab-log">
+  <div class="log-wrap">
+    <div class="log-box" id="logBox">
+      <div class="log-info">09:00:00 [INFO] 系統初始化完成</div>
+      <div class="log-info">09:00:01 [INFO] 讀取設定檔：config.json</div>
+      <div class="log-info">09:00:01 [INFO] 功能啟用：① ② ③ ④ ⑤ ⑥ ⑦</div>
+    </div>
+  </div>
+</div>
+
+<!-- ════════════════════ 交易紀錄頁 ════════════════════ -->
+<div class="tab-content" id="tab-trades">
+  <div class="trades-wrap">
+    <table>
+      <thead>
+        <tr><th>時間</th><th>股票</th><th>方向</th><th>價格</th><th>張數</th><th>備註</th></tr>
+      </thead>
+      <tbody id="trades-body">
+        <tr><td colspan="6" style="color:#45475a;padding:30px;">尚無交易紀錄</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+// ── 分頁切換 ────────────────────────────────────────────────
+function switchTab(name, el) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+  el.classList.add('active');
+  document.getElementById('tab-' + name).classList.add('active');
+}
+
+// ── Toggle 開關 ─────────────────────────────────────────────
+function toggleSection(el) {
+  const sw = el.querySelector('.toggle-switch');
+  sw.classList.toggle('on');
+  const span = el.querySelector('span');
+  span.textContent = sw.classList.contains('on') ? '啟用' : '停用';
+}
+
+// ── 儲存設定 ────────────────────────────────────────────────
+function saveSettings() {
+  const cfg = {
+    entry_before_time: document.getElementById('entry_before_time').value,
+    ask_queue_threshold: parseInt(document.getElementById('ask_queue_threshold').value),
+    per_stock_amount: parseInt(document.getElementById('per_stock_amount').value),
+    volume_spike_sell_threshold: parseInt(document.getElementById('vol_sell').value),
+    volume_spike_cancel_threshold: parseInt(document.getElementById('vol_cancel').value),
+    candle_limit: parseInt(document.getElementById('candle_limit').value),
+    daily_volume_min: parseInt(document.getElementById('daily_volume_min').value),
+    price_min: parseFloat(document.getElementById('price_min').value),
+    price_max: parseFloat(document.getElementById('price_max').value),
+    ask_price_ratio: parseFloat(document.getElementById('ask_price_ratio').value),
+    entry_volume_confirm: parseInt(document.getElementById('entry_volume_confirm').value),
+  };
+  showToast('✓ 設定已儲存');
+}
+
+function resetSettings() {
+  document.getElementById('entry_before_time').value = '10:00';
+  document.getElementById('ask_queue_threshold').value = '100';
+  document.getElementById('per_stock_amount').value = '100000';
+  document.getElementById('vol_sell').value = '499';
+  document.getElementById('vol_cancel').value = '499';
+  document.getElementById('candle_limit').value = '2';
+  document.getElementById('daily_volume_min').value = '500';
+  document.getElementById('price_min').value = '10';
+  document.getElementById('price_max').value = '500';
+  document.getElementById('ask_price_ratio').value = '1.0';
+  document.getElementById('entry_volume_confirm').value = '50';
+  showToast('↩ 已還原預設值');
+}
+
+// ── Toast ─────────────────────────────────────────────────
+function showToast(msg) {
+  const t = document.createElement('div');
+  t.textContent = msg;
+  Object.assign(t.style, {
+    position: 'fixed', bottom: '24px', left: '50%',
+    transform: 'translateX(-50%)',
+    background: '#313244', color: '#cdd6f4',
+    padding: '8px 20px', borderRadius: '8px',
+    fontSize: '13px', fontWeight: '700',
+    zIndex: 9999, transition: 'opacity .4s',
+  });
+  document.body.appendChild(t);
+  setTimeout(() => { t.style.opacity = '0'; setTimeout(() => t.remove(), 400); }, 1500);
+}
+
+// ── 啟動 / 停止模擬 ─────────────────────────────────────────
+let running = false;
+let simInterval = null;
+let tradeCount = 0;
+
+const MOCK_STOCKS = [
+  { code: '2330', name: '台積電', limitUp: 1100 },
+  { code: '2317', name: '鴻海',   limitUp: 220  },
+  { code: '3008', name: '大立光', limitUp: 2860 },
+  { code: '2454', name: '聯發科', limitUp: 1430 },
+  { code: '6505', name: '台塑化', limitUp: 108  },
+];
+
+function startTrading() {
+  running = true;
+  document.getElementById('statusDot').className = 'status-dot online';
+  document.getElementById('statusText').textContent = '交易中';
+  document.getElementById('btnStart').disabled = true;
+  document.getElementById('btnStop').disabled = false;
+  addLog('INFO', '連線券商成功');
+  addLog('INFO', '引擎啟動，開始監控漲停股...');
+  switchTab('monitor', document.querySelectorAll('.tab')[1]);
+  document.querySelectorAll('.tab')[1].classList.add('active');
+  document.querySelectorAll('.tab')[0].classList.remove('active');
+  document.getElementById('stat-watching').textContent = MOCK_STOCKS.length;
+  simulateTick();
+  simInterval = setInterval(simulateTick, 2000);
+}
+
+function stopTrading() {
+  running = false;
+  clearInterval(simInterval);
+  document.getElementById('statusDot').className = 'status-dot offline';
+  document.getElementById('statusText').textContent = '已停止';
+  document.getElementById('btnStart').disabled = false;
+  document.getElementById('btnStop').disabled = true;
+  addLog('INFO', '引擎已停止，已登出券商');
+}
+
+let mockState = {};
+MOCK_STOCKS.forEach(s => {
+  mockState[s.code] = { candle: 0, qty: 0, pending: false, vol: 0, blocked: false };
+});
+
+function simulateTick() {
+  if (!running) return;
+  const now = new Date();
+  const hhmm = now.toTimeString().slice(0,8);
+
+  MOCK_STOCKS.forEach(s => {
+    const st = mockState[s.code];
+    const vol = Math.floor(Math.random() * 800);
+    st.vol = vol;
+
+    if (!st.blocked && st.candle === 0 && Math.random() > 0.7) {
+      st.candle = 1;
+      addLog('INFO', `[${s.code} ${s.name}] 漲停！第 1 根，委賣 ${Math.floor(Math.random()*80)} 張`);
+    }
+
+    if (st.candle > 0 && !st.pending && !st.blocked && st.qty === 0) {
+      const askQty = Math.floor(Math.random() * 150);
+      const threshold = parseInt(document.getElementById('ask_queue_threshold').value || 100);
+      if (askQty < threshold) {
+        const shares = parseInt(document.getElementById('per_stock_amount').value || 100000);
+        const qty = Math.max(1, Math.floor(shares / (s.limitUp * 1000)));
+        st.pending = true;
+        addLog('TRADE', `[${s.code}] 進場委託 ${qty} 張 @ ${s.limitUp}（委賣${askQty}張 < ${threshold}張）`);
+        setTimeout(() => {
+          if (st.pending) {
+            st.pending = false;
+            st.qty = qty;
+            addTrade(hhmm, s.code, 'BUY', s.limitUp, qty, `第${st.candle}根漲停`);
+            addLog('INFO', `[${s.code}] 成交 ${qty} 張 @ ${s.limitUp}`);
+            document.getElementById('stat-positions').textContent =
+              parseInt(document.getElementById('stat-positions').textContent || 0) + 1;
+          }
+        }, 1200);
+      }
+    }
+
+    if (st.qty > 0) {
+      const cancelThreshold = parseInt(document.getElementById('vol_sell').value || 499);
+      if (vol > cancelThreshold && Math.random() > 0.5) {
+        addLog('WARN', `[${s.code}] 1秒量 ${vol} 張 > ${cancelThreshold} 張，市價賣出！`);
+        addTrade(hhmm, s.code, 'SELL', s.limitUp, st.qty, `1秒量爆${vol}張`);
+        const posEl = document.getElementById('stat-positions');
+        posEl.textContent = Math.max(0, parseInt(posEl.textContent) - 1);
+        st.qty = 0;
+        st.blocked = true;
+      }
+    }
+
+    if (st.pending) {
+      const cancelThreshold = parseInt(document.getElementById('vol_cancel').value || 499);
+      if (vol > cancelThreshold) {
+        addLog('WARN', `[${s.code}] 委託中！1秒量 ${vol} 張 > ${cancelThreshold} 張，取消委託`);
+        st.pending = false;
+        st.blocked = true;
+      }
+    }
+  });
+
+  renderMonitor();
+}
+
+function renderMonitor() {
+  const tbody = document.getElementById('monitor-body');
+  tbody.innerHTML = '';
+  MOCK_STOCKS.forEach(s => {
+    const st = mockState[s.code];
+    let statusBadge;
+    if (st.blocked)       statusBadge = '<span class="badge badge-gray">已完成</span>';
+    else if (st.qty > 0)  statusBadge = '<span class="badge badge-green">持倉中</span>';
+    else if (st.pending)  statusBadge = '<span class="badge badge-yellow">委託中</span>';
+    else if (st.candle>0) statusBadge = '<span class="badge badge-blue">監控中</span>';
+    else                  statusBadge = '<span class="badge badge-gray">等待</span>';
+
+    const volClass = st.vol > 499 ? 'style="color:#f38ba8;font-weight:700;"' : '';
+    tbody.innerHTML += `
+      <tr>
+        <td><b>${s.code}</b></td>
+        <td>${s.name}</td>
+        <td>${st.candle > 0 ? `<span class="badge badge-blue">第${st.candle}根</span>` : '—'}</td>
+        <td>${st.qty > 0 ? `<b style="color:#a6e3a1">${st.qty}</b>` : '0'}</td>
+        <td>${st.pending ? '<span class="badge badge-yellow">是</span>' : '—'}</td>
+        <td ${volClass}>${st.vol}</td>
+        <td>${statusBadge}</td>
+      </tr>`;
+  });
+}
+
+function addLog(level, msg) {
+  const box = document.getElementById('logBox');
+  const now = new Date().toTimeString().slice(0,8);
+  const cls = level === 'TRADE' ? 'log-trade' : level === 'WARN' ? 'log-warn' : level === 'ERROR' ? 'log-error' : 'log-info';
+  const div = document.createElement('div');
+  div.className = cls;
+  div.textContent = `${now} [${level}] ${msg}`;
+  box.appendChild(div);
+  box.scrollTop = box.scrollHeight;
+}
+
+function addTrade(time, symbol, action, price, qty, note) {
+  tradeCount++;
+  document.getElementById('stat-trades').textContent = tradeCount;
+  const tbody = document.getElementById('trades-body');
+  if (tbody.querySelector('td[colspan]')) tbody.innerHTML = '';
+  const color = action === 'BUY' ? '#a6e3a1' : '#f38ba8';
+  tbody.insertAdjacentHTML('afterbegin', `
+    <tr>
+      <td>${time}</td>
+      <td><b>${symbol}</b></td>
+      <td><b style="color:${color}">${action === 'BUY' ? '買入' : '賣出'}</b></td>
+      <td>${price.toLocaleString()}</td>
+      <td>${qty}</td>
+      <td style="color:#6c7086">${note}</td>
+    </tr>`);
+}
+</script>
+</body>
+</html>

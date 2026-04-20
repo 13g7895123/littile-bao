@@ -1,0 +1,2 @@
+# No external dependencies needed
+# This project uses only built-in tkinter

@@ -1,0 +1,8 @@
+# 台股漲停自動交易系統 - 依賴套件
+# 安裝指令：pip install -r requirements.txt
+
+# 券商 API（永豐金）
+shioaji>=1.1.0
+
+# 打包工具
+pyinstaller>=6.0.0
