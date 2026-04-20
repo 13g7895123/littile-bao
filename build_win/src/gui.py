@@ -153,8 +153,9 @@ class App(tk.Tk):
 
     def _build_ui(self):
         self._build_titlebar()
-        self._build_tabbar()
+        self._build_tabbar(defer_switch=True)
         self._build_pages()
+        self._switch_tab("settings")
 
     # ── 標題列 ───────────────────────────────
     def _build_titlebar(self):
@@ -201,7 +202,7 @@ class App(tk.Tk):
         self.status_text.pack(side="left", padx=(4, 0))
 
     # ── 分頁列 ───────────────────────────────
-    def _build_tabbar(self):
+    def _build_tabbar(self, defer_switch=False):
         bar = tk.Frame(self, bg=C["mantle"], height=38)
         bar.pack(fill="x")
         bar.pack_propagate(False)
@@ -226,7 +227,8 @@ class App(tk.Tk):
             btn.pack(side="left")
             btn.bind("<Button-1>", lambda e, k=key: self._switch_tab(k))
             self._tab_btns[key] = btn
-        self._switch_tab("settings")
+        if not defer_switch:
+            self._switch_tab("settings")
 
     def _switch_tab(self, key: str):
         self._current_tab.set(key)
