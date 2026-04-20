@@ -17,9 +17,27 @@ def _log_dir():
     return os.path.dirname(os.path.abspath(__file__))
 
 
+def _write_log(msg):
+    log_path = os.path.join(_log_dir(), 'error.log')
+    with open(log_path, 'w', encoding='utf-8') as f:
+        f.write(msg)
+
+
 def main():
-    from gui import App
-    app = App()
+    print("[StockTrader] Python version:", sys.version)
+    print("[StockTrader] sys.frozen:", getattr(sys, 'frozen', False))
+    print("[StockTrader] exe path:", sys.executable if getattr(sys, 'frozen', False) else __file__)
+    print("[StockTrader] Importing modules...")
+
+    import config
+    print("[StockTrader] config OK")
+    import engine
+    print("[StockTrader] engine OK")
+    import gui
+    print("[StockTrader] gui OK")
+
+    print("[StockTrader] Starting GUI...")
+    app = gui.App()
     app.mainloop()
 
 
@@ -28,16 +46,10 @@ if __name__ == "__main__":
         main()
     except Exception:
         tb = traceback.format_exc()
-        log_path = os.path.join(_log_dir(), 'error.log')
-        with open(log_path, 'w', encoding='utf-8') as f:
-            f.write(tb)
-        try:
-            import tkinter as tk
-            from tkinter import messagebox as mbox
-            root = tk.Tk()
-            root.withdraw()
-            mbox.showerror('Startup Error', tb[:800])
-            root.destroy()
-        except Exception:
-            pass
+        print("\n========== ERROR ==========")
+        print(tb)
+        print("===========================")
+        _write_log(tb)
+        print("[StockTrader] Error log written to:", os.path.join(_log_dir(), 'error.log'))
+        input("\nPress Enter to exit...")
         sys.exit(1)

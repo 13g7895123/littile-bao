@@ -162,7 +162,7 @@ class App(tk.Tk):
         bar.pack(fill="x")
         bar.pack_propagate(False)
 
-        tk.Label(bar, text="📈", bg=C["mantle"],
+        tk.Label(bar, text="\u25B2", bg=C["mantle"],
                  font=("Segoe UI Emoji", 16)).pack(side="left", padx=(14, 4), pady=10)
         tk.Label(bar, text="台股漲停自動交易系統 v1.0",
                  fg=C["text"], bg=C["mantle"],
@@ -214,9 +214,9 @@ class App(tk.Tk):
 
         tabs = [
             ("settings", "⚙  設定"),
-            ("monitor",  "📊  即時監控"),
-            ("log",      "📋  系統日誌"),
-            ("trades",   "💹  交易紀錄"),
+            ("monitor",  "\u25CF  即時監控"),
+            ("log",      "\u2261  系統日誌"),
+            ("trades",   "\u2606  交易紀錄"),
         ]
         for key, text in tabs:
             btn = tk.Label(bar, text=text,
@@ -286,7 +286,7 @@ class App(tk.Tk):
         canvas.bind_all("<MouseWheel>", _on_wheel)
 
         # ── 帳號設定 ──────────────────────────
-        _, f = section_frame(inner, "🔐  券商帳號（永豐金 Shioaji）")
+        _, f = section_frame(inner, "\u25A0  券商帳號（永豐金 Shioaji）")
         self._srow(f, 0, "API Key",        "api_id")
         self._srow(f, 1, "Secret Key",     "api_key", show="*")
         self._srow(f, 2, "憑證路徑（選填）", "broker_cert_path", width=40)
@@ -353,7 +353,7 @@ class App(tk.Tk):
         btn_bar = tk.Frame(inner, bg=C["base"])
         btn_bar.pack(fill="x", padx=16, pady=(0, 16))
 
-        tk.Button(btn_bar, text="💾  儲存設定",
+        tk.Button(btn_bar, text="\u2714  儲存設定",
                   bg=C["blue"], fg=C["base"],
                   font=("微軟正黑體", 11, "bold"),
                   relief="flat", padx=20, pady=8,

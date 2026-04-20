@@ -47,11 +47,6 @@ exe = EXE(
     upx=True,
     upx_exclude=[],
     runtime_tmpdir=None,
-    console=False,          # 不顯示命令列黑視窗
-    disable_windowed_traceback=False,
-    argv_emulation=False,
-    target_arch=None,
-    codesign_identity=None,
-    entitlements_file=None,
-    icon=None,              # 可替換成 'icon.ico'
+    console=True,           # DEBUG: show console for error messages
+    icon=None,
 )
