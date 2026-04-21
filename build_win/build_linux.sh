@@ -2,72 +2,52 @@
 set -e
 
 # ──────────────────────────────────────────────────────────────
-#  台股漲停交易系統 — 在 Linux 上交叉編譯 Windows exe
-#  使用 Docker (cdrx/pyinstaller-windows) 進行打包
+#  台股漲停交易系統 — 在 Linux 上交叉編譯 Windows exe（PyQt6 版）
+#  方式：用 Docker + Wine + Python 3.11 Windows 進行打包
 # ──────────────────────────────────────────────────────────────
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
-IMAGE="cdrx/pyinstaller-windows:python3"
-EXE_NAME="台股漲停交易系統"
+IMAGE="local/stock-trader-builder"
+EXE_SRC="dist/windows/StockTrader.exe"
+EXE_DST="dist/windows/台股漲停交易系統.exe"
 
 echo "========================================"
 echo " 台股漲停交易系統 — Linux 交叉編譯 Windows exe"
 echo "========================================"
 echo ""
 
-# 檢查 Docker
 if ! command -v docker &>/dev/null; then
     echo "[錯誤] 找不到 Docker，請先安裝 Docker"
     exit 1
 fi
 
-# 清理舊的輸出
-echo "[1/3] 清理舊的 build/dist 目錄..."
-rm -rf dist build
+mkdir -p dist/windows
 
-# 拉取映像（若本地沒有）
-echo "[2/3] 確認 Docker 映像..."
-if ! docker image inspect "$IMAGE" &>/dev/null; then
-    echo "       正在下載映像（首次需要幾分鐘）..."
-    docker pull "$IMAGE"
-fi
+# 建置 Docker image（含 Wine + Python 3.11 Windows + PyQt6）
+echo "[1/4] 建置 Docker image（首次需要 10~20 分鐘）..."
+docker build -t "$IMAGE" .
 
 # 執行打包
-echo "[3/3] 開始打包..."
-docker run --rm \
-    -v "$SCRIPT_DIR:/src" \
-    "$IMAGE" \
-    --onefile \
-    --noconsole \
-    --name "$EXE_NAME" \
-    --paths src \
-    --hidden-import tkinter \
-    --hidden-import tkinter.ttk \
-    --hidden-import tkinter.scrolledtext \
-    --hidden-import tkinter.messagebox \
-    --hidden-import tkinter.font \
-    --hidden-import json \
-    --hidden-import threading \
-    --hidden-import queue \
-    --hidden-import random \
-    --hidden-import collections \
-    --hidden-import dataclasses \
-    --exclude-module shioaji \
-    --exclude-module numpy \
-    --exclude-module pandas \
-    --exclude-module matplotlib \
-    src/main.py
+echo "[2/4] 執行 Windows 打包..."
+docker run --rm --privileged \
+    -v "$SCRIPT_DIR/src:/src" \
+    -v "$SCRIPT_DIR/build.spec:/src/build.spec" \
+    -v "$SCRIPT_DIR/dist/windows:/output" \
+    "$IMAGE"
 
 echo ""
-if [ -f "dist/${EXE_NAME}.exe" ]; then
-    SIZE=$(du -h "dist/${EXE_NAME}.exe" | cut -f1)
+if [ -f "$EXE_DST" ]; then
+    SIZE=$(du -h "$EXE_DST" | cut -f1)
     echo "========================================"
     echo " 打包完成！"
-    echo " 執行檔：dist/${EXE_NAME}.exe (${SIZE})"
+    echo " 執行檔：${EXE_DST} (${SIZE})"
     echo "========================================"
 else
-    echo "[錯誤] 打包失敗，找不到輸出檔案"
+    echo "[備用方案] Docker 打包失敗，請在 Windows 執行 build.bat"
+    echo "  或在 Windows 執行："
+    echo "  pip install PyQt6 pyinstaller"
+    echo "  pyinstaller build.spec"
     exit 1
 fi

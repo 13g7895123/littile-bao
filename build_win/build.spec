@@ -1,6 +1,5 @@
-# build.spec — PyInstaller 打包設定
+# build.spec — PyInstaller 打包設定（PyQt6 版本）
 # 執行：pyinstaller build.spec
-# 說明：此版本為獨立模擬版，不依賴 shioaji，可直接打包
 
 block_cipher = None
 
@@ -10,11 +9,10 @@ a = Analysis(
     binaries=[],
     datas=[],
     hiddenimports=[
-        'tkinter',
-        'tkinter.ttk',
-        'tkinter.scrolledtext',
-        'tkinter.messagebox',
-        'tkinter.font',
+        'PyQt6',
+        'PyQt6.QtWidgets',
+        'PyQt6.QtCore',
+        'PyQt6.QtGui',
         'json',
         'threading',
         'queue',
@@ -23,8 +21,9 @@ a = Analysis(
         'dataclasses',
     ],
     hookspath=[],
+    hooksconfig={},
     runtime_hooks=[],
-    excludes=['shioaji', 'numpy', 'pandas', 'matplotlib'],
+    excludes=['tkinter', 'shioaji', 'numpy', 'pandas', 'matplotlib'],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,
@@ -47,6 +46,6 @@ exe = EXE(
     upx=True,
     upx_exclude=[],
     runtime_tmpdir=None,
-    console=True,           # DEBUG: show console for error messages
+    console=False,
     icon=None,
 )

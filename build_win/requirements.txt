@@ -1,2 +1,2 @@
-# No external dependencies needed
-# This project uses only built-in tkinter
+PyQt6>=6.4.0
+pyinstaller>=6.0.0

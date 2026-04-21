@@ -1,14 +1,21 @@
 """
 gui.py — 台股漲停自動交易系統 主視窗
-使用純 tkinter，不依賴任何券商 API，可直接 PyInstaller 打包為 exe。
+使用 PyQt6，介面與原 tkinter 版完全一致。
 """
 from __future__ import annotations
 import queue
 import threading
-import tkinter as tk
-from tkinter import ttk, messagebox, scrolledtext, font as tkfont
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional
 from datetime import datetime
+
+from PyQt6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QFrame, QLabel, QPushButton,
+    QLineEdit, QCheckBox, QGroupBox, QScrollArea, QTextEdit,
+    QTableWidget, QTableWidgetItem, QHeaderView, QScrollBar,
+    QMessageBox, QHBoxLayout, QVBoxLayout, QGridLayout, QSizePolicy,
+)
+from PyQt6.QtCore import Qt, QTimer, QPoint, QSize, pyqtSignal
+from PyQt6.QtGui import QPainter, QColor, QFont, QPen, QBrush
 
 from config import TradingConfig
 from engine import TradingEngine
@@ -38,42 +45,55 @@ C = {
 
 LOG_Q: queue.Queue = queue.Queue()
 
+FONT_MAIN = "微軟正黑體"
+FONT_MONO = "Consolas"
+
+
+def _qss_bg(color: str) -> str:
+    return f"background-color: {color};"
+
+
+def _font(size=10, bold=False):
+    f = QFont(FONT_MAIN, size)
+    if bold:
+        f.setBold(True)
+    return f
+
 
 # ──────────────────────────────────────────────────────────────
-#  工具元件
+#  ToggleButton — iOS 風格 toggle switch
 # ──────────────────────────────────────────────────────────────
 
-class ToggleButton(tk.Frame):
-    """iOS 風格 toggle switch"""
+class ToggleButton(QWidget):
+    toggled = pyqtSignal(bool)
 
-    def __init__(self, master, initial=True, command=None, **kw):
-        super().__init__(master, bg=kw.pop("bg", C["mantle"]), **kw)
+    def __init__(self, parent=None, initial=True):
+        super().__init__(parent)
         self._on = initial
-        self._cmd = command
-        self._canvas = tk.Canvas(self, width=42, height=22,
-                                  bg=self["bg"], highlightthickness=0, cursor="hand2")
-        self._canvas.pack()
-        self._canvas.bind("<Button-1>", self._toggle)
-        self._draw()
+        self.setFixedSize(42, 22)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
 
-    def _draw(self):
-        self._canvas.delete("all")
-        fill = C["blue"] if self._on else C["surface0"]
-        self._canvas.create_rounded_rect = lambda *a, **k: None  # placeholder
-        # pill background
-        self._canvas.create_oval(1, 1, 20, 21, fill=fill, outline="")
-        self._canvas.create_oval(22, 1, 41, 21, fill=fill, outline="")
-        self._canvas.create_rectangle(11, 1, 31, 21, fill=fill, outline="")
-        # knob
-        x = 30 if self._on else 12
-        self._canvas.create_oval(x - 9, 3, x + 9, 19,
-                                   fill=C["base"], outline="")
-
-    def _toggle(self, _=None):
+    def mousePressEvent(self, event):
         self._on = not self._on
-        self._draw()
-        if self._cmd:
-            self._cmd(self._on)
+        self.update()
+        self.toggled.emit(self._on)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        fill = QColor(C["blue"] if self._on else C["surface0"])
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QBrush(fill))
+
+        # pill background
+        p.drawRoundedRect(0, 0, 42, 22, 11, 11)
+
+        # knob
+        knob_color = QColor(C["base"])
+        p.setBrush(QBrush(knob_color))
+        x = 28 if self._on else 14
+        p.drawEllipse(QPoint(x, 11), 8, 8)
 
     @property
     def value(self) -> bool:
@@ -82,56 +102,136 @@ class ToggleButton(tk.Frame):
     def set(self, val: bool):
         if self._on != val:
             self._on = val
-            self._draw()
+            self.update()
 
 
-def label(parent, text, fg=None, bg=None, **kw):
-    return tk.Label(parent, text=text,
-                    fg=fg or C["text"], bg=bg or C["base"],
-                    font=("微軟正黑體", 10), **kw)
+# ──────────────────────────────────────────────────────────────
+#  小工具函數
+# ──────────────────────────────────────────────────────────────
+
+def _label(text, color=None, size=10, bold=False) -> QLabel:
+    lbl = QLabel(text)
+    lbl.setFont(_font(size, bold))
+    lbl.setStyleSheet(f"color: {color or C['text']}; background: transparent;")
+    return lbl
 
 
-def entry(parent, var, width=22, show="", readonly=False):
-    e = tk.Entry(parent, textvariable=var, width=width,
-                 bg=C["surface0"], fg=C["text"],
-                 insertbackground=C["text"],
-                 relief="flat", bd=0, show=show,
-                 font=("微軟正黑體", 10),
-                 disabledbackground=C["surface0"],
-                 disabledforeground=C["overlay0"],
-                 highlightthickness=1,
-                 highlightcolor=C["blue"],
-                 highlightbackground=C["surface1"])
+def _entry(width=160, password=False, readonly=False) -> QLineEdit:
+    e = QLineEdit()
+    e.setFixedWidth(width)
+    e.setFont(_font(10))
+    if password:
+        e.setEchoMode(QLineEdit.EchoMode.Password)
     if readonly:
-        e.config(state="disabled")
+        e.setReadOnly(True)
+    e.setStyleSheet(f"""
+        QLineEdit {{
+            background-color: {C['surface0']};
+            color: {C['text']};
+            border: 1px solid {C['surface1']};
+            border-radius: 4px;
+            padding: 3px 6px;
+        }}
+        QLineEdit:focus {{
+            border: 1px solid {C['blue']};
+        }}
+        QLineEdit:read-only {{
+            color: {C['overlay0']};
+        }}
+    """)
     return e
 
 
-def section_frame(parent, title):  # type: (...) -> Tuple[tk.LabelFrame, tk.Frame]
-    lf = tk.LabelFrame(parent, text=f"  {title}  ",
-                        fg=C["blue"], bg=C["base"],
-                        font=("微軟正黑體", 10, "bold"),
-                        relief="flat", bd=1,
-                        highlightthickness=1,
-                        highlightbackground=C["surface0"])
-    lf.pack(fill="x", padx=16, pady=(0, 10))
-    inner = tk.Frame(lf, bg=C["base"])
-    inner.pack(fill="x", padx=10, pady=(4, 10))
-    return lf, inner
+def _group_box(title: str) -> QGroupBox:
+    gb = QGroupBox(f"  {title}  ")
+    gb.setFont(_font(10, bold=True))
+    gb.setStyleSheet(f"""
+        QGroupBox {{
+            color: {C['blue']};
+            background-color: {C['base']};
+            border: 1px solid {C['surface0']};
+            border-radius: 6px;
+            margin-top: 10px;
+            padding-top: 6px;
+        }}
+        QGroupBox::title {{
+            subcontrol-origin: margin;
+            left: 10px;
+            padding: 0 4px;
+        }}
+    """)
+    return gb
+
+
+def _scroll_style() -> str:
+    return f"""
+        QScrollBar:vertical {{
+            background: {C['mantle']};
+            width: 8px;
+            margin: 0;
+        }}
+        QScrollBar::handle:vertical {{
+            background: {C['surface1']};
+            border-radius: 4px;
+            min-height: 20px;
+        }}
+        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+            height: 0;
+        }}
+        QScrollBar:horizontal {{
+            background: {C['mantle']};
+            height: 8px;
+        }}
+        QScrollBar::handle:horizontal {{
+            background: {C['surface1']};
+            border-radius: 4px;
+            min-width: 20px;
+        }}
+        QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
+            width: 0;
+        }}
+    """
+
+
+def _table_style(style_name: str = "") -> str:
+    return f"""
+        QTableWidget {{
+            background-color: {C['base']};
+            color: {C['text']};
+            gridline-color: {C['surface0']};
+            border: none;
+            font-family: {FONT_MAIN};
+            font-size: 9pt;
+        }}
+        QTableWidget::item:selected {{
+            background-color: {C['surface0']};
+            color: {C['text']};
+        }}
+        QHeaderView::section {{
+            background-color: {C['mantle']};
+            color: {C['overlay0']};
+            font-family: {FONT_MAIN};
+            font-size: 9pt;
+            font-weight: bold;
+            border: none;
+            padding: 4px;
+        }}
+        {_scroll_style()}
+    """
 
 
 # ──────────────────────────────────────────────────────────────
 #  主視窗
 # ──────────────────────────────────────────────────────────────
 
-class App(tk.Tk):
+class App(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.title("台股漲停自動交易系統 v1.0")
-        self.geometry("980x700")
-        self.minsize(860, 600)
-        self.configure(bg=C["crust"])
+        self.setWindowTitle("台股漲停自動交易系統 v1.0")
+        self.resize(980, 700)
+        self.setMinimumSize(860, 600)
+        self.setStyleSheet(f"background-color: {C['crust']};")
 
         self.cfg = TradingConfig.load()
         self.engine: Optional[TradingEngine] = None
@@ -139,9 +239,11 @@ class App(tk.Tk):
         self._trade_count = 0
         self._buy_count = 0
         self._sell_count = 0
+        self._log_lines = 0
 
-        self._vars = {}   # type: Dict[str, tk.Variable]
-        self._toggles = {}  # type: Dict[str, ToggleButton]
+        self._fields: Dict[str, QLineEdit] = {}
+        self._checks: Dict[str, QCheckBox] = {}
+        self._toggles: Dict[str, ToggleButton] = {}
 
         self._build_ui()
         self._apply_config(self.cfg)
@@ -152,290 +254,401 @@ class App(tk.Tk):
     # ══════════════════════════════════════════
 
     def _build_ui(self):
+        central = QWidget()
+        self.setCentralWidget(central)
+        self._main_layout = QVBoxLayout(central)
+        self._main_layout.setContentsMargins(0, 0, 0, 0)
+        self._main_layout.setSpacing(0)
+
         self._build_titlebar()
-        self._build_tabbar(defer_switch=True)
+        self._build_tabbar()
         self._build_pages()
         self._switch_tab("settings")
 
     # ── 標題列 ───────────────────────────────
     def _build_titlebar(self):
-        bar = tk.Frame(self, bg=C["mantle"], height=50)
-        bar.pack(fill="x")
-        bar.pack_propagate(False)
+        bar = QFrame()
+        bar.setFixedHeight(50)
+        bar.setStyleSheet(f"background-color: {C['mantle']};")
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(14, 0, 14, 0)
+        layout.setSpacing(8)
 
-        tk.Label(bar, text="\u25B2", bg=C["mantle"],
-                 font=("Segoe UI Emoji", 16)).pack(side="left", padx=(14, 4), pady=10)
-        tk.Label(bar, text="台股漲停自動交易系統 v1.0",
-                 fg=C["text"], bg=C["mantle"],
-                 font=("微軟正黑體", 12, "bold")).pack(side="left", padx=(0, 20))
+        icon_lbl = QLabel("▲")
+        icon_lbl.setFont(QFont("Segoe UI Emoji", 16))
+        icon_lbl.setStyleSheet(f"color: {C['text']}; background: transparent;")
+        layout.addWidget(icon_lbl)
 
-        # 右側按鈕
-        self.btn_start = tk.Button(
-            bar, text="▶  啟動交易",
-            bg=C["green"], fg=C["base"],
-            font=("微軟正黑體", 10, "bold"),
-            relief="flat", padx=16, pady=6,
-            cursor="hand2", command=self._start_trading,
-            activebackground=C["teal"], activeforeground=C["base"])
-        self.btn_start.pack(side="right", padx=14, pady=10)
-
-        self.btn_stop = tk.Button(
-            bar, text="■  停止",
-            bg=C["red"], fg=C["base"],
-            font=("微軟正黑體", 10, "bold"),
-            relief="flat", padx=16, pady=6,
-            cursor="hand2", command=self._stop_trading,
-            state="disabled",
-            activebackground="#ff9999", activeforeground=C["base"])
-        self.btn_stop.pack(side="right", padx=(0, 6), pady=10)
+        title_lbl = QLabel("台股漲停自動交易系統 v1.0")
+        title_lbl.setFont(_font(12, bold=True))
+        title_lbl.setStyleSheet(f"color: {C['text']}; background: transparent;")
+        layout.addWidget(title_lbl)
+        layout.addStretch()
 
         # 狀態燈
-        status_box = tk.Frame(bar, bg=C["mantle"])
-        status_box.pack(side="right", padx=20)
-        self.status_dot = tk.Label(status_box, text="●",
-                                    fg=C["red"], bg=C["mantle"],
-                                    font=("Arial", 13))
-        self.status_dot.pack(side="left")
-        self.status_text = tk.Label(status_box, text="未連線",
-                                     fg=C["overlay0"], bg=C["mantle"],
-                                     font=("微軟正黑體", 10))
-        self.status_text.pack(side="left", padx=(4, 0))
+        self.status_dot = QLabel("●")
+        self.status_dot.setFont(QFont("Arial", 13))
+        self.status_dot.setStyleSheet(f"color: {C['red']}; background: transparent;")
+        layout.addWidget(self.status_dot)
+
+        self.status_text = QLabel("未連線")
+        self.status_text.setFont(_font(10))
+        self.status_text.setStyleSheet(f"color: {C['overlay0']}; background: transparent;")
+        layout.addWidget(self.status_text)
+
+        layout.addSpacing(12)
+
+        self.btn_stop = QPushButton("■  停止")
+        self.btn_stop.setFont(_font(10, bold=True))
+        self.btn_stop.setFixedHeight(34)
+        self.btn_stop.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_stop.setEnabled(False)
+        self.btn_stop.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {C['red']};
+                color: {C['base']};
+                border: none;
+                border-radius: 4px;
+                padding: 0 16px;
+            }}
+            QPushButton:hover {{ background-color: #ff9999; }}
+            QPushButton:disabled {{ background-color: {C['surface0']}; color: {C['overlay0']}; }}
+        """)
+        self.btn_stop.clicked.connect(self._stop_trading)
+        layout.addWidget(self.btn_stop)
+
+        self.btn_start = QPushButton("▶  啟動交易")
+        self.btn_start.setFont(_font(10, bold=True))
+        self.btn_start.setFixedHeight(34)
+        self.btn_start.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_start.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {C['green']};
+                color: {C['base']};
+                border: none;
+                border-radius: 4px;
+                padding: 0 16px;
+            }}
+            QPushButton:hover {{ background-color: {C['teal']}; }}
+            QPushButton:disabled {{ background-color: {C['surface0']}; color: {C['overlay0']}; }}
+        """)
+        self.btn_start.clicked.connect(self._start_trading)
+        layout.addWidget(self.btn_start)
+
+        self._main_layout.addWidget(bar)
+
+        # 分隔線
+        sep = QFrame()
+        sep.setFixedHeight(1)
+        sep.setStyleSheet(f"background-color: {C['surface0']};")
+        self._main_layout.addWidget(sep)
 
     # ── 分頁列 ───────────────────────────────
-    def _build_tabbar(self, defer_switch=False):
-        bar = tk.Frame(self, bg=C["mantle"], height=38)
-        bar.pack(fill="x")
-        bar.pack_propagate(False)
+    def _build_tabbar(self):
+        bar = QFrame()
+        bar.setFixedHeight(38)
+        bar.setStyleSheet(f"background-color: {C['mantle']};")
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
 
-        sep = tk.Frame(self, bg=C["surface0"], height=1)
-        sep.pack(fill="x")
-
-        self._tab_btns = {}  # type: Dict[str, tk.Label]
-        self._current_tab = tk.StringVar(value="settings")
-
+        self._tab_btns: Dict[str, QLabel] = {}
         tabs = [
             ("settings", "⚙  設定"),
-            ("monitor",  "\u25CF  即時監控"),
-            ("log",      "\u2261  系統日誌"),
-            ("trades",   "\u2606  交易紀錄"),
+            ("monitor",  "●  即時監控"),
+            ("log",      "≡  系統日誌"),
+            ("trades",   "☆  交易紀錄"),
         ]
         for key, text in tabs:
-            btn = tk.Label(bar, text=text,
-                           fg=C["overlay0"], bg=C["mantle"],
-                           font=("微軟正黑體", 10, "bold"),
-                           padx=18, pady=10, cursor="hand2")
-            btn.pack(side="left")
-            btn.bind("<Button-1>", lambda e, k=key: self._switch_tab(k))
+            btn = QLabel(text)
+            btn.setFont(_font(10, bold=True))
+            btn.setStyleSheet(f"color: {C['overlay0']}; background: transparent; padding: 0 18px;")
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            btn.setFixedHeight(38)
+            btn.mousePressEvent = lambda e, k=key: self._switch_tab(k)
+            layout.addWidget(btn)
             self._tab_btns[key] = btn
-        if not defer_switch:
-            self._switch_tab("settings")
+
+        layout.addStretch()
+        self._main_layout.addWidget(bar)
+
+        sep2 = QFrame()
+        sep2.setFixedHeight(1)
+        sep2.setStyleSheet(f"background-color: {C['surface0']};")
+        self._main_layout.addWidget(sep2)
 
     def _switch_tab(self, key: str):
-        self._current_tab.set(key)
         for k, btn in self._tab_btns.items():
             if k == key:
-                btn.config(fg=C["blue"],
-                           font=("微軟正黑體", 10, "bold"))
+                btn.setStyleSheet(f"color: {C['blue']}; background: transparent; padding: 0 18px;")
             else:
-                btn.config(fg=C["overlay0"],
-                           font=("微軟正黑體", 10, "bold"))
+                btn.setStyleSheet(f"color: {C['overlay0']}; background: transparent; padding: 0 18px;")
         for k, frame in self._pages.items():
-            if k == key:
-                frame.pack(fill="both", expand=True)
-            else:
-                frame.pack_forget()
+            frame.setVisible(k == key)
 
     # ── 分頁容器 ─────────────────────────────
     def _build_pages(self):
-        container = tk.Frame(self, bg=C["crust"])
-        container.pack(fill="both", expand=True)
+        container = QWidget()
+        container.setStyleSheet(f"background-color: {C['crust']};")
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
 
-        self._pages = {}  # type: Dict[str, tk.Frame]
+        self._pages: Dict[str, QWidget] = {}
         for key in ("settings", "monitor", "log", "trades"):
-            f = tk.Frame(container, bg=C["base"])
-            self._pages[key] = f
+            page = QWidget()
+            page.setStyleSheet(f"background-color: {C['base']};")
+            layout.addWidget(page)
+            self._pages[key] = page
 
         self._build_settings(self._pages["settings"])
         self._build_monitor(self._pages["monitor"])
         self._build_log(self._pages["log"])
         self._build_trades(self._pages["trades"])
 
+        self._main_layout.addWidget(container, 1)
+
     # ══════════════════════════════════════════
     #  設定頁
     # ══════════════════════════════════════════
 
-    def _build_settings(self, parent):
-        # 外層帶 scrollbar
-        canvas = tk.Canvas(parent, bg=C["base"], highlightthickness=0)
-        sb = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
-        canvas.configure(yscrollcommand=sb.set)
-        sb.pack(side="right", fill="y")
-        canvas.pack(side="left", fill="both", expand=True)
+    def _build_settings(self, parent: QWidget):
+        outer = QVBoxLayout(parent)
+        outer.setContentsMargins(0, 0, 0, 0)
 
-        inner = tk.Frame(canvas, bg=C["base"])
-        wid = canvas.create_window((0, 0), window=inner, anchor="nw")
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet(f"""
+            QScrollArea {{ border: none; background-color: {C['base']}; }}
+            {_scroll_style()}
+        """)
+        outer.addWidget(scroll)
 
-        def _resize(e):
-            canvas.configure(scrollregion=canvas.bbox("all"))
-        def _resize_w(e):
-            canvas.itemconfig(wid, width=e.width)
-        inner.bind("<Configure>", _resize)
-        canvas.bind("<Configure>", _resize_w)
+        inner = QWidget()
+        inner.setStyleSheet(f"background-color: {C['base']};")
+        scroll.setWidget(inner)
 
-        # 滑鼠滾輪
-        def _on_wheel(e):
-            canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
-        canvas.bind_all("<MouseWheel>", _on_wheel)
+        layout = QVBoxLayout(inner)
+        layout.setContentsMargins(0, 10, 0, 10)
+        layout.setSpacing(0)
 
         # ── 帳號設定 ──────────────────────────
-        _, f = section_frame(inner, "\u25A0  券商帳號（永豐金 Shioaji）")
-        self._srow(f, 0, "API Key",        "api_id")
-        self._srow(f, 1, "Secret Key",     "api_key", show="*")
-        self._srow(f, 2, "憑證路徑（選填）", "broker_cert_path", width=40)
+        gb, gl = self._group(layout, "■  券商帳號")
+        self._frow(gl, 0, "API Key",        "api_id")
+        self._frow(gl, 1, "Secret Key",     "api_key", password=True)
+        self._frow(gl, 2, "憑證路徑（選填）", "broker_cert_path", width=280)
 
         # ── 功能 1 ────────────────────────────
-        lf1, f1 = section_frame(inner, "① 時間 + 委賣篩選（10點前漲停才進場）")
-        self._add_toggle(lf1, "f1_enabled")
-        self._srow(f1, 0, "進場截止時間（HH:MM）",             "entry_before_time")
-        self._srow(f1, 1, "漲停委賣張數上限（低於此數才進場）", "ask_queue_threshold")
+        gb1, gl1 = self._group(layout, "① 時間 + 委賣篩選（10點前漲停才進場）", toggle_key="f1_enabled")
+        self._frow(gl1, 0, "進場截止時間（HH:MM）",             "entry_before_time")
+        self._frow(gl1, 1, "漲停委賣張數上限（低於此數才進場）", "ask_queue_threshold")
 
         # ── 功能 2 ────────────────────────────
-        _, f2 = section_frame(inner, "② 市場選擇")
-        self._check(f2, 0, "上市（TSE）", "market_twse")
-        self._check(f2, 1, "上櫃（OTC）", "market_tpex")
+        _, gl2 = self._group(layout, "② 市場選擇")
+        self._cbox(gl2, 0, "上市（TSE）", "market_twse")
+        self._cbox(gl2, 1, "上櫃（OTC）", "market_tpex")
 
         # ── 功能 3 ────────────────────────────
-        _, f3 = section_frame(inner, "③ 每隻股票投入金額（元）")
-        self._srow(f3, 0, "金額（元）",  "per_stock_amount")
-        v = tk.StringVar(value="依漲停價自動計算張數")
-        label(f3, "計算說明：").grid(row=1, column=0, sticky="w", pady=3)
-        entry(f3, v, width=30, readonly=True).grid(row=1, column=1, sticky="w", padx=8, pady=3)
+        _, gl3 = self._group(layout, "③ 每隻股票投入金額（元）")
+        self._frow(gl3, 0, "金額（元）", "per_stock_amount")
+        note = _label("計算說明：依漲停價自動計算張數", C["overlay0"])
+        gl3.addWidget(note, 1, 0, 1, 2)
 
         # ── 功能 4 ────────────────────────────
-        lf4, f4 = section_frame(inner, "④ 持倉出場：委買漲停 → 市價賣出")
-        self._add_toggle(lf4, "f4_enabled")
-        label(f4, "買進後，若委買價達到漲停（市場打開），立即市價賣出。",
-              fg=C["overlay0"]).grid(row=0, column=0, columnspan=2, sticky="w", pady=3)
+        _, gl4 = self._group(layout, "④ 持倉出場：委買漲停 → 市價賣出", toggle_key="f4_enabled")
+        note4 = _label("買進後，若委買價達到漲停（市場打開），立即市價賣出。", C["overlay0"])
+        gl4.addWidget(note4, 0, 0, 1, 2)
 
         # ── 功能 5 ────────────────────────────
-        lf5, f5 = section_frame(inner, "⑤ 持倉出場：1秒成交量爆量賣出")
-        self._add_toggle(lf5, "f5_enabled")
-        self._srow(f5, 0, "1秒成交張數門檻（超過則市價賣出）", "volume_spike_sell_threshold")
+        _, gl5 = self._group(layout, "⑤ 持倉出場：1秒成交量爆量賣出", toggle_key="f5_enabled")
+        self._frow(gl5, 0, "1秒成交張數門檻（超過則市價賣出）", "volume_spike_sell_threshold")
 
         # ── 功能 6 ────────────────────────────
-        lf6, f6 = section_frame(inner, "⑥ 委託中取消：1秒成交量爆量取消委託")
-        self._add_toggle(lf6, "f6_enabled")
-        self._srow(f6, 0, "1秒成交張數門檻（超過則取消委託）", "volume_spike_cancel_threshold")
+        _, gl6 = self._group(layout, "⑥ 委託中取消：1秒成交量爆量取消委託", toggle_key="f6_enabled")
+        self._frow(gl6, 0, "1秒成交張數門檻（超過則取消委託）", "volume_spike_cancel_threshold")
 
         # ── 功能 7 ────────────────────────────
-        lf7, f7 = section_frame(inner, "⑦ 只買起漲第幾根 K 棒")
-        self._add_toggle(lf7, "f7_enabled")
-        self._srow(f7, 0, "最多第幾根（1=只買第1根，2=第1或第2根）", "candle_limit")
+        _, gl7 = self._group(layout, "⑦ 只買起漲第幾根 K 棒", toggle_key="f7_enabled")
+        self._frow(gl7, 0, "最多第幾根（1=只買第1根，2=第1或第2根）", "candle_limit")
 
         # ── 功能 8 ────────────────────────────
-        lf8, f8 = section_frame(inner, "⑧ 當天成交量門檻（幾張以上才進場）")
-        self._add_toggle(lf8, "f8_enabled")
-        self._srow(f8, 0, "當天最低成交量（張，低於不進場）", "daily_volume_min")
+        _, gl8 = self._group(layout, "⑧ 當天成交量門檻（幾張以上才進場）", toggle_key="f8_enabled")
+        self._frow(gl8, 0, "當天最低成交量（張，低於不進場）", "daily_volume_min")
 
         # ── 功能 9 ────────────────────────────
-        lf9, f9 = section_frame(inner, "⑨ 股價區間篩選")
-        self._add_toggle(lf9, "f9_enabled")
-        self._srow(f9, 0, "最低股價（元）", "price_min")
-        self._srow(f9, 1, "最高股價（元）", "price_max")
+        _, gl9 = self._group(layout, "⑨ 股價區間篩選", toggle_key="f9_enabled")
+        self._frow(gl9, 0, "最低股價（元）", "price_min")
+        self._frow(gl9, 1, "最高股價（元）", "price_max")
 
         # ── 功能 10 ───────────────────────────
-        lf10, f10 = section_frame(inner, "⑩ 委賣價 + 即時成交量雙重確認進場")
-        self._add_toggle(lf10, "f10_enabled")
-        self._srow(f10, 0, "委賣價必須 ≤ 漲停價 × 倍率（1.0 = 恰好漲停）", "ask_price_ratio")
-        self._srow(f10, 1, "該檔 1 秒內成交量必須達到（張）才進場",          "entry_volume_confirm")
-        label(f10, "兩條件須同時成立才進場，可搭配功能①使用。",
-              fg=C["overlay0"]).grid(row=2, column=0, columnspan=2, sticky="w", pady=2)
+        _, gl10 = self._group(layout, "⑩ 委賣價 + 即時成交量雙重確認進場", toggle_key="f10_enabled")
+        self._frow(gl10, 0, "委賣價必須 ≤ 漲停價 × 倍率（1.0 = 恰好漲停）", "ask_price_ratio")
+        self._frow(gl10, 1, "該檔 1 秒內成交量必須達到（張）才進場",          "entry_volume_confirm")
+        note10 = _label("兩條件須同時成立才進場，可搭配功能①使用。", C["overlay0"])
+        gl10.addWidget(note10, 2, 0, 1, 2)
+
+        # ── 功能 11 ───────────────────────────
+        _, gl11 = self._group(layout, "⑪ 排除特殊股（處置股、注意股、限當沖股）", toggle_key="f11_enabled")
+        note11 = _label("啟用後，處置股、注意股、限制當沖股票一律不進場。", C["overlay0"])
+        gl11.addWidget(note11, 0, 0, 1, 2)
+
+        # ── 功能 12 ───────────────────────────
+        _, gl12 = self._group(layout, "⑫ 開盤漲停已賣出 → 當天不再追", toggle_key="f12_enabled")
+        note12 = _label("開盤即漲停的股票，當天賣出後不再重新進場（防止反覆追高）。", C["overlay0"])
+        gl12.addWidget(note12, 0, 0, 1, 2)
+
+        # ── 功能 13 ───────────────────────────
+        _, gl13 = self._group(layout, "⑬ 限制每天最大成交檔數", toggle_key="f13_enabled")
+        self._frow(gl13, 0, "每天最多成交幾檔（達到後停止新進場）", "daily_max_trades")
 
         # ── 底部按鈕 ──────────────────────────
-        btn_bar = tk.Frame(inner, bg=C["base"])
-        btn_bar.pack(fill="x", padx=16, pady=(0, 16))
+        btn_widget = QWidget()
+        btn_widget.setStyleSheet(f"background-color: {C['base']};")
+        btn_layout = QHBoxLayout(btn_widget)
+        btn_layout.setContentsMargins(16, 4, 16, 16)
+        btn_layout.setSpacing(10)
 
-        tk.Button(btn_bar, text="\u2714  儲存設定",
-                  bg=C["blue"], fg=C["base"],
-                  font=("微軟正黑體", 11, "bold"),
-                  relief="flat", padx=20, pady=8,
-                  cursor="hand2", command=self._save_settings,
-                  activebackground=C["mauve"], activeforeground=C["base"]
-                  ).pack(side="left", padx=(0, 10))
+        save_btn = QPushButton("✔  儲存設定")
+        save_btn.setFont(_font(11, bold=True))
+        save_btn.setFixedHeight(36)
+        save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        save_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {C['blue']};
+                color: {C['base']};
+                border: none;
+                border-radius: 4px;
+                padding: 0 20px;
+            }}
+            QPushButton:hover {{ background-color: {C['mauve']}; }}
+        """)
+        save_btn.clicked.connect(self._save_settings)
+        btn_layout.addWidget(save_btn)
 
-        tk.Button(btn_bar, text="↩  還原預設",
-                  bg=C["surface0"], fg=C["text"],
-                  font=("微軟正黑體", 10),
-                  relief="flat", padx=14, pady=8,
-                  cursor="hand2", command=self._reset_settings,
-                  activebackground=C["surface1"], activeforeground=C["text"]
-                  ).pack(side="left")
+        reset_btn = QPushButton("↩  還原預設")
+        reset_btn.setFont(_font(10))
+        reset_btn.setFixedHeight(36)
+        reset_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        reset_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {C['surface0']};
+                color: {C['text']};
+                border: none;
+                border-radius: 4px;
+                padding: 0 14px;
+            }}
+            QPushButton:hover {{ background-color: {C['surface1']}; }}
+        """)
+        reset_btn.clicked.connect(self._reset_settings)
+        btn_layout.addWidget(reset_btn)
 
-        self.save_status = tk.Label(btn_bar, text="✓ 設定已儲存",
-                                     fg=C["green"], bg=C["base"],
-                                     font=("微軟正黑體", 10))
-        self.save_status.pack(side="left", padx=14)
-        self.save_status.pack_forget()
+        self.save_status_lbl = _label("✓ 設定已儲存", C["green"])
+        self.save_status_lbl.setVisible(False)
+        btn_layout.addWidget(self.save_status_lbl)
 
-    def _srow(self, parent, row, lbl_text, key, width=22, show=""):
-        label(parent, lbl_text + " ：").grid(row=row, column=0, sticky="w", pady=4)
-        var = tk.StringVar()
-        self._vars[key] = var
-        e = entry(parent, var, width=width, show=show)
-        e.grid(row=row, column=1, sticky="w", padx=10, pady=4)
+        btn_layout.addStretch()
+        layout.addWidget(btn_widget)
 
-    def _check(self, parent, row, lbl_text, key):
-        var = tk.BooleanVar()
-        self._vars[key] = var
-        cb = tk.Checkbutton(parent, text=lbl_text, variable=var,
-                             fg=C["text"], bg=C["base"],
-                             activeforeground=C["text"],
-                             activebackground=C["base"],
-                             selectcolor=C["surface0"],
-                             font=("微軟正黑體", 10))
-        cb.grid(row=row, column=0, columnspan=2, sticky="w", pady=3)
+    def _group(self, parent_layout: QVBoxLayout, title: str,
+               toggle_key: str = "") -> tuple:
+        gb = _group_box(title)
 
-    def _add_toggle(self, labelframe: tk.LabelFrame, key: str):
-        tog = ToggleButton(labelframe, bg=C["mantle"])
-        tog.place(relx=1.0, x=-10, rely=0.5, anchor="e")
-        self._toggles[key] = tog
+        gl = QGridLayout(gb)
+        gl.setContentsMargins(10, 6, 10, 10)
+        gl.setSpacing(4)
+        gl.setColumnStretch(1, 1)
+
+        if toggle_key:
+            tog = ToggleButton(gb)
+            self._toggles[toggle_key] = tog
+            gl.addWidget(tog, 0, 2, 1, 1,
+                         Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
+        wrapper = QWidget()
+        wrapper.setStyleSheet(f"background-color: {C['base']};")
+        wl = QVBoxLayout(wrapper)
+        wl.setContentsMargins(16, 0, 16, 10)
+        wl.setSpacing(0)
+        wl.addWidget(gb)
+
+        parent_layout.addWidget(wrapper)
+        return gb, gl
+
+    def _frow(self, grid: QGridLayout, row: int, lbl_text: str, key: str,
+              width: int = 160, password: bool = False):
+        lbl = _label(lbl_text + " ：")
+        grid.addWidget(lbl, row, 0, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+        e = _entry(width=width, password=password)
+        self._fields[key] = e
+        grid.addWidget(e, row, 1, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+
+    def _cbox(self, grid: QGridLayout, row: int, lbl_text: str, key: str):
+        cb = QCheckBox(lbl_text)
+        cb.setFont(_font(10))
+        cb.setStyleSheet(f"""
+            QCheckBox {{
+                color: {C['text']};
+                background: transparent;
+                spacing: 6px;
+            }}
+            QCheckBox::indicator {{
+                width: 14px;
+                height: 14px;
+                border: 1px solid {C['surface1']};
+                border-radius: 3px;
+                background-color: {C['surface0']};
+            }}
+            QCheckBox::indicator:checked {{
+                background-color: {C['blue']};
+                border-color: {C['blue']};
+            }}
+        """)
+        self._checks[key] = cb
+        grid.addWidget(cb, row, 0, 1, 2)
 
     # ── 設定讀寫 ─────────────────────────────
     def _apply_config(self, cfg: TradingConfig):
-        def sv(k, v): self._vars[k].set(str(v))
-        def bv(k, v): self._vars[k].set(v)
-
-        sv("api_id",              cfg.api_id)
-        sv("api_key",             cfg.api_key)
-        sv("broker_cert_path",    cfg.broker_cert_path)
-        sv("entry_before_time",   cfg.entry_before_time)
-        sv("ask_queue_threshold", cfg.ask_queue_threshold)
-        bv("market_twse",         cfg.market_twse)
-        bv("market_tpex",         cfg.market_tpex)
-        sv("per_stock_amount",    cfg.per_stock_amount)
-        sv("volume_spike_sell_threshold",   cfg.volume_spike_sell_threshold)
-        sv("volume_spike_cancel_threshold", cfg.volume_spike_cancel_threshold)
-        sv("candle_limit",        cfg.candle_limit)
-        sv("daily_volume_min",    cfg.daily_volume_min)
-        sv("price_min",           cfg.price_min)
-        sv("price_max",           cfg.price_max)
-        sv("ask_price_ratio",     cfg.ask_price_ratio)
-        sv("entry_volume_confirm",cfg.entry_volume_confirm)
-
-        self._toggles["f1_enabled"].set(cfg.f1_enabled)
-        self._toggles["f4_enabled"].set(cfg.f4_enabled)
-        self._toggles["f5_enabled"].set(cfg.f5_enabled)
-        self._toggles["f6_enabled"].set(cfg.f6_enabled)
-        self._toggles["f7_enabled"].set(cfg.f7_enabled)
-        self._toggles["f8_enabled"].set(cfg.f8_enabled)
-        self._toggles["f9_enabled"].set(cfg.f9_enabled)
-        self._toggles["f10_enabled"].set(cfg.f10_enabled)
-
-    def _collect_config(self) -> TradingConfig:
-        v = self._vars
+        f = self._fields
+        c = self._checks
         t = self._toggles
 
-        def g(k): return v[k].get()
+        f["api_id"].setText(cfg.api_id)
+        f["api_key"].setText(cfg.api_key)
+        f["broker_cert_path"].setText(cfg.broker_cert_path)
+        f["entry_before_time"].setText(cfg.entry_before_time)
+        f["ask_queue_threshold"].setText(str(cfg.ask_queue_threshold))
+        c["market_twse"].setChecked(cfg.market_twse)
+        c["market_tpex"].setChecked(cfg.market_tpex)
+        f["per_stock_amount"].setText(str(cfg.per_stock_amount))
+        f["volume_spike_sell_threshold"].setText(str(cfg.volume_spike_sell_threshold))
+        f["volume_spike_cancel_threshold"].setText(str(cfg.volume_spike_cancel_threshold))
+        f["candle_limit"].setText(str(cfg.candle_limit))
+        f["daily_volume_min"].setText(str(cfg.daily_volume_min))
+        f["price_min"].setText(str(cfg.price_min))
+        f["price_max"].setText(str(cfg.price_max))
+        f["ask_price_ratio"].setText(str(cfg.ask_price_ratio))
+        f["entry_volume_confirm"].setText(str(cfg.entry_volume_confirm))
+
+        t["f1_enabled"].set(cfg.f1_enabled)
+        t["f4_enabled"].set(cfg.f4_enabled)
+        t["f5_enabled"].set(cfg.f5_enabled)
+        t["f6_enabled"].set(cfg.f6_enabled)
+        t["f7_enabled"].set(cfg.f7_enabled)
+        t["f8_enabled"].set(cfg.f8_enabled)
+        t["f9_enabled"].set(cfg.f9_enabled)
+        t["f10_enabled"].set(cfg.f10_enabled)
+        t["f11_enabled"].set(cfg.f11_enabled)
+        t["f12_enabled"].set(cfg.f12_enabled)
+        t["f13_enabled"].set(cfg.f13_enabled)
+        f["daily_max_trades"].setText(str(cfg.daily_max_trades))
+
+    def _collect_config(self) -> TradingConfig:
+        f = self._fields
+        c = self._checks
+        t = self._toggles
+
+        def g(k): return f[k].text()
         def ni(k):
             try: return int(float(g(k)))
             except: return 0
@@ -450,8 +663,8 @@ class App(tk.Tk):
             f1_enabled          = t["f1_enabled"].value,
             entry_before_time   = g("entry_before_time"),
             ask_queue_threshold = ni("ask_queue_threshold"),
-            market_twse         = bool(v["market_twse"].get()),
-            market_tpex         = bool(v["market_tpex"].get()),
+            market_twse         = c["market_twse"].isChecked(),
+            market_tpex         = c["market_tpex"].isChecked(),
             per_stock_amount    = ni("per_stock_amount"),
             f4_enabled          = t["f4_enabled"].value,
             f5_enabled          = t["f5_enabled"].value,
@@ -468,211 +681,235 @@ class App(tk.Tk):
             f10_enabled         = t["f10_enabled"].value,
             ask_price_ratio     = nf("ask_price_ratio"),
             entry_volume_confirm= ni("entry_volume_confirm"),
+            f11_enabled         = t["f11_enabled"].value,
+            f12_enabled         = t["f12_enabled"].value,
+            f13_enabled         = t["f13_enabled"].value,
+            daily_max_trades    = ni("daily_max_trades"),
         )
 
     def _save_settings(self):
         try:
             self.cfg = self._collect_config()
             self.cfg.save()
-            self.save_status.pack(side="left", padx=14)
-            self.after(2000, self.save_status.pack_forget)
+            self.save_status_lbl.setVisible(True)
+            QTimer.singleShot(2000, lambda: self.save_status_lbl.setVisible(False))
         except ValueError as e:
-            messagebox.showerror("格式錯誤", f"數字欄位格式有誤：{e}")
+            QMessageBox.critical(self, "格式錯誤", f"數字欄位格式有誤：{e}")
 
     def _reset_settings(self):
-        if messagebox.askyesno("還原確認", "確定要還原為預設值？"):
+        reply = QMessageBox.question(self, "還原確認", "確定要還原為預設值？",
+                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if reply == QMessageBox.StandardButton.Yes:
             self._apply_config(TradingConfig())
 
     # ══════════════════════════════════════════
     #  即時監控頁
     # ══════════════════════════════════════════
 
-    def _build_monitor(self, parent):
-        top = tk.Frame(parent, bg=C["base"])
-        top.pack(fill="x", padx=14, pady=14)
+    def _build_monitor(self, parent: QWidget):
+        layout = QVBoxLayout(parent)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(10)
 
-        # 統計卡
-        stats_frame = tk.Frame(top, bg=C["base"])
-        stats_frame.pack(fill="x")
+        # 統計卡列
+        stats_row = QWidget()
+        stats_row.setStyleSheet(f"background-color: {C['base']};")
+        stats_layout = QHBoxLayout(stats_row)
+        stats_layout.setContentsMargins(0, 0, 0, 0)
+        stats_layout.setSpacing(10)
 
-        self.stat_watching  = self._stat_card(stats_frame, "監控中股票", "0", C["blue"])
-        self.stat_positions = self._stat_card(stats_frame, "持倉",       "0", C["green"])
-        self.stat_pending   = self._stat_card(stats_frame, "委託中",     "0", C["yellow"])
-        self.stat_trades    = self._stat_card(stats_frame, "今日成交",   "0", C["text"])
+        self.stat_watching  = self._stat_card(stats_layout, "監控中股票", "0", C["blue"])
+        self.stat_positions = self._stat_card(stats_layout, "持倉",       "0", C["green"])
+        self.stat_pending   = self._stat_card(stats_layout, "委託中",     "0", C["yellow"])
+        self.stat_trades    = self._stat_card(stats_layout, "今日成交",   "0", C["text"])
+        layout.addWidget(stats_row)
 
         # 表格
-        tbl_frame = tk.Frame(parent, bg=C["surface0"])
-        tbl_frame.pack(fill="both", expand=True, padx=14, pady=(0, 14))
+        cols  = ["代號", "名稱", "漲停根數", "持倉(張)", "委託中", "1秒量(張)", "狀態"]
+        self.monitor_table = QTableWidget(0, len(cols))
+        self.monitor_table.setHorizontalHeaderLabels(cols)
+        self.monitor_table.setStyleSheet(_table_style())
+        self.monitor_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.monitor_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.monitor_table.verticalHeader().setVisible(False)
+        self.monitor_table.setShowGrid(True)
+        self.monitor_table.horizontalHeader().setStretchLastSection(True)
 
-        cols = ("code", "name", "candle", "qty", "pending", "vol_1s", "status")
-        heads = ("代號", "名稱", "漲停根數", "持倉(張)", "委託中", "1秒量(張)", "狀態")
-
-        style = ttk.Style()
-        style.theme_use("clam")
-        style.configure("Monitor.Treeview",
-                         background=C["base"],
-                         foreground=C["text"],
-                         fieldbackground=C["base"],
-                         rowheight=26,
-                         font=("微軟正黑體", 9))
-        style.configure("Monitor.Treeview.Heading",
-                         background=C["mantle"],
-                         foreground=C["overlay0"],
-                         font=("微軟正黑體", 9, "bold"),
-                         relief="flat")
-        style.map("Monitor.Treeview",
-                  background=[("selected", C["surface0"])],
-                  foreground=[("selected", C["text"])])
-
-        self.monitor_tree = ttk.Treeview(tbl_frame, columns=cols,
-                                          show="headings",
-                                          style="Monitor.Treeview")
         widths = [70, 80, 80, 70, 70, 80, 80]
-        for c, h, w in zip(cols, heads, widths):
-            self.monitor_tree.heading(c, text=h)
-            self.monitor_tree.column(c, width=w, anchor="center", minwidth=60)
+        for i, w in enumerate(widths):
+            self.monitor_table.setColumnWidth(i, w)
+        self.monitor_table.verticalHeader().setDefaultSectionSize(26)
 
-        vsb = ttk.Scrollbar(tbl_frame, orient="vertical",
-                             command=self.monitor_tree.yview)
-        self.monitor_tree.configure(yscrollcommand=vsb.set)
-        vsb.pack(side="right", fill="y")
-        self.monitor_tree.pack(fill="both", expand=True)
+        layout.addWidget(self.monitor_table, 1)
 
-        # 彩色列 tag
-        self.monitor_tree.tag_configure("holding",  foreground=C["green"])
-        self.monitor_tree.tag_configure("pending",  foreground=C["yellow"])
-        self.monitor_tree.tag_configure("watching", foreground=C["blue"])
-        self.monitor_tree.tag_configure("done",     foreground=C["overlay0"])
-        self.monitor_tree.tag_configure("hot",      foreground=C["red"])
+        # 用於差量更新的 code→row 映射
+        self._monitor_rows: Dict[str, int] = {}
 
-    def _stat_card(self, parent, label_text, init, color):
-        card = tk.Frame(parent, bg=C["mantle"],
-                        highlightthickness=1,
-                        highlightbackground=C["surface0"])
-        card.pack(side="left", expand=True, fill="both", padx=(0, 10), ipady=8, ipadx=12)
-        tk.Label(card, text=label_text, fg=C["overlay0"],
-                  bg=C["mantle"], font=("微軟正黑體", 10)).pack(anchor="w", padx=10, pady=(6, 2))
-        val_lbl = tk.Label(card, text=init, fg=color,
-                            bg=C["mantle"], font=("微軟正黑體", 22, "bold"))
-        val_lbl.pack(anchor="w", padx=10, pady=(0, 6))
+    def _stat_card(self, layout: QHBoxLayout, label_text: str,
+                   init: str, color: str) -> QLabel:
+        card = QFrame()
+        card.setStyleSheet(f"""
+            QFrame {{
+                background-color: {C['mantle']};
+                border: 1px solid {C['surface0']};
+                border-radius: 6px;
+            }}
+        """)
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(10, 6, 10, 6)
+        card_layout.setSpacing(2)
+
+        top_lbl = _label(label_text, C["overlay0"], size=10)
+        card_layout.addWidget(top_lbl)
+
+        val_lbl = QLabel(init)
+        val_lbl.setFont(_font(22, bold=True))
+        val_lbl.setStyleSheet(f"color: {color}; background: transparent;")
+        card_layout.addWidget(val_lbl)
+
+        layout.addWidget(card, 1)
         return val_lbl
 
     # ══════════════════════════════════════════
     #  系統日誌頁
     # ══════════════════════════════════════════
 
-    def _build_log(self, parent):
-        toolbar = tk.Frame(parent, bg=C["base"])
-        toolbar.pack(fill="x", padx=14, pady=(10, 4))
+    def _build_log(self, parent: QWidget):
+        layout = QVBoxLayout(parent)
+        layout.setContentsMargins(14, 10, 14, 14)
+        layout.setSpacing(4)
 
-        self.log_count_lbl = tk.Label(toolbar, text="共 0 行日誌",
-                                       fg=C["overlay0"], bg=C["base"],
-                                       font=("微軟正黑體", 10))
-        self.log_count_lbl.pack(side="left")
+        toolbar = QWidget()
+        toolbar.setStyleSheet(f"background-color: {C['base']};")
+        tb_layout = QHBoxLayout(toolbar)
+        tb_layout.setContentsMargins(0, 0, 0, 0)
 
-        self.auto_scroll_var = tk.BooleanVar(value=True)
-        tk.Checkbutton(toolbar, text="自動捲動",
-                        variable=self.auto_scroll_var,
-                        fg=C["overlay0"], bg=C["base"],
-                        activeforeground=C["text"],
-                        activebackground=C["base"],
-                        selectcolor=C["surface0"],
-                        font=("微軟正黑體", 10)).pack(side="right", padx=(0, 10))
+        self.log_count_lbl = _label("共 0 行日誌", C["overlay0"])
+        tb_layout.addWidget(self.log_count_lbl)
+        tb_layout.addStretch()
 
-        tk.Button(toolbar, text="清除日誌",
-                   bg=C["surface0"], fg=C["text"],
-                   font=("微軟正黑體", 10),
-                   relief="flat", padx=10, pady=4,
-                   cursor="hand2", command=self._clear_log,
-                   activebackground=C["surface1"]
-                   ).pack(side="right", padx=(0, 8))
+        self.auto_scroll_cb = QCheckBox("自動捲動")
+        self.auto_scroll_cb.setChecked(True)
+        self.auto_scroll_cb.setFont(_font(10))
+        self.auto_scroll_cb.setStyleSheet(f"""
+            QCheckBox {{
+                color: {C['overlay0']};
+                background: transparent;
+                spacing: 6px;
+            }}
+            QCheckBox::indicator {{
+                width: 14px; height: 14px;
+                border: 1px solid {C['surface1']};
+                border-radius: 3px;
+                background-color: {C['surface0']};
+            }}
+            QCheckBox::indicator:checked {{
+                background-color: {C['blue']};
+                border-color: {C['blue']};
+            }}
+        """)
+        tb_layout.addWidget(self.auto_scroll_cb)
 
-        self.log_box = scrolledtext.ScrolledText(
-            parent,
-            bg=C["crust"], fg=C["text"],
-            font=("Consolas", 10),
-            state="disabled", wrap="word",
-            relief="flat", bd=0,
-        )
-        self.log_box.pack(fill="both", expand=True, padx=14, pady=(0, 14))
+        clear_btn = QPushButton("清除日誌")
+        clear_btn.setFont(_font(10))
+        clear_btn.setFixedHeight(30)
+        clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        clear_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {C['surface0']};
+                color: {C['text']};
+                border: none;
+                border-radius: 4px;
+                padding: 0 10px;
+            }}
+            QPushButton:hover {{ background-color: {C['surface1']}; }}
+        """)
+        clear_btn.clicked.connect(self._clear_log)
+        tb_layout.addWidget(clear_btn)
+        layout.addWidget(toolbar)
 
-        # 顏色 tag
-        self.log_box.tag_config("INFO",  foreground=C["blue"])
-        self.log_box.tag_config("TRADE", foreground=C["green"],
-                                 font=("Consolas", 10, "bold"))
-        self.log_box.tag_config("WARN",  foreground=C["yellow"])
-        self.log_box.tag_config("ERROR", foreground=C["red"])
-        self.log_box.tag_config("DEBUG", foreground=C["overlay0"])
+        self.log_box = QTextEdit()
+        self.log_box.setReadOnly(True)
+        self.log_box.setFont(QFont(FONT_MONO, 10))
+        self.log_box.setStyleSheet(f"""
+            QTextEdit {{
+                background-color: {C['crust']};
+                color: {C['text']};
+                border: none;
+                padding: 4px;
+            }}
+            {_scroll_style()}
+        """)
+        layout.addWidget(self.log_box, 1)
 
-        self._log_lines = 0
+        # 顏色對應
+        self._log_colors = {
+            "INFO":  C["blue"],
+            "TRADE": C["green"],
+            "WARN":  C["yellow"],
+            "ERROR": C["red"],
+            "DEBUG": C["overlay0"],
+        }
 
     def _clear_log(self):
-        self.log_box.configure(state="normal")
-        self.log_box.delete("1.0", "end")
-        self.log_box.configure(state="disabled")
+        self.log_box.clear()
         self._log_lines = 0
-        self.log_count_lbl.config(text="共 0 行日誌")
+        self.log_count_lbl.setText("共 0 行日誌")
 
     # ══════════════════════════════════════════
     #  交易紀錄頁
     # ══════════════════════════════════════════
 
-    def _build_trades(self, parent):
-        toolbar = tk.Frame(parent, bg=C["base"])
-        toolbar.pack(fill="x", padx=14, pady=(10, 4))
+    def _build_trades(self, parent: QWidget):
+        layout = QVBoxLayout(parent)
+        layout.setContentsMargins(14, 10, 14, 14)
+        layout.setSpacing(4)
 
-        self.trades_summary = tk.Label(toolbar,
-            text="共 0 筆 ／ 買入 0 筆 ／ 賣出 0 筆",
-            fg=C["overlay0"], bg=C["base"],
-            font=("微軟正黑體", 10))
-        self.trades_summary.pack(side="left")
+        toolbar = QWidget()
+        toolbar.setStyleSheet(f"background-color: {C['base']};")
+        tb_layout = QHBoxLayout(toolbar)
+        tb_layout.setContentsMargins(0, 0, 0, 0)
 
-        tk.Button(toolbar, text="清除紀錄",
-                   bg=C["surface0"], fg=C["text"],
-                   font=("微軟正黑體", 10),
-                   relief="flat", padx=10, pady=4,
-                   cursor="hand2", command=self._clear_trades,
-                   activebackground=C["surface1"]
-                   ).pack(side="right")
+        self.trades_summary = _label("共 0 筆 ／ 買入 0 筆 ／ 賣出 0 筆", C["overlay0"])
+        tb_layout.addWidget(self.trades_summary)
+        tb_layout.addStretch()
 
-        tbl_frame = tk.Frame(parent, bg=C["surface0"])
-        tbl_frame.pack(fill="both", expand=True, padx=14, pady=(0, 14))
+        clear_btn = QPushButton("清除紀錄")
+        clear_btn.setFont(_font(10))
+        clear_btn.setFixedHeight(30)
+        clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        clear_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {C['surface0']};
+                color: {C['text']};
+                border: none;
+                border-radius: 4px;
+                padding: 0 10px;
+            }}
+            QPushButton:hover {{ background-color: {C['surface1']}; }}
+        """)
+        clear_btn.clicked.connect(self._clear_trades)
+        tb_layout.addWidget(clear_btn)
+        layout.addWidget(toolbar)
 
-        cols  = ("time", "code", "name", "action", "price", "qty", "note")
-        heads = ("時間", "代號", "名稱", "方向", "價格(元)", "張數", "備註")
+        cols = ["時間", "代號", "名稱", "方向", "價格(元)", "張數", "備註"]
+        self.trades_table = QTableWidget(0, len(cols))
+        self.trades_table.setHorizontalHeaderLabels(cols)
+        self.trades_table.setStyleSheet(_table_style())
+        self.trades_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.trades_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.trades_table.verticalHeader().setVisible(False)
+        self.trades_table.horizontalHeader().setStretchLastSection(True)
 
-        style = ttk.Style()
-        style.configure("Trades.Treeview",
-                         background=C["base"],
-                         foreground=C["text"],
-                         fieldbackground=C["base"],
-                         rowheight=26,
-                         font=("微軟正黑體", 9))
-        style.configure("Trades.Treeview.Heading",
-                         background=C["mantle"],
-                         foreground=C["overlay0"],
-                         font=("微軟正黑體", 9, "bold"),
-                         relief="flat")
-
-        self.trades_tree = ttk.Treeview(tbl_frame, columns=cols,
-                                         show="headings",
-                                         style="Trades.Treeview")
         widths = [80, 65, 80, 65, 90, 60, 200]
-        for c, h, w in zip(cols, heads, widths):
-            self.trades_tree.heading(c, text=h)
-            self.trades_tree.column(c, width=w, anchor="center", minwidth=50)
+        for i, w in enumerate(widths):
+            self.trades_table.setColumnWidth(i, w)
+        self.trades_table.verticalHeader().setDefaultSectionSize(26)
 
-        vsb = ttk.Scrollbar(tbl_frame, orient="vertical",
-                             command=self.trades_tree.yview)
-        self.trades_tree.configure(yscrollcommand=vsb.set)
-        vsb.pack(side="right", fill="y")
-        self.trades_tree.pack(fill="both", expand=True)
-
-        self.trades_tree.tag_configure("buy",  foreground=C["green"])
-        self.trades_tree.tag_configure("sell", foreground=C["red"])
+        layout.addWidget(self.trades_table, 1)
 
     def _clear_trades(self):
-        self.trades_tree.delete(*self.trades_tree.get_children())
+        self.trades_table.setRowCount(0)
         self._trade_count = 0
         self._buy_count = 0
         self._sell_count = 0
@@ -685,7 +922,7 @@ class App(tk.Tk):
     def _start_trading(self):
         self.cfg = self._collect_config()
         if not self.cfg.get_markets():
-            messagebox.showwarning("市場未選擇", "請至少選擇上市或上櫃！")
+            QMessageBox.warning(self, "市場未選擇", "請至少選擇上市或上櫃！")
             return
 
         self.engine = TradingEngine(
@@ -697,32 +934,38 @@ class App(tk.Tk):
         self.engine.start()
         self._running = True
 
-        self.status_dot.config(fg=C["green"])
-        self.status_text.config(text="交易中", fg=C["green"])
-        self.btn_start.config(state="disabled")
-        self.btn_stop.config(state="normal")
+        self.status_dot.setStyleSheet(f"color: {C['green']}; background: transparent;")
+        self.status_text.setText("交易中")
+        self.status_text.setStyleSheet(f"color: {C['green']}; background: transparent;")
+        self.btn_start.setEnabled(False)
+        self.btn_stop.setEnabled(True)
         self._switch_tab("monitor")
 
     def _stop_trading(self):
         if self.engine:
             threading.Thread(target=self.engine.stop, daemon=True).start()
         self._running = False
-        self.status_dot.config(fg=C["red"])
-        self.status_text.config(text="已停止", fg=C["overlay0"])
-        self.btn_start.config(state="normal")
-        self.btn_stop.config(state="disabled")
+        self.status_dot.setStyleSheet(f"color: {C['red']}; background: transparent;")
+        self.status_text.setText("已停止")
+        self.status_text.setStyleSheet(f"color: {C['overlay0']}; background: transparent;")
+        self.btn_start.setEnabled(True)
+        self.btn_stop.setEnabled(False)
 
     def _on_trade(self, d: dict):
-        """由引擎執行緒呼叫 → 丟到主執行緒處理"""
-        self.after(0, self._append_trade, d)
+        QTimer.singleShot(0, lambda: self._append_trade(d))
 
     # ══════════════════════════════════════════
     #  輪詢更新
     # ══════════════════════════════════════════
 
     def _start_polling(self):
-        self._poll_log()
-        self._poll_monitor()
+        self._log_timer = QTimer()
+        self._log_timer.timeout.connect(self._poll_log)
+        self._log_timer.start(150)
+
+        self._monitor_timer = QTimer()
+        self._monitor_timer.timeout.connect(self._poll_monitor)
+        self._monitor_timer.start(1200)
 
     def _poll_log(self):
         MAX_LINES = 600
@@ -733,28 +976,36 @@ class App(tk.Tk):
         except queue.Empty:
             pass
         if self._log_lines > MAX_LINES:
-            self.log_box.configure(state="normal")
-            self.log_box.delete("1.0", "100.0")
-            self.log_box.configure(state="disabled")
+            cursor = self.log_box.textCursor()
+            from PyQt6.QtGui import QTextCursor
+            cursor.movePosition(QTextCursor.MoveOperation.Start)
+            cursor.movePosition(QTextCursor.MoveOperation.Down,
+                                QTextCursor.MoveMode.KeepAnchor, 100)
+            cursor.removeSelectedText()
             self._log_lines = max(0, self._log_lines - 100)
-        self.after(150, self._poll_log)
 
     def _poll_monitor(self):
         if self._running and self.engine:
             summary = self.engine.get_summary()
             self._render_monitor(summary)
-        self.after(1200, self._poll_monitor)
 
     def _append_log(self, level: str, msg: str):
         ts = datetime.now().strftime("%H:%M:%S")
-        line = f"{ts} [{level}] {msg}\n"
-        self.log_box.configure(state="normal")
-        self.log_box.insert("end", line, level)
-        if self.auto_scroll_var.get():
-            self.log_box.see("end")
-        self.log_box.configure(state="disabled")
+        line = f"{ts} [{level}] {msg}"
+        color = self._log_colors.get(level, C["text"])
+
+        bold = level == "TRADE"
+        tag_open = f'<b>' if bold else ''
+        tag_close = f'</b>' if bold else ''
+        html = f'{tag_open}<span style="color:{color};">{line}</span>{tag_close}'
+        self.log_box.append(html)
+
+        if self.auto_scroll_cb.isChecked():
+            sb = self.log_box.verticalScrollBar()
+            sb.setValue(sb.maximum())
+
         self._log_lines += 1
-        self.log_count_lbl.config(text=f"共 {self._log_lines} 行日誌")
+        self.log_count_lbl.setText(f"共 {self._log_lines} 行日誌")
 
     def _append_trade(self, d: dict):
         self._trade_count += 1
@@ -764,64 +1015,91 @@ class App(tk.Tk):
         else:
             self._sell_count += 1
 
-        tag = "buy" if action == "BUY" else "sell"
+        color = C["green"] if action == "BUY" else C["red"]
         label_txt = "↑ 買入" if action == "BUY" else "↓ 賣出"
-        self.trades_tree.insert("", 0,
-            values=(
-                d["time"], d["code"], d["name"],
-                label_txt,
-                f"{d['price']:,.0f}",
-                d["qty"], d["note"],
-            ),
-            tags=(tag,))
+
+        row = 0
+        self.trades_table.insertRow(row)
+        values = [
+            d["time"], d["code"], d["name"],
+            label_txt,
+            f"{d['price']:,.0f}",
+            str(d["qty"]), d["note"],
+        ]
+        for col, val in enumerate(values):
+            item = QTableWidgetItem(val)
+            item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            item.setForeground(QColor(color))
+            self.trades_table.setItem(row, col, item)
+
         self._update_trade_summary()
-        self.stat_trades.config(text=str(self._trade_count))
+        self.stat_trades.setText(str(self._trade_count))
 
     def _update_trade_summary(self):
-        self.trades_summary.config(
-            text=f"共 {self._trade_count} 筆 ／ 買入 {self._buy_count} 筆 ／ 賣出 {self._sell_count} 筆"
+        self.trades_summary.setText(
+            f"共 {self._trade_count} 筆 ／ 買入 {self._buy_count} 筆 ／ 賣出 {self._sell_count} 筆"
         )
-        self.stat_trades.config(text=str(self._trade_count))
+        self.stat_trades.setText(str(self._trade_count))
 
     def _render_monitor(self, summary: list):
         pos_cnt  = sum(1 for s in summary if s["qty"] > 0)
         pend_cnt = sum(1 for s in summary if s["pending"])
-        self.stat_watching.config(text=str(len(summary)))
-        self.stat_positions.config(text=str(pos_cnt))
-        self.stat_pending.config(text=str(pend_cnt))
+        self.stat_watching.setText(str(len(summary)))
+        self.stat_positions.setText(str(pos_cnt))
+        self.stat_pending.setText(str(pend_cnt))
 
-        # 差量更新
-        existing = {self.monitor_tree.item(iid)["values"][0]: iid
-                    for iid in self.monitor_tree.get_children()}
         threshold = self.cfg.volume_spike_sell_threshold
+
+        STATUS_COLOR = {
+            "已完成": C["overlay0"],
+            "持倉中": C["green"],
+            "委託中": C["yellow"],
+            "監控中": C["blue"],
+            "等待":   C["overlay0"],
+        }
 
         for s in summary:
             if s["blocked"]:
                 status = "已完成"
-                tag = "done"
             elif s["qty"] > 0:
                 status = "持倉中"
-                tag = "holding"
             elif s["pending"]:
                 status = "委託中"
-                tag = "pending"
             elif s["candle"] > 0:
                 status = "監控中"
-                tag = "watching"
             else:
                 status = "等待"
-                tag = "done"
 
+            color = QColor(STATUS_COLOR[status])
+            vol_color = QColor(C["red"]) if s["vol_1s"] > threshold else color
             candle_txt = f"第 {s['candle']} 根" if s["candle"] > 0 else "—"
             vol_txt = str(s["vol_1s"])
-            vol_tag = "hot" if s["vol_1s"] > threshold else tag
+            vals = [s["code"], s["name"], candle_txt,
+                    str(s["qty"]), "是" if s["pending"] else "—",
+                    vol_txt, status]
 
-            vals = (s["code"], s["name"], candle_txt,
-                    s["qty"], "是" if s["pending"] else "—",
-                    vol_txt, status)
-
-            if s["code"] in existing:
-                iid = existing[s["code"]]
-                self.monitor_tree.item(iid, values=vals, tags=(tag,))
+            if s["code"] in self._monitor_rows:
+                row = self._monitor_rows[s["code"]]
             else:
-                self.monitor_tree.insert("", "end", values=vals, tags=(tag,))
+                row = self.monitor_table.rowCount()
+                self.monitor_table.insertRow(row)
+                self._monitor_rows[s["code"]] = row
+
+            for col, val in enumerate(vals):
+                item = QTableWidgetItem(val)
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                c_use = vol_color if col == 5 else color
+                item.setForeground(c_use)
+                self.monitor_table.setItem(row, col, item)
+
+
+# ──────────────────────────────────────────────────────────────
+#  Entry point (保留給直接執行測試用)
+# ──────────────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    import sys
+    app = QApplication(sys.argv)
+    win = App()
+    win.show()
+    sys.exit(app.exec())

@@ -1,7 +1,7 @@
 @echo off
 chcp 65001 > nul
 echo ========================================
-echo  台股漲停交易系統 — PyInstaller 打包
+echo  台股漲停交易系統 — PyInstaller 打包（PyQt6 版）
 echo ========================================
 echo.
 
@@ -13,11 +13,11 @@ if errorlevel 1 (
     exit /b 1
 )
 
-:: 安裝 PyInstaller
-echo [1/3] 安裝 PyInstaller...
-pip install pyinstaller>=6.0.0 --quiet
+:: 安裝依賴
+echo [1/3] 安裝 PyQt6 和 PyInstaller...
+pip install "PyQt6>=6.4.0" "pyinstaller>=6.0.0" --quiet
 if errorlevel 1 (
-    echo [錯誤] 安裝 pyinstaller 失敗
+    echo [錯誤] 安裝依賴失敗
     pause
     exit /b 1
 )
@@ -36,6 +36,12 @@ if errorlevel 1 (
     echo [錯誤] 打包失敗，請查看上方訊息
     pause
     exit /b 1
+)
+
+:: 重命名 exe
+if exist dist\StockTrader.exe (
+    copy dist\StockTrader.exe "dist\台股漲停交易系統.exe" >nul
+    del dist\StockTrader.exe
 )
 
 echo.

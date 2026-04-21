@@ -18,11 +18,18 @@ from config import TradingConfig
 # ─────────────────────────────────────────────────────────────
 
 class StockInfo:
-    def __init__(self, code: str, name: str, limit_up: float, market: str):
+    def __init__(self, code: str, name: str, limit_up: float, market: str,
+                 is_disposal: bool = False, is_attention: bool = False,
+                 is_day_trade_restricted: bool = False,
+                 open_limit_up: bool = False):
         self.code = code
         self.name = name
         self.limit_up = limit_up
         self.market = market
+        self.is_disposal = is_disposal                       # 處置股
+        self.is_attention = is_attention                     # 注意股
+        self.is_day_trade_restricted = is_day_trade_restricted  # 限當沖股
+        self.open_limit_up = open_limit_up                   # 開盤即漲停
 
 
 class StockState:
@@ -35,19 +42,20 @@ class StockState:
         self.last_1s_vol: int = 0
         self.tick_vols: deque = deque()   # (timestamp, vol)
         self.limit_up_since: Optional[float] = None
+        self.sold_today: bool = False     # 功能 12：當天已賣過
 
 
 MOCK_STOCKS = [
-    StockInfo("2330", "台積電",   1100.0,  "TSE"),
-    StockInfo("2317", "鴻海",      220.0,  "TSE"),
-    StockInfo("3008", "大立光",   2860.0,  "TSE"),
-    StockInfo("2454", "聯發科",   1430.0,  "TSE"),
-    StockInfo("6505", "台塑化",    108.0,  "TSE"),
-    StockInfo("6669", "緯穎",     3135.0,  "OTC"),
-    StockInfo("4919", "新唐",      231.0,  "OTC"),
-    StockInfo("2382", "廣達",      335.0,  "TSE"),
-    StockInfo("3711", "日月光投",   150.0,  "TSE"),
-    StockInfo("2603", "長榮",       202.0, "TSE"),
+    StockInfo("2330", "台積電",   1100.0, "TSE"),
+    StockInfo("2317", "鴻海",      220.0, "TSE", is_attention=True),
+    StockInfo("3008", "大立光",   2860.0, "TSE"),
+    StockInfo("2454", "聯發科",   1430.0, "TSE", is_disposal=True),
+    StockInfo("6505", "台塑化",    108.0, "TSE", is_day_trade_restricted=True),
+    StockInfo("6669", "緯穎",     3135.0, "OTC"),
+    StockInfo("4919", "新唐",      231.0, "OTC", open_limit_up=True),
+    StockInfo("2382", "廣達",      335.0, "TSE"),
+    StockInfo("3711", "日月光投",  150.0, "TSE"),
+    StockInfo("2603", "長榮",      202.0, "TSE"),
 ]
 
 
@@ -73,6 +81,7 @@ class TradingEngine:
         self._lock = threading.Lock()
         self._running = False
         self._thread: Optional[threading.Thread] = None
+        self._daily_trade_count: int = 0   # 功能 13：當天已成交檔數
 
         # 篩選市場
         markets = config.get_markets()
@@ -100,9 +109,10 @@ class TradingEngine:
     def _active_features(self) -> str:
         cfg = self.config
         flags = {
-            "①": cfg.f1_enabled, "④": cfg.f4_enabled, "⑤": cfg.f5_enabled,
-            "⑥": cfg.f6_enabled, "⑦": cfg.f7_enabled, "⑧": cfg.f8_enabled,
-            "⑨": cfg.f9_enabled, "⑩": cfg.f10_enabled,
+            "①": cfg.f1_enabled,  "④": cfg.f4_enabled,  "⑤": cfg.f5_enabled,
+            "⑥": cfg.f6_enabled,  "⑦": cfg.f7_enabled,  "⑧": cfg.f8_enabled,
+            "⑨": cfg.f9_enabled,  "⑩": cfg.f10_enabled,
+            "⑪": cfg.f11_enabled, "⑫": cfg.f12_enabled, "⑬": cfg.f13_enabled,
         }
         return " ".join(k for k, v in flags.items() if v) or "（無）"
 
@@ -137,6 +147,15 @@ class TradingEngine:
         # ── 功能 9：股價區間 ──────────────────────────────────────
         if cfg.f9_enabled:
             if not (cfg.price_min <= info.limit_up <= cfg.price_max):
+                return
+
+        # ── 功能 11：排除處置股、注意股、限當沖股 ────────────────
+        if cfg.f11_enabled:
+            if info.is_disposal:
+                return
+            if info.is_attention:
+                return
+            if info.is_day_trade_restricted:
                 return
 
         # ── 模擬漲停觸發 ──────────────────────────────────────────
@@ -187,6 +206,14 @@ class TradingEngine:
         if state.limit_up_since is None:
             return
 
+        # 功能 12：開盤即漲停 且 當天已賣過 → 封鎖
+        if cfg.f12_enabled and info.open_limit_up and state.sold_today:
+            return
+
+        # 功能 13：當天成交檔數上限
+        if cfg.f13_enabled and self._daily_trade_count >= cfg.daily_max_trades:
+            return
+
         # 功能 1：時間 + 委賣篩選
         if cfg.f1_enabled:
             now_time = datetime.now().time()
@@ -230,7 +257,9 @@ class TradingEngine:
                 if st and st.pending:
                     st.pending = False
                     st.position_qty = qty
-                    self.on_log("INFO", f"[{code}] 成交 {qty} 張 @ {info.limit_up:,.0f}")
+                    self._daily_trade_count += 1   # 功能 13：累計成交檔數
+                    self.on_log("INFO", f"[{code}] 成交 {qty} 張 @ {info.limit_up:,.0f}，"
+                                        f"今日第 {self._daily_trade_count} 檔")
                     self.on_trade({
                         "time": datetime.now().strftime("%H:%M:%S"),
                         "code": code,
@@ -246,6 +275,7 @@ class TradingEngine:
         qty = state.position_qty
         state.position_qty = 0
         state.entry_blocked = True
+        state.sold_today = True   # 功能 12：標記當天已賣過
         self.on_trade({
             "time": datetime.now().strftime("%H:%M:%S"),
             "code": info.code,

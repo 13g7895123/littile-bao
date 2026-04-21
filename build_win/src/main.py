@@ -7,7 +7,6 @@ import sys
 import os
 import traceback
 
-# 確保打包後的 exe 也能找到 src 下的模組
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 
@@ -29,6 +28,9 @@ def main():
     print("[StockTrader] exe path:", sys.executable if getattr(sys, 'frozen', False) else __file__)
     print("[StockTrader] Importing modules...")
 
+    from PyQt6.QtWidgets import QApplication
+    from PyQt6.QtCore import Qt
+
     import config
     print("[StockTrader] config OK")
     import engine
@@ -36,9 +38,13 @@ def main():
     import gui
     print("[StockTrader] gui OK")
 
+    app = QApplication(sys.argv)
+    app.setStyle("Fusion")
+
     print("[StockTrader] Starting GUI...")
-    app = gui.App()
-    app.mainloop()
+    win = gui.App()
+    win.show()
+    sys.exit(app.exec())
 
 
 if __name__ == "__main__":
