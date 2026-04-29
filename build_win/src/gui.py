@@ -5,6 +5,7 @@ gui.py — 打板策略系統 主視窗
 from __future__ import annotations
 import queue
 import threading
+from decimal import Decimal
 from typing import Dict, Optional
 from datetime import datetime
 
@@ -284,10 +285,12 @@ class App(QMainWindow):
 
         self.cfg = TradingConfig.load()
         self.engine: Optional[TradingEngine] = None
+        self.broker = None  # type: ignore[assignment]  # broker.BrokerAdapter，由 main.py 注入
         self._running = False
         self._trade_count = 0
         self._buy_count = 0
         self._sell_count = 0
+        self._realized_pnl = 0.0   # M4：今日已實現損益累計
         self._log_lines = 0
 
         self._fields: Dict[str, QLineEdit] = {}
@@ -974,12 +977,13 @@ class App(QMainWindow):
         lay.setContentsMargins(16, 0, 16, 0)
         lay.setSpacing(0)
 
-        dot = QLabel("●")
-        dot.setFont(_font(8))
-        dot.setStyleSheet(f"color: {C['green']}; background: transparent;")
-        lay.addWidget(dot)
+        self.broker_dot = QLabel("●")
+        self.broker_dot.setFont(_font(8))
+        self.broker_dot.setStyleSheet(f"color: {C['subtext']}; background: transparent;")
+        lay.addWidget(self.broker_dot)
         lay.addSpacing(4)
-        lay.addWidget(_label("系統狀態：已連線", C["subtext"], 9))
+        self.broker_status_lbl = _label("券商狀態：未連線", C["subtext"], 9)
+        lay.addWidget(self.broker_status_lbl)
         lay.addSpacing(20)
         lay.addWidget(_sep_bar())
         lay.addSpacing(20)
@@ -1118,12 +1122,45 @@ class App(QMainWindow):
             self._toggles["strategy_enabled"].set(False)
             self._set_badge_active(False)
             return
+
+        # ── Milestone 3：先載入 SymbolInfo（昨收 / 漲停 / 特殊股）──
+        symbol_infos = None
+        feed = None
+        if self.broker:
+            try:
+                from broker import DEFAULT_MOCK_INFOS, ScanCriteria, scan_daily
+                # M6：依設定的價格區間動態篩選候選股
+                crit = ScanCriteria(
+                    price_min=Decimal(str(self.cfg.price_min)) if self.cfg.f9_enabled else Decimal("0"),
+                    price_max=Decimal(str(self.cfg.price_max)) if self.cfg.f9_enabled else Decimal("999999"),
+                    exclude_disposal=self.cfg.f11_enabled,
+                    exclude_attention=self.cfg.f11_enabled,
+                    exclude_day_trade_restricted=self.cfg.f11_enabled,
+                    markets=tuple(self.cfg.get_markets()),
+                    min_prev_volume=0,
+                )
+                candidates = scan_daily(DEFAULT_MOCK_INFOS, crit) or DEFAULT_MOCK_INFOS
+                default_codes = [i.code for i in candidates]
+                symbol_infos = self.broker.load_symbol_info(default_codes)
+                feed = self.broker.create_realtime_feed()
+                LOG_Q.put(("INFO", f"動態選股完成，候選 {len(default_codes)} 檔"))
+            except Exception as e:  # noqa: BLE001
+                LOG_Q.put(("WARN", f"載入個股基本資料失敗：{e}"))
+
         self.engine = TradingEngine(
             config=self.cfg,
             on_log=lambda lvl, msg: LOG_Q.put((lvl, msg)),
             on_trade=self._on_trade,
             on_status=lambda _s: None,
+            feed=feed,
+            symbol_infos=symbol_infos,
+            broker=self.broker,
         )
+        # M4：重置今日損益
+        self._realized_pnl = 0.0
+        self._trade_count = 0
+        self._buy_count = 0
+        self._sell_count = 0
         self.engine.start()
         self._running = True
         self.strategy_dot.setStyleSheet(f"color: {C['green']}; background: transparent;")
@@ -1142,6 +1179,162 @@ class App(QMainWindow):
 
     def _on_trade(self, d: dict):
         QTimer.singleShot(0, lambda: self._append_trade(d))
+
+    # ══════════════════════════════════════════
+    #  券商狀態（Milestone 1）
+    # ══════════════════════════════════════════
+
+    def set_broker(self, broker) -> None:
+        """由 main.py 注入 broker 適配器，並更新狀態列。"""
+        self.broker = broker
+        # M5：訂閱委託回報，更新「委託狀態」表
+        if broker is not None and hasattr(broker, "on_order"):
+            try:
+                broker.on_order(self._on_order_event)
+            except Exception:  # noqa: BLE001
+                pass
+        # M6：啟動帳戶輪詢（10 秒一次）
+        self._stop_account_polling()
+        if broker is not None and hasattr(broker, "account_service"):
+            try:
+                svc = broker.account_service()
+                self._account_svc = svc
+                svc.start_polling(self._on_account_snapshot, interval=10.0)
+            except Exception:  # noqa: BLE001
+                pass
+        self._refresh_broker_status()
+
+    def _stop_account_polling(self) -> None:
+        svc = getattr(self, "_account_svc", None)
+        if svc is not None:
+            try:
+                svc.stop()
+            except Exception:  # noqa: BLE001
+                pass
+            self._account_svc = None
+
+    def _on_account_snapshot(self, snap) -> None:
+        """從 polling thread 接收 AccountSnapshot，丟回主執行緒繪製。"""
+        QTimer.singleShot(0, lambda: self._render_account(snap))
+
+    def _render_account(self, snap) -> None:
+        # 持倉表
+        self.positions_table.setRowCount(0)
+        total_unr = 0.0
+        total_cost = 0.0
+        for p in snap.positions:
+            row = self.positions_table.rowCount()
+            self.positions_table.insertRow(row)
+            unr = float(p.unrealized_pnl)
+            unr_pct = float(p.unrealized_pnl_pct)
+            total_unr += unr
+            total_cost += float(p.avg_cost) * p.qty * 1000
+            color = C["red"] if unr >= 0 else C["green"]
+            cells = [
+                (p.code, C["text"]),
+                (p.name, C["text"]),
+                (str(p.qty * 1000), C["text"]),
+                (f"{float(p.avg_cost):,.2f}", C["text"]),
+                (f"{float(p.last_price):,.2f}", C["text"]),
+                (f"{'+' if unr >= 0 else ''}{unr:,.0f}", color),
+                (f"{'+' if unr_pct >= 0 else ''}{unr_pct:.2f}%", color),
+                ("持有", C["green"]),
+            ]
+            for col, (val, c) in enumerate(cells):
+                item = QTableWidgetItem(val)
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                item.setForeground(QColor(c))
+                self.positions_table.setItem(row, col, item)
+        # 統計卡：持倉檔數、可用額度、未實現損益小計
+        self.stat_positions.setText(str(len(snap.positions)))
+        bp = float(snap.buying_power)
+        self.stat_available.setText(f"{bp:,.0f}")
+        sign = "+" if total_unr >= 0 else ""
+        rate = (total_unr / total_cost * 100) if total_cost > 0 else 0.0
+        self.pos_summary_lbl.setText(f"小計 ({len(snap.positions)})")
+        self.pos_pnl_lbl.setText(f"{sign}{total_unr:,.0f}  {sign}{rate:.2f}%")
+        color = C["red"] if total_unr >= 0 else C["green"]
+        self.pos_pnl_lbl.setStyleSheet(f"color:{color};")
+
+    def _on_order_event(self, ev) -> None:
+        """從 broker 執行緒接收 OrderEvent，丟回 GUI 主執行緒繪製。"""
+        QTimer.singleShot(0, lambda: self._append_order(ev))
+
+    def _append_order(self, ev) -> None:
+        # 依 order_id 找既有列；若有則更新狀態欄，否則插入新列
+        oid = getattr(ev, "order_id", "")
+        row_idx = -1
+        for r in range(self.orders_table.rowCount()):
+            it = self.orders_table.item(r, 0)
+            if it and it.data(Qt.ItemDataRole.UserRole) == oid:
+                row_idx = r
+                break
+
+        side_txt = "買進" if ev.side.value == "BUY" else "賣出"
+        status_map = {
+            "PENDING":   ("委託中", C["yellow_l"]),
+            "PARTIAL":   ("部分成交", C["orange"]),
+            "FILLED":    ("已成交",  C["green"]),
+            "CANCELLED": ("已取消",  C["subtext"]),
+            "REJECTED":  ("已拒絕",  C["red"]),
+        }
+        st_txt, st_color = status_map.get(ev.status.value, (ev.status.value, C["text"]))
+        side_color = C["green"] if ev.side.value == "BUY" else C["red"]
+
+        if row_idx < 0:
+            row_idx = 0
+            self.orders_table.insertRow(row_idx)
+            cells = [
+                (ev.code, side_color),
+                (getattr(ev, "name", "") or "", side_color),
+                (side_txt, side_color),
+                (f"{float(ev.price):,.2f}", side_color),
+                (str(ev.qty), side_color),
+                (st_txt, st_color),
+                ("—", C["subtext"]),
+            ]
+            for col, (val, color) in enumerate(cells):
+                item = QTableWidgetItem(val)
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                item.setForeground(QColor(color))
+                if col == 0:
+                    item.setData(Qt.ItemDataRole.UserRole, oid)
+                self.orders_table.setItem(row_idx, col, item)
+        else:
+            cell = self.orders_table.item(row_idx, 5)
+            if cell:
+                cell.setText(st_txt)
+                cell.setForeground(QColor(st_color))
+
+    def _refresh_broker_status(self) -> None:
+        if self.broker is None:
+            self._set_broker_status("未連線", C["subtext"], C["subtext"])
+            return
+        try:
+            from broker import ConnectionState
+        except ImportError:
+            return
+        st = getattr(self.broker, "state", None)
+        acc = getattr(self.broker, "account", None)
+        if st == ConnectionState.CONNECTED:
+            label = f"券商狀態：已登入 {acc.display}" if acc else "券商狀態：已連線"
+            self._set_broker_status(label, C["green"], C["text"], raw=True)
+        elif st == ConnectionState.CONNECTING:
+            self._set_broker_status("連線中…", C["yellow_l"], C["subtext"])
+        elif st == ConnectionState.LOGIN_FAILED:
+            self._set_broker_status("登入失敗", C["red"], C["red"])
+        elif st == ConnectionState.ERROR:
+            self._set_broker_status("連線錯誤", C["red"], C["red"])
+        else:
+            self._set_broker_status("未連線", C["subtext"], C["subtext"])
+
+    def _set_broker_status(self, text: str, dot_color: str, text_color: str, *, raw: bool = False) -> None:
+        if hasattr(self, "broker_dot"):
+            self.broker_dot.setStyleSheet(f"color: {dot_color}; background: transparent;")
+        if hasattr(self, "broker_status_lbl"):
+            self.broker_status_lbl.setText(text if raw else f"券商狀態：{text}")
+            self.broker_status_lbl.setStyleSheet(f"color: {text_color}; background: transparent;")
+
 
     # ══════════════════════════════════════════
     #  輪詢更新
@@ -1200,25 +1393,48 @@ class App(QMainWindow):
             self._buy_count += 1
         else:
             self._sell_count += 1
+            self._realized_pnl += float(d.get("pnl", 0.0))
 
-        color = C["green"] if d["action"] == "BUY" else C["red"]
+        action_color = C["green"] if d["action"] == "BUY" else C["red"]
         label_txt = "買進" if d["action"] == "BUY" else "賣出"
+
+        # 損益欄：買進顯示 —，賣出顯示 +/- 幣別金額
+        pnl_val = float(d.get("pnl", 0.0))
+        if d["action"] == "SELL":
+            pnl_text = f"{'+' if pnl_val >= 0 else ''}{pnl_val:,.0f}"
+            pnl_color = C["red"] if pnl_val >= 0 else C["green"]
+        else:
+            pnl_text = "—"
+            pnl_color = C["subtext"]
 
         row = 0
         self.trades_table.insertRow(row)
-        for col, val in enumerate([
-            d["time"], d["code"], d["name"],
-            label_txt,
-            f"{d['price']:,.2f}",
-            str(d["qty"]),
-            d.get("note", "—"),
-        ]):
+        cells = [
+            (d["time"], action_color),
+            (d["code"], action_color),
+            (d["name"], action_color),
+            (label_txt, action_color),
+            (f"{d['price']:,.2f}", action_color),
+            (str(d["qty"]), action_color),
+            (pnl_text, pnl_color),
+        ]
+        for col, (val, color) in enumerate(cells):
             item = QTableWidgetItem(val)
             item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             item.setForeground(QColor(color))
             self.trades_table.setItem(row, col, item)
 
         self.trd_summary_lbl.setText(f"小計 ({self._trade_count})")
+        # 已實現損益 / 今日損益 卡片同步更新
+        sign = "+" if self._realized_pnl >= 0 else ""
+        rp_text = f"{sign}{self._realized_pnl:,.0f}"
+        rp_color = C["red"] if self._realized_pnl >= 0 else C["green"]
+        self.trd_pnl_lbl.setText(rp_text)
+        self.trd_pnl_lbl.setStyleSheet(f"color:{rp_color};")
+        self.stat_realized.setText(rp_text)
+        self.stat_realized.setStyleSheet(f"color:{rp_color};")
+        self.stat_pnl_today.setText(rp_text)
+        self.stat_pnl_today.setStyleSheet(f"color:{rp_color};")
         self.stat_trade_cnt.setText(
             f"{self._trade_count} / {self.cfg.daily_max_trades}"
         )

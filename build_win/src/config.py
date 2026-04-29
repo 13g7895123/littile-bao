@@ -5,7 +5,6 @@ import json
 import os
 from dataclasses import dataclass, asdict, field
 from typing import List
-
 # 設定檔放在 exe 同目錄
 def _config_path() -> str:
     if getattr(__import__('sys'), 'frozen', False):
@@ -103,3 +102,98 @@ class TradingConfig:
         if self.market_tpex:
             markets.append("OTC")
         return markets
+
+
+# ─────────────────────────────────────────────────────────
+#  Broker 設定（Fubon Neo）：從 .env / OS 環境變數載入
+# ─────────────────────────────────────────────────────────
+
+def _load_dotenv() -> None:
+    """簡易 .env 載入；若已有 python-dotenv 則優先使用。"""
+    try:
+        from dotenv import load_dotenv  # type: ignore
+        # 1) exe / src 同目錄；2) 工作目錄
+        for base in [
+            os.path.dirname(os.path.abspath(__file__)),
+            os.path.dirname(__import__('sys').executable)
+                if getattr(__import__('sys'), 'frozen', False) else None,
+            os.getcwd(),
+        ]:
+            if base:
+                p = os.path.join(base, ".env")
+                if os.path.exists(p):
+                    load_dotenv(p, override=False)
+                    return
+    except ImportError:
+        pass
+
+    # fallback：手動解析
+    candidates = [
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"),
+        os.path.join(os.getcwd(), ".env"),
+    ]
+    for path in candidates:
+        if not os.path.exists(path):
+            continue
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                for raw in f:
+                    line = raw.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    k, v = line.split("=", 1)
+                    k = k.strip()
+                    v = v.strip().strip('"').strip("'")
+                    os.environ.setdefault(k, v)
+            break
+        except Exception as e:  # noqa: BLE001
+            print(f"[Config] 解析 .env 失敗：{e}")
+
+
+def _env_bool(key: str, default: bool = False) -> bool:
+    v = os.environ.get(key)
+    if v is None:
+        return default
+    return v.strip().lower() in ("1", "true", "yes", "on", "y")
+
+
+@dataclass
+class BrokerSettings:
+    """富邦 Neo SDK 連線設定（從環境變數載入）。"""
+    personal_id: str = ""
+    password: str = ""
+    cert_path: str = ""
+    cert_password: str = ""
+    branch_no: str = ""
+    account_no: str = ""
+    api_key: str = ""
+    api_secret: str = ""
+    dry_run: bool = True
+    mock_mode: bool = False  # 無憑證時改用 MockAdapter
+
+    @classmethod
+    def from_env(cls) -> "BrokerSettings":
+        _load_dotenv()
+        return cls(
+            personal_id=os.environ.get("FUBON_PERSONAL_ID", "").strip(),
+            password=os.environ.get("FUBON_PASSWORD", ""),
+            cert_path=os.environ.get("FUBON_CERT_PATH", "").strip(),
+            cert_password=os.environ.get("FUBON_CERT_PASSWORD", ""),
+            branch_no=os.environ.get("FUBON_BRANCH_NO", "").strip(),
+            account_no=os.environ.get("FUBON_ACCOUNT_NO", "").strip(),
+            api_key=os.environ.get("FUBON_API_KEY", "").strip(),
+            api_secret=os.environ.get("FUBON_API_SECRET", "").strip(),
+            dry_run=_env_bool("FUBON_DRY_RUN", default=True),
+            mock_mode=_env_bool("MOCK_MODE", default=False),
+        )
+
+    def is_complete(self) -> bool:
+        """是否已備齊登入所需欄位。"""
+        return all([
+            self.personal_id,
+            self.password,
+            self.cert_path,
+            self.branch_no,
+            self.account_no,
+        ])
+

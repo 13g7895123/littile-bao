@@ -1,0 +1,30 @@
+# ── Python ─────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.eggs/
+
+# ── 機密設定 ───────────────────
+.env
+*.pfx
+secrets/
+
+# ── PyInstaller 產出 ───────────
+build/
+dist/
+*.spec.bak
+
+# ── 日誌 ───────────────────────
+*.log
+logs/
+data/
+
+# ── IDE ────────────────────────
+.idea/
+.vscode/
+*.swp
+
+# ── 設定檔（使用者本機產生） ──
+build_win/src/config.json
