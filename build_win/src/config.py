@@ -69,6 +69,9 @@ class TradingConfig:
     f13_enabled: bool = True
     daily_max_trades: int = 5   # 當天最多成交幾檔
 
+    # ── 下單模式 ────────────────────────────────────────────────────────────
+    order_dry_run: bool = True   # True = 模擬下單，不送出真實委託
+
     # ── 帳號 ────────────────────────────────────────────────────────────────
     api_id: str = ""
     api_key: str = ""
@@ -157,6 +160,16 @@ def _env_bool(key: str, default: bool = False) -> bool:
     return v.strip().lower() in ("1", "true", "yes", "on", "y")
 
 
+def _env_float(key: str, default: float = 0.0) -> float:
+    v = os.environ.get(key)
+    if v is None:
+        return default
+    try:
+        return float(v.strip())
+    except ValueError:
+        return default
+
+
 @dataclass
 class BrokerSettings:
     """富邦 Neo SDK 連線設定（從環境變數載入）。"""
@@ -169,6 +182,10 @@ class BrokerSettings:
     api_key: str = ""
     api_secret: str = ""
     dry_run: bool = True
+    dry_run_use_market_price: bool = False
+    dry_run_fill_min_sec: float = 0.5
+    dry_run_fill_max_sec: float = 1.5
+    dry_run_audit_dir: str = ""
     mock_mode: bool = False  # 無憑證時改用 MockAdapter
 
     @classmethod
@@ -184,6 +201,10 @@ class BrokerSettings:
             api_key=os.environ.get("FUBON_API_KEY", "").strip(),
             api_secret=os.environ.get("FUBON_API_SECRET", "").strip(),
             dry_run=_env_bool("FUBON_DRY_RUN", default=True),
+            dry_run_use_market_price=_env_bool("FUBON_DRY_RUN_USE_MARKET_PRICE", default=False),
+            dry_run_fill_min_sec=_env_float("FUBON_DRY_RUN_FILL_MIN_SEC", default=0.5),
+            dry_run_fill_max_sec=_env_float("FUBON_DRY_RUN_FILL_MAX_SEC", default=1.5),
+            dry_run_audit_dir=os.environ.get("FUBON_DRY_RUN_AUDIT_DIR", "").strip(),
             mock_mode=_env_bool("MOCK_MODE", default=False),
         )
 

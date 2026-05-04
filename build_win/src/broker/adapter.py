@@ -220,6 +220,10 @@ class FubonAdapter(BrokerAdapter):
         api_key: Optional[str] = None,
         api_secret: Optional[str] = None,
         dry_run: bool = True,
+        dry_run_use_market_price: bool = False,
+        dry_run_fill_min_sec: float = 0.5,
+        dry_run_fill_max_sec: float = 1.5,
+        dry_run_audit_dir: str = "",
     ) -> None:
         if not all([personal_id, password, cert_path, branch_no, account_no]):
             raise FubonConfigError(
@@ -235,6 +239,10 @@ class FubonAdapter(BrokerAdapter):
         self._api_key = api_key
         self._api_secret = api_secret
         self.dry_run = dry_run
+        self.dry_run_use_market_price = dry_run_use_market_price
+        self.dry_run_fill_min_sec = dry_run_fill_min_sec
+        self.dry_run_fill_max_sec = dry_run_fill_max_sec
+        self.dry_run_audit_dir = dry_run_audit_dir
 
         self._sdk = None  # type: ignore[assignment]
         self._state = ConnectionState.DISCONNECTED
@@ -256,6 +264,10 @@ class FubonAdapter(BrokerAdapter):
             api_key=cfg.api_key or None,
             api_secret=cfg.api_secret or None,
             dry_run=cfg.dry_run,
+            dry_run_use_market_price=cfg.dry_run_use_market_price,
+            dry_run_fill_min_sec=cfg.dry_run_fill_min_sec,
+            dry_run_fill_max_sec=cfg.dry_run_fill_max_sec,
+            dry_run_audit_dir=cfg.dry_run_audit_dir,
         )
 
     @classmethod
@@ -366,9 +378,23 @@ class FubonAdapter(BrokerAdapter):
 
     def _get_order_manager(self):
         if not hasattr(self, "_order_mgr"):
-            from .orders import FubonOrderManager
-            self._order_mgr = FubonOrderManager(self)
+            if self.dry_run:
+                from .orders import DryRunOrderManager
+                self._order_mgr = DryRunOrderManager(
+                    self,
+                    fill_delay_range=(self.dry_run_fill_min_sec, self.dry_run_fill_max_sec),
+                    audit_dir=self.dry_run_audit_dir,
+                    use_market_price=self.dry_run_use_market_price,
+                )
+            else:
+                from .orders import FubonOrderManager
+                self._order_mgr = FubonOrderManager(self)
         return self._order_mgr
+
+    def set_dry_run(self, enabled: bool) -> None:
+        self.dry_run = bool(enabled)
+        if hasattr(self, "_order_mgr"):
+            delattr(self, "_order_mgr")
 
     def account_service(self):
         if not hasattr(self, "_acc_svc"):

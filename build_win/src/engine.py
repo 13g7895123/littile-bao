@@ -11,7 +11,7 @@ import random
 import threading
 import time
 from collections import deque
-from datetime import datetime, time as dtime
+from datetime import date, datetime, time as dtime
 from decimal import Decimal
 from typing import Callable, Dict, List, Optional
 
@@ -117,6 +117,7 @@ class TradingEngine:
         self._thread: Optional[threading.Thread] = None
         self._daily_trade_count: int = 0   # 功能 13：當天已成交檔數
         self._today_realized_pnl: Decimal = Decimal("0")  # M4：當日已實現損益
+        self._trading_date: date = date.today()  # 跨日重置使用
 
         # ── 篩選市場 ─────────────────────────────────────────
         markets = config.get_markets()
@@ -279,10 +280,27 @@ class TradingEngine:
         while self._running:
             now = time.time()
             with self._lock:
+                self._maybe_daily_reset()
                 for code, state in self._states.items():
                     self._tick(state, now)
             self.on_status(self.get_summary())
             time.sleep(1.0)
+
+    def _maybe_daily_reset(self) -> None:
+        """日期變動時重置每日狀態，避免跨日卡單 / 誤賣。"""
+        today = date.today()
+        if today == self._trading_date:
+            return
+        self.on_log("INFO", f"偵測到日期變更 {self._trading_date} → {today}，重置每日狀態")
+        for st in self._states.values():
+            st.entry_blocked = False
+            st.sold_today = False
+            st.candle_index = 0
+            st.limit_up_since = None
+            # 注意：position_qty 不清空，避免影響真實持倉同步
+        self._daily_trade_count = 0
+        self._today_realized_pnl = Decimal("0")
+        self._trading_date = today
 
     def _tick(self, state: StockState, now: float):
         cfg = self.config
@@ -318,7 +336,10 @@ class TradingEngine:
             reason = None
 
             # 功能 4：板被打開（曾為漲停 → 目前 ask[0] 不再是漲停價）
-            if cfg.f4_enabled and not state.is_at_limit_up and state.last_price is not None:
+            # 必須當日曾達漲停（candle_index > 0）才生效，避免隔日庫存誤賣
+            has_been_at_limit_today = state.candle_index > 0
+            if (cfg.f4_enabled and has_been_at_limit_today
+                    and not state.is_at_limit_up and state.last_price is not None):
                 reason = "委買漲停，市場打開，市價出場"
 
             # 功能 5：1秒爆量
@@ -362,6 +383,11 @@ class TradingEngine:
 
         # 功能 10：委賣價 + 即時量
         if cfg.f10_enabled:
+            if state.ask0_price is None:
+                return
+            min_ask_price = Decimal(str(info.limit_up)) * Decimal(str(cfg.ask_price_ratio))
+            if state.ask0_price < min_ask_price:
+                return
             if state.last_1s_vol < cfg.entry_volume_confirm:
                 return
 

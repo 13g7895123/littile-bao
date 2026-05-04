@@ -104,6 +104,8 @@ class OrderEvent:
     filled_qty: int
     status: OrderStatus
     time: datetime
+    name: str = ""
+    source: str = ""
 
 
 @dataclass

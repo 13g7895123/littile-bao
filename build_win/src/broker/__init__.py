@@ -63,6 +63,7 @@ from .fees import (
     realized_pnl,
 )
 from .orders import (
+    DryRunOrderManager,
     FubonOrderManager,
     MockOrderManager,
     OrderManager,
@@ -124,6 +125,7 @@ __all__ = [
     "realized_pnl",
     "OrderRequest",
     "OrderManager",
+    "DryRunOrderManager",
     "MockOrderManager",
     "FubonOrderManager",
     "AccountService",

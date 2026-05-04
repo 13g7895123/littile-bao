@@ -292,6 +292,7 @@ class App(QMainWindow):
         self._sell_count = 0
         self._realized_pnl = 0.0   # M4：今日已實現損益累計
         self._log_lines = 0
+        self._syncing_order_mode_control = False
 
         self._fields: Dict[str, QLineEdit] = {}
         self._checks: Dict[str, QCheckBox] = {}
@@ -341,6 +342,12 @@ class App(QMainWindow):
 
         title = _label("打板策略系統", C["text"], 13, bold=True)
         lay.addWidget(title)
+        lay.addSpacing(10)
+        self.order_mode_badge = QLabel("模擬下單")
+        self.order_mode_badge.setFont(_font(9, bold=True))
+        self.order_mode_badge.setFixedHeight(24)
+        self.order_mode_badge.setContentsMargins(10, 0, 10, 0)
+        lay.addWidget(self.order_mode_badge)
         lay.addSpacing(28)
 
         # 分頁按鈕
@@ -548,6 +555,9 @@ class App(QMainWindow):
         form.addWidget(_section_title("交易設定"))
         self._sf(form, "每檔金額", "per_stock_amount", suffix="元", w=90)
         self._sf(form, "每日最大交易檔數", "daily_max_trades", suffix="檔", w=45)
+        self._checks["dry_run_mode"] = _checkbox("模擬下單（不送出真實委託）")
+        self._checks["dry_run_mode"].toggled.connect(self._on_order_mode_toggled)
+        form.addWidget(self._checks["dry_run_mode"])
         form.addSpacing(4)
         form.addWidget(_divider())
 
@@ -898,7 +908,7 @@ class App(QMainWindow):
         oh.addWidget(_label("委託狀態", C["text"], 10, bold=True))
         oh.addStretch()
         ol.addLayout(oh)
-        ord_cols = ["代碼", "名稱", "委託類別", "價格", "數量", "狀態", "動作"]
+        ord_cols = ["代碼", "名稱", "委託類別", "價格", "數量", "狀態", "來源"]
         self.orders_table = QTableWidget(0, len(ord_cols))
         self.orders_table.setHorizontalHeaderLabels(ord_cols)
         self.orders_table.setStyleSheet(_table_style())
@@ -1030,6 +1040,11 @@ class App(QMainWindow):
         c["excl_daytrade"].setChecked(cfg.f11_enabled)
         c["excl_open_limit"].setChecked(cfg.f12_enabled)
         c["excl_sealed"].setChecked(True)
+        if "dry_run_mode" in c:
+            self._syncing_order_mode_control = True
+            c["dry_run_mode"].setChecked(cfg.order_dry_run)
+            self._syncing_order_mode_control = False
+        self._update_order_mode_badge()
 
     def _collect_config(self) -> TradingConfig:
         f = self._fields
@@ -1086,6 +1101,7 @@ class App(QMainWindow):
             f12_enabled                   = c["excl_open_limit"].isChecked(),
             f13_enabled                   = True,
             daily_max_trades              = ni("daily_max_trades"),
+            order_dry_run                 = c["dry_run_mode"].isChecked(),
         )
 
     def _save_settings(self):
@@ -1103,6 +1119,30 @@ class App(QMainWindow):
         )
         if reply == QMessageBox.StandardButton.Yes:
             self._apply_config(TradingConfig())
+
+    def _on_order_mode_toggled(self, dry_run: bool) -> None:
+        if self._syncing_order_mode_control:
+            return
+        if self.broker is None or not hasattr(self.broker, "set_dry_run"):
+            self._update_order_mode_badge()
+            return
+        if not dry_run:
+            reply = QMessageBox.question(
+                self,
+                "切換實單確認",
+                "切換為實單模式後，策略觸發時會送出真實委託。確定要切換？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                self._syncing_order_mode_control = True
+                self._checks["dry_run_mode"].setChecked(True)
+                self._syncing_order_mode_control = False
+                self._update_order_mode_badge()
+                return
+        self.broker.set_dry_run(dry_run)
+        self.cfg.order_dry_run = dry_run
+        self._update_order_mode_badge()
+        self._refresh_broker_status()
 
     # ══════════════════════════════════════════
     #  策略開關
@@ -1137,7 +1177,7 @@ class App(QMainWindow):
                     exclude_attention=self.cfg.f11_enabled,
                     exclude_day_trade_restricted=self.cfg.f11_enabled,
                     markets=tuple(self.cfg.get_markets()),
-                    min_prev_volume=0,
+                    min_prev_volume=(self.cfg.daily_volume_min if self.cfg.f8_enabled else 0),
                 )
                 candidates = scan_daily(DEFAULT_MOCK_INFOS, crit) or DEFAULT_MOCK_INFOS
                 default_codes = [i.code for i in candidates]
@@ -1187,6 +1227,12 @@ class App(QMainWindow):
     def set_broker(self, broker) -> None:
         """由 main.py 注入 broker 適配器，並更新狀態列。"""
         self.broker = broker
+        if broker is not None and hasattr(broker, "set_dry_run"):
+            try:
+                broker.set_dry_run(self.cfg.order_dry_run)
+            except Exception:  # noqa: BLE001
+                pass
+        self._sync_order_mode_control()
         # M5：訂閱委託回報，更新「委託狀態」表
         if broker is not None and hasattr(broker, "on_order"):
             try:
@@ -1203,6 +1249,57 @@ class App(QMainWindow):
             except Exception:  # noqa: BLE001
                 pass
         self._refresh_broker_status()
+
+    def _sync_order_mode_control(self) -> None:
+        chk = self._checks.get("dry_run_mode")
+        if chk is None:
+            return
+        self._syncing_order_mode_control = True
+        if self.broker is None or not hasattr(self.broker, "dry_run"):
+            chk.setChecked(True)
+            chk.setEnabled(False)
+            chk.setText("模擬下單（Mock 模式）")
+        else:
+            chk.setEnabled(True)
+            chk.setText("模擬下單（不送出真實委託）")
+            chk.setChecked(bool(getattr(self.broker, "dry_run", True)))
+            self.cfg.order_dry_run = chk.isChecked()
+        self._syncing_order_mode_control = False
+        self._update_order_mode_badge()
+
+    def _update_order_mode_badge(self) -> None:
+        dry_run = True
+        if self.broker is not None and hasattr(self.broker, "dry_run"):
+            dry_run = bool(getattr(self.broker, "dry_run", True))
+        elif "dry_run_mode" in self._checks:
+            dry_run = self._checks["dry_run_mode"].isChecked()
+
+        if not hasattr(self, "order_mode_badge"):
+            return
+        if dry_run:
+            self.order_mode_badge.setText("模擬下單")
+            self.order_mode_badge.setStyleSheet(f"""
+                QLabel {{
+                    color: {C['yellow_l']};
+                    background-color: {C['badge_ready']};
+                    border: 1px solid {C['yellow']};
+                    border-radius: 4px;
+                    padding: 0 8px;
+                }}
+            """)
+            self.setWindowTitle("打板策略系統 [模擬下單]")
+        else:
+            self.order_mode_badge.setText("實單模式")
+            self.order_mode_badge.setStyleSheet(f"""
+                QLabel {{
+                    color: #ffffff;
+                    background-color: {C['red']};
+                    border: 1px solid {C['red_l']};
+                    border-radius: 4px;
+                    padding: 0 8px;
+                }}
+            """)
+            self.setWindowTitle("打板策略系統 [實單模式]")
 
     def _stop_account_polling(self) -> None:
         svc = getattr(self, "_account_svc", None)
@@ -1284,6 +1381,7 @@ class App(QMainWindow):
         if row_idx < 0:
             row_idx = 0
             self.orders_table.insertRow(row_idx)
+            source = getattr(ev, "source", "") or ("DRY" if str(oid).startswith("DRY") else "REAL")
             cells = [
                 (ev.code, side_color),
                 (getattr(ev, "name", "") or "", side_color),
@@ -1291,7 +1389,7 @@ class App(QMainWindow):
                 (f"{float(ev.price):,.2f}", side_color),
                 (str(ev.qty), side_color),
                 (st_txt, st_color),
-                ("—", C["subtext"]),
+                (source, C["yellow_l"] if source == "DRY" else C["red_l"]),
             ]
             for col, (val, color) in enumerate(cells):
                 item = QTableWidgetItem(val)
@@ -1317,7 +1415,9 @@ class App(QMainWindow):
         st = getattr(self.broker, "state", None)
         acc = getattr(self.broker, "account", None)
         if st == ConnectionState.CONNECTED:
-            label = f"券商狀態：已登入 {acc.display}" if acc else "券商狀態：已連線"
+            dry_run = bool(getattr(self.broker, "dry_run", True))
+            mode = "模擬下單" if dry_run else "實單模式"
+            label = f"券商狀態：已登入 {acc.display}（{mode}）" if acc else f"券商狀態：已連線（{mode}）"
             self._set_broker_status(label, C["green"], C["text"], raw=True)
         elif st == ConnectionState.CONNECTING:
             self._set_broker_status("連線中…", C["yellow_l"], C["subtext"])

@@ -1,9 +1,11 @@
 """
 broker.orders 單元測試（Milestone 5）。
 """
+import json
 import os
 import sys
 import threading
+import tempfile
 import time
 import unittest
 from decimal import Decimal
@@ -92,17 +94,72 @@ class TestFubonDryRun(unittest.TestCase):
                 code="2330", price=Decimal("1100"), qty=1,
             ))
 
-    def test_dry_run_emits_pending_no_sdk(self):
-        adp = self._make(dry_run=True)
-        # 偽造已連線狀態（不觸發真實登入）
-        from broker.models import ConnectionState
-        adp._state = ConnectionState.CONNECTED
-        events = []
-        adp.on_order(events.append)
-        oid = adp.place_order(OrderRequest(code="2330", price=Decimal("1100"), qty=1))
-        self.assertTrue(oid.startswith("DRY"))
-        self.assertEqual(len(events), 1)
-        self.assertEqual(events[0].status, OrderStatus.PENDING)
+    def test_dry_run_emits_pending_then_filled_and_audit(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            adp = self._make(dry_run=True)
+            from broker.models import ConnectionState
+            adp._state = ConnectionState.CONNECTED
+            adp.dry_run_fill_min_sec = 0.0
+            adp.dry_run_fill_max_sec = 0.0
+            adp.dry_run_audit_dir = tmpdir
+            events = []
+            fills = []
+            adp.on_order(events.append)
+            adp.on_filled(fills.append)
+
+            oid = adp.place_order(OrderRequest(
+                code="2330", name="台積電",
+                price=Decimal("1100"), qty=1,
+            ))
+            self.assertTrue(oid.startswith("DRY"))
+
+            deadline = time.time() + 2.0
+            while time.time() < deadline and not fills:
+                time.sleep(0.05)
+
+            self.assertGreaterEqual(len(events), 2)
+            self.assertEqual(events[0].status, OrderStatus.PENDING)
+            self.assertEqual(events[-1].status, OrderStatus.FILLED)
+            self.assertEqual(events[0].source, "DRY")
+            self.assertEqual(len(fills), 1)
+            self.assertEqual(fills[0].price, Decimal("1100"))
+
+            logs = [p for p in os.listdir(tmpdir) if p.startswith("dry_run_audit_")]
+            self.assertEqual(len(logs), 1)
+            with open(os.path.join(tmpdir, logs[0]), "r", encoding="utf-8") as f:
+                records = [json.loads(line) for line in f]
+            self.assertEqual([r["type"] for r in records], ["PLACE", "FILL"])
+            self.assertEqual(records[0]["source"], "DRY")
+
+    def test_dry_run_cancel_writes_cancel_audit(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            adp = self._make(dry_run=True)
+            from broker.models import ConnectionState
+            adp._state = ConnectionState.CONNECTED
+            adp.dry_run_fill_min_sec = 1.0
+            adp.dry_run_fill_max_sec = 1.0
+            adp.dry_run_audit_dir = tmpdir
+            events = []
+            fills = []
+            adp.on_order(events.append)
+            adp.on_filled(fills.append)
+
+            oid = adp.place_order(OrderRequest(
+                code="2317", name="鴻海",
+                price=Decimal("220"), qty=1,
+            ))
+            self.assertTrue(adp.cancel_order(oid))
+            time.sleep(1.2)
+
+            statuses = [e.status for e in events]
+            self.assertIn(OrderStatus.PENDING, statuses)
+            self.assertIn(OrderStatus.CANCELLED, statuses)
+            self.assertEqual(len(fills), 0)
+
+            logs = [p for p in os.listdir(tmpdir) if p.startswith("dry_run_audit_")]
+            with open(os.path.join(tmpdir, logs[0]), "r", encoding="utf-8") as f:
+                records = [json.loads(line) for line in f]
+            self.assertEqual([r["type"] for r in records], ["PLACE", "CANCEL"])
 
 
 if __name__ == "__main__":

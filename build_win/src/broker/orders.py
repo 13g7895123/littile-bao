@@ -5,11 +5,15 @@ Milestone 5：
 - OrderRequest：跨適配層的下單參數 DTO
 - OrderManager (ABC)：place / cancel / modify
 - MockOrderManager：以 thread + Timer 模擬委託回報與成交回報
-- FubonOrderManager：呼叫 fubon_neo SDK 執行真實下單，受 FUBON_DRY_RUN 控制
+- DryRunOrderManager：登入真實券商與行情，但下單只模擬並寫 audit log
+- FubonOrderManager：呼叫 fubon_neo SDK 執行真實下單
 
 委託 / 成交事件透過 BrokerAdapter.dispatch_order / dispatch_fill 廣播給 GUI、引擎。
 """
 from __future__ import annotations
+import json
+import os
+import random
 import threading
 import uuid
 from abc import ABC, abstractmethod
@@ -90,6 +94,7 @@ class MockOrderManager(OrderManager):
             order_id=order_id, code=req.code, side=req.side,
             price=req.price, qty=req.qty, filled_qty=0,
             status=OrderStatus.PENDING, time=datetime.now(),
+            name=req.name, source="MOCK",
         ))
 
         # 排程模擬成交
@@ -112,6 +117,7 @@ class MockOrderManager(OrderManager):
             order_id=order_id, code=req.code, side=req.side,
             price=req.price, qty=req.qty, filled_qty=req.qty,
             status=OrderStatus.FILLED, time=now,
+            name=req.name, source="MOCK",
         ))
         # 成交回報
         self.adapter.dispatch_fill(FillEvent(
@@ -130,8 +136,140 @@ class MockOrderManager(OrderManager):
             order_id=order_id, code=req.code, side=req.side,
             price=req.price, qty=req.qty, filled_qty=0,
             status=OrderStatus.CANCELLED, time=datetime.now(),
+            name=req.name, source="MOCK",
         ))
         return True
+
+
+# ─────────────────────────────────────────
+#  Dry-run 實作（真實行情 / 模擬下單）
+# ─────────────────────────────────────────
+
+class DryRunOrderManager(OrderManager):
+    """登入真實券商但不送單，完整模擬委託與成交並寫入 audit log。"""
+
+    def __init__(
+        self,
+        adapter,
+        fill_delay_range=(0.5, 1.5),
+        audit_dir: str = "",
+        use_market_price: bool = False,
+    ) -> None:
+        self.adapter = adapter
+        min_delay, max_delay = fill_delay_range
+        if min_delay < 0:
+            min_delay = 0.0
+        if max_delay < min_delay:
+            max_delay = min_delay
+        self.fill_delay_range = (float(min_delay), float(max_delay))
+        self.use_market_price = use_market_price
+        self.audit_dir = audit_dir
+        self._lock = threading.Lock()
+        self._audit_lock = threading.Lock()
+        self._orders: dict[str, OrderRequest] = {}
+        self._cancelled: set[str] = set()
+
+    def place_order(self, req: OrderRequest) -> str:
+        if getattr(self.adapter.state, "value", "") != "connected":
+            raise FubonNotLoggedInError("尚未登入券商，無法下單")
+
+        order_id = f"DRY{uuid.uuid4().hex[:10].upper()}"
+        with self._lock:
+            self._orders[order_id] = req
+
+        now = datetime.now()
+        self._write_audit("PLACE", order_id, req, price=req.price, time=now)
+        self.adapter.dispatch_order(OrderEvent(
+            order_id=order_id, code=req.code, side=req.side,
+            price=req.price, qty=req.qty, filled_qty=0,
+            status=OrderStatus.PENDING, time=now,
+            name=req.name, source="DRY",
+        ))
+
+        delay = random.uniform(*self.fill_delay_range)
+        timer = threading.Timer(delay, self._simulate_fill, args=(order_id,))
+        timer.daemon = True
+        timer.start()
+        return order_id
+
+    def _simulate_fill(self, order_id: str) -> None:
+        with self._lock:
+            req = self._orders.get(order_id)
+            cancelled = order_id in self._cancelled
+        if req is None or cancelled:
+            return
+
+        fill_price = self._resolve_fill_price(req)
+        now = datetime.now()
+        self.adapter.dispatch_order(OrderEvent(
+            order_id=order_id, code=req.code, side=req.side,
+            price=fill_price, qty=req.qty, filled_qty=req.qty,
+            status=OrderStatus.FILLED, time=now,
+            name=req.name, source="DRY",
+        ))
+        self.adapter.dispatch_fill(FillEvent(
+            order_id=order_id, code=req.code, name=req.name,
+            side=req.side, price=fill_price, qty=req.qty, time=now,
+        ))
+        self._write_audit("FILL", order_id, req, price=fill_price, time=now)
+
+    def cancel_order(self, order_id: str) -> bool:
+        with self._lock:
+            req = self._orders.get(order_id)
+            if req is None:
+                return False
+            self._cancelled.add(order_id)
+
+        now = datetime.now()
+        self.adapter.dispatch_order(OrderEvent(
+            order_id=order_id, code=req.code, side=req.side,
+            price=req.price, qty=req.qty, filled_qty=0,
+            status=OrderStatus.CANCELLED, time=now,
+            name=req.name, source="DRY",
+        ))
+        self._write_audit("CANCEL", order_id, req, price=req.price, time=now)
+        return True
+
+    def _resolve_fill_price(self, req: OrderRequest) -> Decimal:
+        if not self.use_market_price:
+            return req.price
+        getter = getattr(self.adapter, "latest_price", None)
+        if callable(getter):
+            price = getter(req.code)
+            if price is not None:
+                return Decimal(str(price))
+        return req.price
+
+    def _audit_path(self, day: datetime) -> str:
+        base = self.audit_dir or getattr(self.adapter, "dry_run_audit_dir", "")
+        if not base:
+            if getattr(__import__("sys"), "frozen", False):
+                base = os.path.dirname(__import__("sys").executable)
+            else:
+                base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        os.makedirs(base, exist_ok=True)
+        return os.path.join(base, f"dry_run_audit_{day:%Y%m%d}.jsonl")
+
+    def _write_audit(self, event_type: str, order_id: str, req: OrderRequest,
+                     *, price: Decimal, time: datetime) -> None:
+        record = {
+            "ts": time.isoformat(timespec="milliseconds"),
+            "type": event_type,
+            "order_id": order_id,
+            "code": req.code,
+            "name": req.name,
+            "side": req.side.value,
+            "price": str(price),
+            "qty": req.qty,
+            "order_type": req.order_type,
+            "time_in_force": req.time_in_force,
+            "day_trade": req.day_trade,
+            "note": req.note,
+            "source": "DRY",
+        }
+        path = self._audit_path(time)
+        with self._audit_lock, open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
 # ─────────────────────────────────────────
@@ -139,7 +277,7 @@ class MockOrderManager(OrderManager):
 # ─────────────────────────────────────────
 
 class FubonOrderManager(OrderManager):
-    """呼叫 fubon_neo SDK 執行下單。受 dry_run 控制。"""
+    """呼叫 fubon_neo SDK 執行真實下單。"""
 
     def __init__(self, adapter) -> None:
         self.adapter = adapter
@@ -147,16 +285,6 @@ class FubonOrderManager(OrderManager):
     def place_order(self, req: OrderRequest) -> str:
         if self.adapter.state.value != "connected":
             raise FubonNotLoggedInError("尚未登入券商，無法下單")
-
-        if self.adapter.dry_run:
-            # Dry-run：不實際送單，產生本地 order_id，並回報 PENDING（不會成交）
-            order_id = f"DRY{uuid.uuid4().hex[:8].upper()}"
-            self.adapter.dispatch_order(OrderEvent(
-                order_id=order_id, code=req.code, side=req.side,
-                price=req.price, qty=req.qty, filled_qty=0,
-                status=OrderStatus.PENDING, time=datetime.now(),
-            ))
-            return order_id
 
         try:
             from fubon_neo.constant import (  # type: ignore
@@ -190,13 +318,6 @@ class FubonOrderManager(OrderManager):
         return order_id
 
     def cancel_order(self, order_id: str) -> bool:
-        if self.adapter.dry_run:
-            self.adapter.dispatch_order(OrderEvent(
-                order_id=order_id, code="", side=OrderSide.BUY,
-                price=Decimal("0"), qty=0, filled_qty=0,
-                status=OrderStatus.CANCELLED, time=datetime.now(),
-            ))
-            return True
         if self.adapter.state.value != "connected":
             raise FubonNotLoggedInError("尚未登入券商")
         sdk = self.adapter.sdk
