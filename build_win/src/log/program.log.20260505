@@ -1,1 +1,3 @@
 2026-05-05 22:06:30 [STDOUT] Logging stdout: <class 'app_logging._TeeStream'>
+2026-05-05 22:50:58 [STDOUT] DEBUG: Actual text is '測試完成'
+2026-05-05 22:50:58 [STDOUT] SUCCESS: GUI update verified.

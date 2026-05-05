@@ -284,6 +284,7 @@ class ToggleButton(QWidget):
 # ──────────────────────────────────────────────
 
 class App(QMainWindow):
+    _ui_dispatch = pyqtSignal(object)
 
     def __init__(self):
         super().__init__()
@@ -318,10 +319,18 @@ class App(QMainWindow):
             "ERROR": C["red"],
             "DEBUG": C["subtext"],
         }
+        self._ui_dispatch.connect(self._run_ui_dispatch, Qt.ConnectionType.QueuedConnection)
 
         self._build_ui()
         self._apply_config(self.cfg)
         self._start_polling()
+
+    def _dispatch_ui(self, callback) -> None:
+        self._ui_dispatch.emit(callback)
+
+    def _run_ui_dispatch(self, callback) -> None:
+        if callable(callback):
+            callback()
 
     # ══════════════════════════════════════════
     #  建立 UI
@@ -1336,18 +1345,17 @@ class App(QMainWindow):
                     except Exception:
                         pass
                     push_log("INFO", f"富邦連線測試成功：{acc.display if acc else '—'}", include_traceback=False)
-                    from PyQt6.QtCore import QMetaObject, Q_ARG
-                    QTimer.singleShot(0, lambda: self._set_broker_page_status(msg, C["green"]))
-                    QTimer.singleShot(0, lambda: QMessageBox.information(
+                    self._dispatch_ui(lambda: self._set_broker_page_status(msg, C["green"]))
+                    self._dispatch_ui(lambda: QMessageBox.information(
                         self, "測試成功", f"富邦連線測試成功！\n帳號：{acc.display if acc else '—'}"))
                 else:
                     err = result.message or "登入失敗"
                     push_log("ERROR", f"富邦連線測試失敗：{err}")
-                    QTimer.singleShot(0, lambda: self._set_broker_page_status(f"失敗：{err}", C["red"]))
+                    self._dispatch_ui(lambda: self._set_broker_page_status(f"失敗：{err}", C["red"]))
             except Exception as e:
                 push_log("ERROR", f"富邦連線測試失敗：{e}")
-                QTimer.singleShot(0, lambda: self._set_broker_page_status(f"錯誤：{e}", C["red"]))
-                QTimer.singleShot(0, lambda: QMessageBox.critical(self, "連線失敗", str(e)))
+                self._dispatch_ui(lambda: self._set_broker_page_status(f"錯誤：{e}", C["red"]))
+                self._dispatch_ui(lambda: QMessageBox.critical(self, "連線失敗", str(e)))
 
         import threading
         threading.Thread(target=_do_test, daemon=True).start()
@@ -1380,22 +1388,22 @@ class App(QMainWindow):
                 if result.success:
                     acc = result.selected
                     msg = f"已連線：{acc.display}" if acc else "已連線"
-                    QTimer.singleShot(0, lambda: self.set_broker(adapter))
-                    QTimer.singleShot(0, lambda: self._set_broker_page_status(msg, C["green"]))
-                    QTimer.singleShot(0, lambda: self._toggles["mock_mode"].set(False))
-                    QTimer.singleShot(0, lambda: self._update_mock_mode_label(False))
-                    QTimer.singleShot(0, lambda: push_log("INFO", f"富邦券商已連線：{acc.display if acc else '—'}", include_traceback=False))
-                    QTimer.singleShot(0, lambda: QMessageBox.information(
+                    self._dispatch_ui(lambda: self.set_broker(adapter))
+                    self._dispatch_ui(lambda: self._set_broker_page_status(msg, C["green"]))
+                    self._dispatch_ui(lambda: self._toggles["mock_mode"].set(False))
+                    self._dispatch_ui(lambda: self._update_mock_mode_label(False))
+                    self._dispatch_ui(lambda: push_log("INFO", f"富邦券商已連線：{acc.display if acc else '—'}", include_traceback=False))
+                    self._dispatch_ui(lambda: QMessageBox.information(
                         self, "連線成功", f"已成功連線富邦券商！\n帳號：{acc.display if acc else '—'}"))
                 else:
                     err = result.message or "登入失敗"
                     push_log("ERROR", f"富邦券商登入失敗：{err}")
-                    QTimer.singleShot(0, lambda: self._set_broker_page_status(f"失敗：{err}", C["red"]))
-                    QTimer.singleShot(0, lambda: QMessageBox.critical(self, "登入失敗", err))
+                    self._dispatch_ui(lambda: self._set_broker_page_status(f"失敗：{err}", C["red"]))
+                    self._dispatch_ui(lambda: QMessageBox.critical(self, "登入失敗", err))
             except Exception as e:
                 push_log("ERROR", f"富邦券商連線失敗：{e}")
-                QTimer.singleShot(0, lambda: self._set_broker_page_status(f"錯誤：{e}", C["red"]))
-                QTimer.singleShot(0, lambda: QMessageBox.critical(self, "連線失敗", str(e)))
+                self._dispatch_ui(lambda: self._set_broker_page_status(f"錯誤：{e}", C["red"]))
+                self._dispatch_ui(lambda: QMessageBox.critical(self, "連線失敗", str(e)))
 
         import threading
         threading.Thread(target=_do_connect, daemon=True).start()
@@ -1856,7 +1864,7 @@ class App(QMainWindow):
         )
 
     def _on_trade(self, d: dict):
-        QTimer.singleShot(0, lambda: self._append_trade(d))
+        self._dispatch_ui(lambda: self._append_trade(d))
 
     # ══════════════════════════════════════════
     #  券商狀態（Milestone 1）
@@ -1957,7 +1965,7 @@ class App(QMainWindow):
 
     def _on_account_snapshot(self, snap) -> None:
         """從 polling thread 接收 AccountSnapshot，丟回主執行緒繪製。"""
-        QTimer.singleShot(0, lambda: self._render_account(snap))
+        self._dispatch_ui(lambda: self._render_account(snap))
 
     def _render_account(self, snap) -> None:
         # 持倉表
@@ -2000,7 +2008,7 @@ class App(QMainWindow):
 
     def _on_order_event(self, ev) -> None:
         """從 broker 執行緒接收 OrderEvent，丟回 GUI 主執行緒繪製。"""
-        QTimer.singleShot(0, lambda: self._append_order(ev))
+        self._dispatch_ui(lambda: self._append_order(ev))
 
     def _append_order(self, ev) -> None:
         # 依 order_id 找既有列；若有則更新狀態欄，否則插入新列
