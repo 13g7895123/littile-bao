@@ -56,7 +56,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "Add-MpPreference -Exclus
 
 :: Run PyInstaller
 echo [4/4] Building EXE (1~3 min)...
-pyinstaller build.spec --noconfirm
+pyinstaller build.spec --noconfirm --icon NONE
 
 if errorlevel 1 (
     echo.
