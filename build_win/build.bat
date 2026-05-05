@@ -1,87 +1,85 @@
 @echo off
 chcp 65001 > nul
 echo ========================================
-echo  台股漲停交易系統 — PyInstaller 打包（PyQt6 版）
+echo  StockTrader -- PyInstaller Build (PyQt6)
 echo ========================================
 echo.
 
-:: 確認 Python 可用
+:: Check Python
 python --version >nul 2>&1
 if errorlevel 1 (
-    echo [錯誤] 找不到 Python，請先安裝 Python 3.10+
+    echo [ERROR] Python not found. Please install Python 3.10+
     pause
     exit /b 1
 )
 
-:: 安裝依賴
-echo [1/3] 安裝 PyQt6、PyInstaller 和富邦 SDK...
+:: Install PyQt6 + PyInstaller
+echo [1/4] Installing PyQt6 and PyInstaller...
 pip install "PyQt6>=6.4.0" "pyinstaller>=6.0.0" --quiet
 if errorlevel 1 (
-    echo [錯誤] 安裝依賴失敗
+    echo [ERROR] Failed to install dependencies.
     pause
     exit /b 1
 )
 
-:: 安裝富邦 SDK（Windows 版 .whl）
+:: Install Fubon Neo SDK (Windows wheel)
 set FUBON_WHL=..\fubon_neo-2.2.8-cp37-abi3-win_amd64.whl
 if exist "%FUBON_WHL%" (
-    echo [1/3] 安裝富邦 fubon_neo SDK ^(%FUBON_WHL%^)...
+    echo [2/4] Installing fubon_neo SDK from %FUBON_WHL% ...
     pip install "%FUBON_WHL%" --quiet
     if errorlevel 1 (
-        echo [錯誤] 富邦 SDK 安裝失敗，請確認 .whl 路徑正確
+        echo [ERROR] fubon_neo install failed. Check the .whl path.
         pause
         exit /b 1
     )
 ) else (
-    echo [警告] 找不到 %FUBON_WHL%
-    echo         請將 fubon_neo-2.2.8-cp37-abi3-win_amd64.whl 放在上層目錄後重試
+    echo [ERROR] Cannot find %FUBON_WHL%
+    echo         Place fubon_neo-2.2.8-cp37-abi3-win_amd64.whl in the parent folder and retry.
     pause
     exit /b 1
 )
 
-:: 清理舊的 build/dist
-echo [2/3] 清理舊的輸出目錄...
+:: Clean old build/dist
+echo [3/4] Cleaning old output folders...
 if exist dist rmdir /s /q dist
 if exist build rmdir /s /q build
 
-:: ── Windows Defender 排除（避免 WinError 225 誤判 PyInstaller bootloader）──
-echo [*] 加入 Windows Defender 排除路徑（需要系統管理員權限）...
+:: Add Windows Defender exclusions to avoid WinError 225
+echo [*] Adding Windows Defender exclusions (requires Administrator)...
 set BUILD_DIR=%CD%
-powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-  "Add-MpPreference -ExclusionPath '%BUILD_DIR%\build', '%BUILD_DIR%\dist', '%TEMP%\_MEI*' -ErrorAction SilentlyContinue; Write-Host '[*] Defender 排除已加入'"
-powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-  "Add-MpPreference -ExclusionProcess 'pyinstaller.exe', 'python.exe' -ErrorAction SilentlyContinue"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Add-MpPreference -ExclusionPath '%BUILD_DIR%\build','%BUILD_DIR%\dist' -ErrorAction SilentlyContinue; Write-Host '[*] Defender exclusions added.'"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Add-MpPreference -ExclusionProcess 'pyinstaller.exe','python.exe' -ErrorAction SilentlyContinue"
 
-:: 執行打包
-echo [3/3] 開始打包（這需要 1~3 分鐘）...
+:: Run PyInstaller
+echo [4/4] Building EXE (1~3 min)...
 pyinstaller build.spec --noconfirm
 
 if errorlevel 1 (
     echo.
-    echo [錯誤] 打包失敗
+    echo [ERROR] Build failed.
     echo.
-    echo 如果仍出現 WinError 225，請手動執行以下步驟：
-    echo   1. 開啟「Windows 安全性」→「病毒與威脅防護設定」
-    echo   2. 加入排除資料夾：%CD%\build 和 %CD%\dist
-    echo   3. 重新執行 build.bat
+    echo If WinError 225 still occurs:
+    echo   1. Right-click build.bat -^> Run as Administrator
+    echo   2. Or manually add exclusion folders in Windows Security:
+    echo      %BUILD_DIR%\build
+    echo      %BUILD_DIR%\dist
     pause
     exit /b 1
 )
 
-:: ── 打包完成後移除 Defender 排除（清理）──
-powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-  "Remove-MpPreference -ExclusionProcess 'pyinstaller.exe', 'python.exe' -ErrorAction SilentlyContinue"
+:: Remove Defender exclusions (cleanup)
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Remove-MpPreference -ExclusionProcess 'pyinstaller.exe','python.exe' -ErrorAction SilentlyContinue"
 
-:: 重命名 exe
+:: Rename output EXE
 if exist dist\StockTrader.exe (
-    copy dist\StockTrader.exe "dist\台股漲停交易系統.exe" >nul
+    copy dist\StockTrader.exe "dist\StockTrader-final.exe" >nul
     del dist\StockTrader.exe
 )
 
 echo.
 echo ========================================
-echo  打包完成！
-echo  執行檔位置：dist\台股漲停交易系統.exe
+echo  Build complete!
+echo  Output: dist\StockTrader-final.exe
 echo ========================================
 echo.
 explorer dist
