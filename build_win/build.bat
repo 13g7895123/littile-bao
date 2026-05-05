@@ -5,6 +5,10 @@ echo  StockTrader -- PyInstaller Build (PyQt6)
 echo ========================================
 echo.
 
+:: Change to the folder where this .bat file lives
+cd /d "%~dp0"
+echo [*] Working directory: %CD%
+
 :: Check Python
 python --version >nul 2>&1
 if errorlevel 1 (
@@ -23,7 +27,7 @@ if errorlevel 1 (
 )
 
 :: Install Fubon Neo SDK (Windows wheel)
-set FUBON_WHL=..\fubon_neo-2.2.8-cp37-abi3-win_amd64.whl
+set FUBON_WHL=%~dp0..\fubon_neo-2.2.8-cp37-abi3-win_amd64.whl
 if exist "%FUBON_WHL%" (
     echo [2/4] Installing fubon_neo SDK from %FUBON_WHL% ...
     pip install "%FUBON_WHL%" --quiet
