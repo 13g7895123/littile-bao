@@ -22,12 +22,21 @@ if errorlevel 1 (
     exit /b 1
 )
 
-:: 安裝富邦 SDK（若 .whl 存在）
-if exist "..\fubon_neo-2.2.8-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl" (
-    echo [1/3] 安裝富邦 fubon_neo SDK...
-    pip install "..\fubon_neo-2.2.8-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl" --quiet
+:: 安裝富邦 SDK（Windows 版 .whl）
+set FUBON_WHL=..\fubon_neo-2.2.8-cp37-abi3-win_amd64.whl
+if exist "%FUBON_WHL%" (
+    echo [1/3] 安裝富邦 fubon_neo SDK ^(%FUBON_WHL%^)...
+    pip install "%FUBON_WHL%" --quiet
+    if errorlevel 1 (
+        echo [錯誤] 富邦 SDK 安裝失敗，請確認 .whl 路徑正確
+        pause
+        exit /b 1
+    )
 ) else (
-    echo [警告] 找不到 fubon_neo .whl，若需真實下單請手動安裝 SDK
+    echo [警告] 找不到 %FUBON_WHL%
+    echo         請將 fubon_neo-2.2.8-cp37-abi3-win_amd64.whl 放在上層目錄後重試
+    pause
+    exit /b 1
 )
 
 :: 清理舊的 build/dist
