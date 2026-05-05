@@ -5,6 +5,8 @@ import json
 import os
 from dataclasses import dataclass, asdict, field
 from typing import List
+
+
 # 設定檔放在 exe 同目錄
 def _config_path() -> str:
     if getattr(__import__('sys'), 'frozen', False):
@@ -13,7 +15,16 @@ def _config_path() -> str:
         base = os.path.dirname(os.path.abspath(__file__))
     return os.path.join(base, "config.json")
 
+
+def _broker_settings_path() -> str:
+    if getattr(__import__('sys'), 'frozen', False):
+        base = os.path.dirname(__import__('sys').executable)
+    else:
+        base = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base, "broker_settings.json")
+
 CONFIG_FILE = _config_path()
+BROKER_SETTINGS_FILE = _broker_settings_path()
 
 
 @dataclass
@@ -121,7 +132,8 @@ class TradingConfig:
 
 
 # ─────────────────────────────────────────────────────────
-#  Broker 設定（Fubon Neo）：從 .env / OS 環境變數載入
+#  Broker 設定（Fubon Neo）：預設使用 JSON
+#  保留 .env 載入僅供舊版相容
 # ─────────────────────────────────────────────────────────
 
 def _load_dotenv() -> None:
@@ -185,7 +197,7 @@ def _env_float(key: str, default: float = 0.0) -> float:
 
 @dataclass
 class BrokerSettings:
-    """富邦 Neo SDK 連線設定（從環境變數載入）。"""
+    """富邦 Neo SDK 連線設定。"""
     personal_id: str = ""
     password: str = ""
     cert_path: str = ""
@@ -200,6 +212,34 @@ class BrokerSettings:
     dry_run_fill_max_sec: float = 1.5
     dry_run_audit_dir: str = ""
     mock_mode: bool = False  # 無憑證時改用 MockAdapter
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "BrokerSettings":
+        if not isinstance(data, dict):
+            raise ValueError("券商設定格式錯誤：JSON 根節點必須為物件")
+        valid = {k: v for k, v in data.items() if k in cls.__dataclass_fields__}
+        return cls(**valid)
+
+    def save(self, path: str = ""):
+        path = path or BROKER_SETTINGS_FILE
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(asdict(self), f, ensure_ascii=False, indent=2)
+
+    @classmethod
+    def load_strict(cls, path: str) -> "BrokerSettings":
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return cls.from_dict(data)
+
+    @classmethod
+    def load(cls, path: str = "") -> "BrokerSettings":
+        path = path or BROKER_SETTINGS_FILE
+        if os.path.exists(path):
+            try:
+                return cls.load_strict(path)
+            except Exception as e:
+                print(f"[BrokerSettings] 載入失敗，使用預設值：{e}")
+        return cls()
 
     @classmethod
     def from_env(cls) -> "BrokerSettings":

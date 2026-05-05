@@ -48,7 +48,7 @@ def main():
     app.setStyle("Fusion")
 
     # ── Milestone 1：初始化 broker 適配器 ────────────────
-    broker_settings = config.BrokerSettings.from_env()
+    broker_settings = config.BrokerSettings.load()
     broker_adapter = _init_broker(broker_settings)
 
     print("[StockTrader] Starting GUI...")
@@ -68,7 +68,7 @@ def _init_broker(settings):
 
     if settings.mock_mode or not settings.is_complete():
         if not settings.is_complete():
-            print("[StockTrader] 未備齊 FUBON_* 環境變數 → 啟用 MockAdapter")
+            print("[StockTrader] 未備齊富邦券商設定 → 啟用 MockAdapter")
         else:
             print("[StockTrader] MOCK_MODE=true → 啟用 MockAdapter")
         adapter = MockAdapter()

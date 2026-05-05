@@ -21,7 +21,7 @@ from PyQt6.QtCore import Qt, QTimer, QPoint, pyqtSignal
 from PyQt6.QtGui import QPainter, QColor, QFont, QBrush
 
 from app_logging import compose_log_message, configure_runtime_logging, write_log_event
-from config import CONFIG_FILE, TradingConfig
+from config import BROKER_SETTINGS_FILE, CONFIG_FILE, BrokerSettings, TradingConfig
 from engine import TradingEngine
 
 # ──────────────────────────────────────────────
@@ -1148,7 +1148,7 @@ class App(QMainWindow):
         btn_row = QHBoxLayout()
         btn_row.setSpacing(10)
 
-        load_btn = QPushButton("從 .env 載入")
+        load_btn = QPushButton("匯入 JSON")
         load_btn.setFont(_font(9, bold=True))
         load_btn.setFixedHeight(34)
         load_btn.setStyleSheet(f"""
@@ -1160,10 +1160,10 @@ class App(QMainWindow):
             }}
             QPushButton:hover {{ background-color: #2d333b; }}
         """)
-        load_btn.clicked.connect(self._broker_load_from_env)
+        load_btn.clicked.connect(self._broker_import_json)
         btn_row.addWidget(load_btn)
 
-        save_env_btn = QPushButton("儲存至 .env")
+        save_env_btn = QPushButton("匯出 JSON")
         save_env_btn.setFont(_font(9, bold=True))
         save_env_btn.setFixedHeight(34)
         save_env_btn.setStyleSheet(f"""
@@ -1175,7 +1175,7 @@ class App(QMainWindow):
             }}
             QPushButton:hover {{ background-color: #2d333b; }}
         """)
-        save_env_btn.clicked.connect(self._broker_save_to_env)
+        save_env_btn.clicked.connect(self._broker_export_json)
         btn_row.addWidget(save_env_btn)
 
         btn_row.addStretch()
@@ -1212,8 +1212,8 @@ class App(QMainWindow):
 
         outer.addLayout(btn_row)
 
-        # 初始載入 .env
-        self._broker_load_from_env()
+        # 初始載入預設 broker_settings.json
+        self._broker_load_default_json()
 
     # ── 券商設定輔助方法 ────────────────────────
 
@@ -1226,100 +1226,92 @@ class App(QMainWindow):
         if path:
             self._bfields["cert_path"].setText(path)
 
-    def _broker_load_from_env(self):
-        """從 .env 讀取設定並填入欄位。"""
-        import os
-        # 重新解析 .env
-        env_path = None
-        for candidate in [
-            os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"),
-            os.path.join(os.getcwd(), ".env"),
-        ]:
-            if os.path.exists(candidate):
-                env_path = candidate
-                break
+    def _broker_apply_settings(self, settings: BrokerSettings) -> None:
+        self._bfields["personal_id"].setText(settings.personal_id)
+        self._bfields["password"].setText(settings.password)
+        self._bfields["branch_no"].setText(settings.branch_no)
+        self._bfields["account_no"].setText(settings.account_no)
+        self._bfields["cert_path"].setText(settings.cert_path)
+        self._bfields["cert_password"].setText(settings.cert_password)
+        self._bfields["api_key"].setText(settings.api_key)
+        self._bfields["api_secret"].setText(settings.api_secret)
+        self._toggles["broker_dry_run"].set(settings.dry_run)
 
-        env: dict = {}
-        if env_path:
-            try:
-                with open(env_path, "r", encoding="utf-8") as f:
-                    for raw in f:
-                        line = raw.strip()
-                        if not line or line.startswith("#") or "=" not in line:
-                            continue
-                        k, v = line.split("=", 1)
-                        env[k.strip()] = v.strip().strip('"').strip("'")
-            except Exception:
-                pass
-
-        mapping = {
-            "personal_id":  "FUBON_PERSONAL_ID",
-            "password":     "FUBON_PASSWORD",
-            "branch_no":    "FUBON_BRANCH_NO",
-            "account_no":   "FUBON_ACCOUNT_NO",
-            "cert_path":    "FUBON_CERT_PATH",
-            "cert_password":"FUBON_CERT_PASSWORD",
-            "api_key":      "FUBON_API_KEY",
-            "api_secret":   "FUBON_API_SECRET",
-        }
-        for field_key, env_key in mapping.items():
-            val = env.get(env_key, os.environ.get(env_key, ""))
-            self._bfields[field_key].setText(val)
-
-        dry_run = env.get("FUBON_DRY_RUN", os.environ.get("FUBON_DRY_RUN", "true")).lower()
-        self._toggles["broker_dry_run"].set(dry_run in ("1", "true", "yes"))
-
-        if env_path:
-            push_log("INFO", f"券商設定已從 {env_path} 載入", include_traceback=False)
-
-    def _broker_save_to_env(self):
-        """將欄位值寫回 .env。"""
-        import os
-        env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
-
-        lines_new = [
-            "# 富邦 Neo SDK 連線設定（由 GUI 儲存）\n",
-            f"FUBON_PERSONAL_ID={self._bfields['personal_id'].text().strip()}\n",
-            f"FUBON_PASSWORD={self._bfields['password'].text()}\n",
-            f"FUBON_CERT_PATH={self._bfields['cert_path'].text().strip()}\n",
-            f"FUBON_CERT_PASSWORD={self._bfields['cert_password'].text()}\n",
-            f"FUBON_BRANCH_NO={self._bfields['branch_no'].text().strip()}\n",
-            f"FUBON_ACCOUNT_NO={self._bfields['account_no'].text().strip()}\n",
-            f"FUBON_API_KEY={self._bfields['api_key'].text().strip()}\n",
-            f"FUBON_API_SECRET={self._bfields['api_secret'].text()}\n",
-            f"FUBON_DRY_RUN={'true' if self._toggles['broker_dry_run'].value else 'false'}\n",
-            "MOCK_MODE=false\n",
-        ]
+    def _broker_load_default_json(self):
+        if not os.path.exists(BROKER_SETTINGS_FILE):
+            return
         try:
-            with open(env_path, "w", encoding="utf-8") as f:
-                f.writelines(lines_new)
-            QMessageBox.information(self, "儲存成功", f"設定已寫入：\n{env_path}")
-            push_log("INFO", f"券商設定已儲存至 {env_path}", include_traceback=False)
+            settings = BrokerSettings.load_strict(BROKER_SETTINGS_FILE)
+            self._broker_apply_settings(settings)
+            push_log("INFO", f"券商設定已從預設 JSON 載入：{BROKER_SETTINGS_FILE}", include_traceback=False)
         except Exception as e:
-            push_log("ERROR", f"券商設定儲存失敗：{e}")
-            QMessageBox.critical(self, "儲存失敗", str(e))
+            push_log("ERROR", f"載入預設券商設定 JSON 失敗：{e}")
+
+    def _broker_import_json(self):
+        from PyQt6.QtWidgets import QFileDialog
+
+        base_dir = os.path.dirname(BROKER_SETTINGS_FILE)
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "匯入券商設定 JSON",
+            base_dir,
+            "JSON 檔案 (*.json);;所有檔案 (*)",
+        )
+        if not path:
+            return
+
+        try:
+            settings = BrokerSettings.load_strict(path)
+            self._broker_apply_settings(settings)
+            push_log("INFO", f"券商設定已自 JSON 匯入：{path}", include_traceback=False)
+            QMessageBox.information(
+                self,
+                "匯入成功",
+                f"已載入券商設定：\n{path}\n\n目前已套用到畫面。",
+            )
+        except Exception as e:
+            push_log("ERROR", f"匯入券商設定 JSON 失敗：{e}")
+            QMessageBox.critical(self, "匯入失敗", str(e))
+
+    def _broker_export_json(self):
+        from PyQt6.QtWidgets import QFileDialog
+
+        base_dir = os.path.dirname(BROKER_SETTINGS_FILE)
+        default_path = BROKER_SETTINGS_FILE
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "匯出券商設定 JSON",
+            default_path,
+            "JSON 檔案 (*.json);;所有檔案 (*)",
+        )
+        if not path:
+            return
+        if not path.lower().endswith(".json"):
+            path += ".json"
+
+        try:
+            settings = self._broker_fields_to_settings()
+            settings.save(path)
+            push_log("INFO", f"券商設定已匯出至 JSON：{path}", include_traceback=False)
+            QMessageBox.information(self, "匯出成功", f"券商設定已匯出：\n{path}")
+        except Exception as e:
+            push_log("ERROR", f"匯出券商設定 JSON 失敗：{e}")
+            QMessageBox.critical(self, "匯出失敗", str(e))
 
     def _broker_fields_to_settings(self):
-        """將欄位值轉為 BrokerSettings，同時同步 os.environ。"""
-        import os
-        from config import BrokerSettings
+        """將欄位值轉為 BrokerSettings。"""
         f = self._bfields
-
-        mapping = {
-            "FUBON_PERSONAL_ID":   f["personal_id"].text().strip(),
-            "FUBON_PASSWORD":      f["password"].text(),
-            "FUBON_CERT_PATH":     f["cert_path"].text().strip(),
-            "FUBON_CERT_PASSWORD": f["cert_password"].text(),
-            "FUBON_BRANCH_NO":     f["branch_no"].text().strip(),
-            "FUBON_ACCOUNT_NO":    f["account_no"].text().strip(),
-            "FUBON_API_KEY":       f["api_key"].text().strip(),
-            "FUBON_API_SECRET":    f["api_secret"].text(),
-            "FUBON_DRY_RUN":       "true" if self._toggles["broker_dry_run"].value else "false",
-        }
-        for k, v in mapping.items():
-            os.environ[k] = v
-
-        return BrokerSettings.from_env()
+        return BrokerSettings(
+            personal_id=f["personal_id"].text().strip(),
+            password=f["password"].text(),
+            cert_path=f["cert_path"].text().strip(),
+            cert_password=f["cert_password"].text(),
+            branch_no=f["branch_no"].text().strip(),
+            account_no=f["account_no"].text().strip(),
+            api_key=f["api_key"].text().strip(),
+            api_secret=f["api_secret"].text(),
+            dry_run=self._toggles["broker_dry_run"].value,
+        )
 
     def _broker_test_connection(self):
         """測試連線（登入後立即登出，只驗證憑證）。"""
@@ -1684,7 +1676,7 @@ class App(QMainWindow):
             reply = QMessageBox.question(
                 self, "切換真實行情",
                 "切換為富邦真實行情模式，系統將嘗試重新登入。\n"
-                "請確認 .env 憑證設定正確。確定？",
+                "請確認券商設定欄位或 JSON 設定檔內容正確。確定？",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             )
             if reply != QMessageBox.StandardButton.Yes:
@@ -1709,15 +1701,12 @@ class App(QMainWindow):
     def _switch_to_fubon_broker(self) -> None:
         """切換為 FubonAdapter，登入失敗時自動退回 Mock。"""
         try:
-            from config import BrokerSettings
             from broker import FubonAdapter, MockAdapter, BrokerError
-            settings = BrokerSettings.from_env()
+            settings = self._broker_fields_to_settings()
             if not settings.is_complete():
                 QMessageBox.critical(
                     self, "設定不完整",
-                    "未設定富邦帳號資訊，請先填寫 .env 檔案中的：\n"
-                    "FUBON_PERSONAL_ID / FUBON_PASSWORD / FUBON_CERT_PATH\n"
-                    "FUBON_BRANCH_NO / FUBON_ACCOUNT_NO"
+                    "未設定富邦帳號資訊，請先填寫券商設定欄位，或先匯入 JSON 設定檔。"
                 )
                 self._toggles["mock_mode"].set(True)
                 return

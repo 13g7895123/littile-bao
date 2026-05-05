@@ -7,6 +7,7 @@ broker 套件的單元測試（不依賴真實 fubon_neo SDK）。
 """
 import os
 import sys
+import tempfile
 import unittest
 
 # 把 src 加入 path（與 main.py 同樣方式）
@@ -95,6 +96,33 @@ class TestBrokerSettings(unittest.TestCase):
             account_no="1234567",
         )
         self.assertTrue(s.is_complete())
+
+    def test_json_round_trip(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "broker_settings.json")
+            s = BrokerSettings(
+                personal_id="A123456789",
+                password="pw",
+                cert_path="/tmp/demo.pfx",
+                cert_password="cp",
+                branch_no="6460",
+                account_no="1234567",
+                api_key="key",
+                api_secret="secret",
+                dry_run=False,
+            )
+
+            s.save(path)
+            loaded = BrokerSettings.load_strict(path)
+
+            self.assertEqual(loaded.personal_id, "A123456789")
+            self.assertEqual(loaded.cert_path, "/tmp/demo.pfx")
+            self.assertEqual(loaded.api_key, "key")
+            self.assertFalse(loaded.dry_run)
+
+    def test_from_dict_rejects_non_object_root(self):
+        with self.assertRaises(ValueError):
+            BrokerSettings.from_dict(["not", "object"])
 
 
 class TestBrokerErrorHierarchy(unittest.TestCase):
