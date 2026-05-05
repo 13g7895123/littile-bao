@@ -83,20 +83,30 @@ class TradingConfig:
     # ── 黑名單 ──────────────────────────────────────────────────────────────
     blacklist: List[str] = field(default_factory=list)
 
+    @classmethod
+    def from_dict(cls, data: dict) -> "TradingConfig":
+        if not isinstance(data, dict):
+            raise ValueError("設定檔格式錯誤：JSON 根節點必須為物件")
+        valid = {k: v for k, v in data.items() if k in cls.__dataclass_fields__}
+        return cls(**valid)
+
     def save(self, path: str = ""):
         path = path or CONFIG_FILE
         with open(path, "w", encoding="utf-8") as f:
             json.dump(asdict(self), f, ensure_ascii=False, indent=2)
 
     @classmethod
+    def load_strict(cls, path: str) -> "TradingConfig":
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return cls.from_dict(data)
+
+    @classmethod
     def load(cls, path: str = "") -> "TradingConfig":
         path = path or CONFIG_FILE
         if os.path.exists(path):
             try:
-                with open(path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                valid = {k: v for k, v in data.items() if k in cls.__dataclass_fields__}
-                return cls(**valid)
+                return cls.load_strict(path)
             except Exception as e:
                 print(f"[Config] 載入失敗，使用預設值：{e}")
         return cls()

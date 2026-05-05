@@ -4,6 +4,7 @@ gui.py — 打板策略系統 主視窗
 """
 from __future__ import annotations
 import html
+import os
 import queue
 import threading
 from decimal import Decimal
@@ -20,7 +21,7 @@ from PyQt6.QtCore import Qt, QTimer, QPoint, pyqtSignal
 from PyQt6.QtGui import QPainter, QColor, QFont, QBrush
 
 from app_logging import compose_log_message, configure_runtime_logging, write_log_event
-from config import TradingConfig
+from config import CONFIG_FILE, TradingConfig
 from engine import TradingEngine
 
 # ──────────────────────────────────────────────
@@ -705,30 +706,50 @@ class App(QMainWindow):
 
         # 底部按鈕列
         btn_bar = QFrame()
-        btn_bar.setFixedHeight(52)
+        btn_bar.setFixedHeight(92)
         btn_bar.setStyleSheet(
             f"background-color: {C['header']};"
             f"border-top: 1px solid {C['border']};"
         )
-        bl = QHBoxLayout(btn_bar)
+        bl = QVBoxLayout(btn_bar)
         bl.setContentsMargins(12, 8, 12, 8)
         bl.setSpacing(8)
 
-        reset_btn = QPushButton("重置設定")
-        reset_btn.setFont(_font(9, bold=True))
-        reset_btn.setFixedHeight(34)
-        reset_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        reset_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {C['surface']};
-                color: {C['text']};
-                border: 1px solid {C['border']};
-                border-radius: 4px;
-            }}
-            QPushButton:hover {{ background-color: #2d333b; }}
-        """)
+        def _secondary_button(text: str) -> QPushButton:
+            btn = QPushButton(text)
+            btn.setFont(_font(9, bold=True))
+            btn.setFixedHeight(34)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {C['surface']};
+                    color: {C['text']};
+                    border: 1px solid {C['border']};
+                    border-radius: 4px;
+                }}
+                QPushButton:hover {{ background-color: #2d333b; }}
+            """)
+            return btn
+
+        row1 = QHBoxLayout()
+        row1.setSpacing(8)
+
+        import_btn = _secondary_button("匯入 JSON")
+        import_btn.clicked.connect(self._import_settings_json)
+        row1.addWidget(import_btn, 1)
+
+        export_btn = _secondary_button("匯出 JSON")
+        export_btn.clicked.connect(self._export_settings_json)
+        row1.addWidget(export_btn, 1)
+
+        bl.addLayout(row1)
+
+        row2 = QHBoxLayout()
+        row2.setSpacing(8)
+
+        reset_btn = _secondary_button("重置設定")
         reset_btn.clicked.connect(self._reset_settings)
-        bl.addWidget(reset_btn, 1)
+        row2.addWidget(reset_btn, 1)
 
         save_btn = QPushButton("儲存設定")
         save_btn.setFont(_font(9, bold=True))
@@ -744,7 +765,9 @@ class App(QMainWindow):
             QPushButton:hover {{ background-color: {C['blue_l']}; }}
         """)
         save_btn.clicked.connect(self._save_settings)
-        bl.addWidget(save_btn, 1)
+        row2.addWidget(save_btn, 1)
+
+        bl.addLayout(row2)
 
         outer.addWidget(btn_bar)
         body_lay.addWidget(sidebar)
@@ -1548,6 +1571,61 @@ class App(QMainWindow):
         except Exception as e:
             push_log("ERROR", f"儲存設定失敗：{e}")
             QMessageBox.critical(self, "儲存失敗", str(e))
+
+    def _export_settings_json(self):
+        from PyQt6.QtWidgets import QFileDialog
+
+        base_dir = os.path.dirname(CONFIG_FILE)
+        default_name = f"trading_config_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        default_path = os.path.join(base_dir, default_name)
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "匯出設定 JSON",
+            default_path,
+            "JSON 檔案 (*.json);;所有檔案 (*)",
+        )
+        if not path:
+            return
+        if not path.lower().endswith(".json"):
+            path += ".json"
+
+        try:
+            cfg = self._collect_config()
+            cfg.save(path)
+            push_log("INFO", f"設定已匯出至 JSON：{path}", include_traceback=False)
+            QMessageBox.information(self, "匯出成功", f"設定已匯出：\n{path}")
+        except ValueError as e:
+            QMessageBox.critical(self, "格式錯誤", f"數字欄位格式有誤：{e}")
+        except Exception as e:
+            push_log("ERROR", f"匯出設定 JSON 失敗：{e}")
+            QMessageBox.critical(self, "匯出失敗", str(e))
+
+    def _import_settings_json(self):
+        from PyQt6.QtWidgets import QFileDialog
+
+        base_dir = os.path.dirname(CONFIG_FILE)
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "匯入設定 JSON",
+            base_dir,
+            "JSON 檔案 (*.json);;所有檔案 (*)",
+        )
+        if not path:
+            return
+
+        try:
+            cfg = TradingConfig.load_strict(path)
+            self.cfg = cfg
+            self._apply_config(cfg)
+            push_log("INFO", f"設定已自 JSON 匯入：{path}", include_traceback=False)
+            QMessageBox.information(
+                self,
+                "匯入成功",
+                f"已載入設定：\n{path}\n\n目前已套用到畫面，按「儲存設定」可覆寫預設設定檔。",
+            )
+        except Exception as e:
+            push_log("ERROR", f"匯入設定 JSON 失敗：{e}")
+            QMessageBox.critical(self, "匯入失敗", str(e))
 
     def _reset_settings(self):
         reply = QMessageBox.question(
