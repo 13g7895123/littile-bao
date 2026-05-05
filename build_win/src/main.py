@@ -9,6 +9,8 @@ import traceback
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from app_logging import configure_runtime_logging, get_runtime_log_path, read_file_logging_flag
+
 
 def _log_dir():
     if getattr(sys, 'frozen', False):
@@ -16,16 +18,20 @@ def _log_dir():
     return os.path.dirname(os.path.abspath(__file__))
 
 
-def _write_log(msg):
-    log_path = os.path.join(_log_dir(), 'error.log')
-    with open(log_path, 'w', encoding='utf-8') as f:
-        f.write(msg)
+def _init_runtime_logging():
+    config_path = os.path.join(_log_dir(), "config.json")
+    enabled = read_file_logging_flag(config_path, default=True)
+    log_path = configure_runtime_logging(enabled, base_dir=_log_dir())
+    return enabled, log_path
 
 
 def main():
+    file_logging_enabled, log_path = _init_runtime_logging()
     print("[StockTrader] Python version:", sys.version)
     print("[StockTrader] sys.frozen:", getattr(sys, 'frozen', False))
     print("[StockTrader] exe path:", sys.executable if getattr(sys, 'frozen', False) else __file__)
+    if file_logging_enabled and log_path:
+        print("[StockTrader] File logging:", log_path)
     print("[StockTrader] Importing modules...")
 
     from PyQt6.QtWidgets import QApplication
@@ -91,7 +97,10 @@ if __name__ == "__main__":
         print("\n========== ERROR ==========")
         print(tb)
         print("===========================")
-        _write_log(tb)
-        print("[StockTrader] Error log written to:", os.path.join(_log_dir(), 'error.log'))
+        log_path = get_runtime_log_path()
+        if log_path:
+            print("[StockTrader] Error log written to:", log_path)
+        else:
+            print("[StockTrader] File logging is disabled; no error log was written.")
         input("\nPress Enter to exit...")
         sys.exit(1)

@@ -3,6 +3,7 @@ gui.py — 打板策略系統 主視窗
 使用 PyQt6，介面對應 S__5456203.jpg 設計稿。
 """
 from __future__ import annotations
+import html
 import queue
 import threading
 from decimal import Decimal
@@ -18,6 +19,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QTimer, QPoint, pyqtSignal
 from PyQt6.QtGui import QPainter, QColor, QFont, QBrush
 
+from app_logging import compose_log_message, configure_runtime_logging, write_log_event
 from config import TradingConfig
 from engine import TradingEngine
 
@@ -55,6 +57,12 @@ C = {
 LOG_Q: queue.Queue = queue.Queue()
 FONT_MAIN = "微軟正黑體"
 FONT_MONO = "Consolas"
+
+
+def push_log(level: str, msg: object, *, include_traceback: Optional[bool] = None) -> None:
+    text = compose_log_message(level, msg, include_traceback=include_traceback)
+    LOG_Q.put((level, text))
+    write_log_event(level, text)
 
 
 # ──────────────────────────────────────────────
@@ -284,6 +292,7 @@ class App(QMainWindow):
         self.setStyleSheet(f"background-color: {C['bg']};")
 
         self.cfg = TradingConfig.load()
+        configure_runtime_logging(self.cfg.file_logging_enabled)
         self.engine: Optional[TradingEngine] = None
         self.broker = None  # type: ignore[assignment]  # broker.BrokerAdapter，由 main.py 注入
         self._running = False
@@ -562,6 +571,10 @@ class App(QMainWindow):
         self._checks["dry_run_mode"].toggled.connect(self._on_order_mode_toggled)
         form.addWidget(self._checks["dry_run_mode"])
         form.addSpacing(6)
+        self._checks["file_logging_enabled"] = _checkbox("寫入實體 log 檔（含完整錯誤訊息）")
+        form.addWidget(self._checks["file_logging_enabled"])
+        form.addSpacing(6)
+        form.addWidget(_divider())
 
         # ── Mock 模式開關（行情 / 下單全部模擬，不連富邦）
         mock_row = QHBoxLayout()
@@ -1234,7 +1247,7 @@ class App(QMainWindow):
         self._toggles["broker_dry_run"].set(dry_run in ("1", "true", "yes"))
 
         if env_path:
-            LOG_Q.put(("INFO", f"券商設定已從 {env_path} 載入"))
+            push_log("INFO", f"券商設定已從 {env_path} 載入", include_traceback=False)
 
     def _broker_save_to_env(self):
         """將欄位值寫回 .env。"""
@@ -1258,8 +1271,9 @@ class App(QMainWindow):
             with open(env_path, "w", encoding="utf-8") as f:
                 f.writelines(lines_new)
             QMessageBox.information(self, "儲存成功", f"設定已寫入：\n{env_path}")
-            LOG_Q.put(("INFO", f"券商設定已儲存至 {env_path}"))
+            push_log("INFO", f"券商設定已儲存至 {env_path}", include_traceback=False)
         except Exception as e:
+            push_log("ERROR", f"券商設定儲存失敗：{e}")
             QMessageBox.critical(self, "儲存失敗", str(e))
 
     def _broker_fields_to_settings(self):
@@ -1306,14 +1320,17 @@ class App(QMainWindow):
                         adapter.logout()
                     except Exception:
                         pass
+                    push_log("INFO", f"富邦連線測試成功：{acc.display if acc else '—'}", include_traceback=False)
                     from PyQt6.QtCore import QMetaObject, Q_ARG
                     QTimer.singleShot(0, lambda: self._set_broker_page_status(msg, C["green"]))
                     QTimer.singleShot(0, lambda: QMessageBox.information(
                         self, "測試成功", f"富邦連線測試成功！\n帳號：{acc.display if acc else '—'}"))
                 else:
                     err = result.message or "登入失敗"
+                    push_log("ERROR", f"富邦連線測試失敗：{err}")
                     QTimer.singleShot(0, lambda: self._set_broker_page_status(f"失敗：{err}", C["red"]))
             except Exception as e:
+                push_log("ERROR", f"富邦連線測試失敗：{e}")
                 QTimer.singleShot(0, lambda: self._set_broker_page_status(f"錯誤：{e}", C["red"]))
                 QTimer.singleShot(0, lambda: QMessageBox.critical(self, "連線失敗", str(e)))
 
@@ -1352,14 +1369,16 @@ class App(QMainWindow):
                     QTimer.singleShot(0, lambda: self._set_broker_page_status(msg, C["green"]))
                     QTimer.singleShot(0, lambda: self._toggles["mock_mode"].set(False))
                     QTimer.singleShot(0, lambda: self._update_mock_mode_label(False))
-                    QTimer.singleShot(0, lambda: LOG_Q.put(("INFO", f"富邦券商已連線：{acc.display if acc else '—'}")))
+                    QTimer.singleShot(0, lambda: push_log("INFO", f"富邦券商已連線：{acc.display if acc else '—'}", include_traceback=False))
                     QTimer.singleShot(0, lambda: QMessageBox.information(
                         self, "連線成功", f"已成功連線富邦券商！\n帳號：{acc.display if acc else '—'}"))
                 else:
                     err = result.message or "登入失敗"
+                    push_log("ERROR", f"富邦券商登入失敗：{err}")
                     QTimer.singleShot(0, lambda: self._set_broker_page_status(f"失敗：{err}", C["red"]))
                     QTimer.singleShot(0, lambda: QMessageBox.critical(self, "登入失敗", err))
             except Exception as e:
+                push_log("ERROR", f"富邦券商連線失敗：{e}")
                 QTimer.singleShot(0, lambda: self._set_broker_page_status(f"錯誤：{e}", C["red"]))
                 QTimer.singleShot(0, lambda: QMessageBox.critical(self, "連線失敗", str(e)))
 
@@ -1443,6 +1462,7 @@ class App(QMainWindow):
             self._syncing_order_mode_control = True
             c["dry_run_mode"].setChecked(cfg.order_dry_run)
             self._syncing_order_mode_control = False
+        c["file_logging_enabled"].setChecked(cfg.file_logging_enabled)
         self._update_order_mode_badge()
 
     def _collect_config(self) -> TradingConfig:
@@ -1501,15 +1521,33 @@ class App(QMainWindow):
             f13_enabled                   = True,
             daily_max_trades              = ni("daily_max_trades"),
             order_dry_run                 = c["dry_run_mode"].isChecked(),
+            file_logging_enabled          = c["file_logging_enabled"].isChecked(),
         )
 
     def _save_settings(self):
         try:
-            self.cfg = self._collect_config()
-            self.cfg.save()
-            QMessageBox.information(self, "儲存成功", "設定已儲存！")
+            new_cfg = self._collect_config()
+            was_file_logging_enabled = self.cfg.file_logging_enabled
+            new_cfg.save()
+            self.cfg = new_cfg
+            if self.cfg.file_logging_enabled:
+                log_path = configure_runtime_logging(True)
+                if not was_file_logging_enabled and log_path:
+                    push_log("INFO", f"實體 log 檔記錄已啟用：{log_path}", include_traceback=False)
+            else:
+                if was_file_logging_enabled:
+                    push_log("INFO", "實體 log 檔記錄已停用", include_traceback=False)
+                configure_runtime_logging(False)
+                log_path = None
+            message = "設定已儲存！"
+            if log_path:
+                message += f"\nlog 檔案：{log_path}"
+            QMessageBox.information(self, "儲存成功", message)
         except ValueError as e:
             QMessageBox.critical(self, "格式錯誤", f"數字欄位格式有誤：{e}")
+        except Exception as e:
+            push_log("ERROR", f"儲存設定失敗：{e}")
+            QMessageBox.critical(self, "儲存失敗", str(e))
 
     def _reset_settings(self):
         reply = QMessageBox.question(
@@ -1588,7 +1626,7 @@ class App(QMainWindow):
         adapter.login()
         self.set_broker(adapter)
         self._update_mock_mode_label(True)
-        LOG_Q.put(("INFO", "已切換為 Mock 模擬行情模式"))
+        push_log("INFO", "已切換為 Mock 模擬行情模式", include_traceback=False)
 
     def _switch_to_fubon_broker(self) -> None:
         """切換為 FubonAdapter，登入失敗時自動退回 Mock。"""
@@ -1612,18 +1650,18 @@ class App(QMainWindow):
                 except Exception:
                     pass
 
-            LOG_Q.put(("INFO", "正在登入富邦券商…"))
+            push_log("INFO", "正在登入富邦券商…", include_traceback=False)
             adapter = FubonAdapter.from_config(settings)
             result = adapter.login()
             if result.success and result.selected:
                 self.set_broker(adapter)
                 self._update_mock_mode_label(False)
-                LOG_Q.put(("INFO", f"富邦登入成功：{result.selected.display}"))
+                push_log("INFO", f"富邦登入成功：{result.selected.display}", include_traceback=False)
             else:
                 raise Exception(result.message or "登入失敗")
 
         except Exception as e:
-            LOG_Q.put(("ERROR", f"富邦登入失敗：{e}，退回 Mock 模式"))
+            push_log("ERROR", f"富邦登入失敗：{e}，退回 Mock 模式")
             QMessageBox.critical(self, "登入失敗",
                 f"無法連線富邦券商：\n{e}\n\n系統已退回 Mock 模式。")
             self._toggles["mock_mode"].set(True)
@@ -1683,28 +1721,29 @@ class App(QMainWindow):
                 is_fubon = hasattr(self.broker, "_sdk") or type(self.broker).__name__ == "FubonAdapter"
 
                 if is_fubon:
-                    LOG_Q.put(("INFO", "正在從富邦 API 取得全市場股票清單（1900+ 支）…"))
+                    push_log("INFO", "正在從富邦 API 取得全市場股票清單（1900+ 支）…", include_traceback=False)
                     loader = FubonSymbolInfoLoader(self.broker)
 
                     # 步驟 1：取全市場代碼
                     all_codes = loader.fetch_all_codes(markets=list(self.cfg.get_markets()))
-                    LOG_Q.put(("INFO", f"全市場取得 {len(all_codes)} 支股票代碼"))
+                    push_log("INFO", f"全市場取得 {len(all_codes)} 支股票代碼", include_traceback=False)
 
                     if all_codes:
                         # 步驟 2：批次取 SymbolInfo
-                        LOG_Q.put(("INFO", "正在批次取得個股基本資料（昨收/漲停/特殊股）…"))
+                        push_log("INFO", "正在批次取得個股基本資料（昨收/漲停/特殊股）…", include_traceback=False)
                         all_infos = loader.load(all_codes)
-                        LOG_Q.put(("INFO", f"成功載入 {len(all_infos)} 支個股資料"))
+                        push_log("INFO", f"成功載入 {len(all_infos)} 支個股資料", include_traceback=False)
 
                         # 步驟 3：依設定條件篩選候選股
                         candidates = scan_daily(all_infos.values(), crit)
                         symbol_infos = {si.code: si for si in candidates}
-                        LOG_Q.put(("INFO",
+                        push_log("INFO",
                             f"篩選後候選 {len(symbol_infos)} 支"
                             f"（價格 {crit.price_min}~{crit.price_max} 元"
-                            f"，昨量 ≥ {crit.min_prev_volume} 張）"))
+                            f"，昨量 ≥ {crit.min_prev_volume} 張）",
+                            include_traceback=False)
                     else:
-                        LOG_Q.put(("WARN", "無法取得全市場代碼，請確認已登入且行情權限正常"))
+                        push_log("WARN", "無法取得全市場代碼，請確認已登入且行情權限正常", include_traceback=False)
 
                 else:
                     # MockAdapter：使用 DEFAULT_MOCK_INFOS
@@ -1712,18 +1751,16 @@ class App(QMainWindow):
                     candidates = scan_daily(DEFAULT_MOCK_INFOS, crit) or DEFAULT_MOCK_INFOS
                     default_codes = [i.code for i in candidates]
                     symbol_infos = self.broker.load_symbol_info(default_codes)
-                    LOG_Q.put(("INFO", f"Mock 模式，載入 {len(symbol_infos)} 支模擬股票"))
+                    push_log("INFO", f"Mock 模式，載入 {len(symbol_infos)} 支模擬股票", include_traceback=False)
 
                 feed = self.broker.create_realtime_feed()
 
             except Exception as e:
-                LOG_Q.put(("WARN", f"載入個股基本資料失敗：{e}"))
-                import traceback
-                LOG_Q.put(("DEBUG", traceback.format_exc()))
+                push_log("WARN", f"載入個股基本資料失敗：{e}")
 
         self.engine = TradingEngine(
             config=self.cfg,
-            on_log=lambda lvl, msg: LOG_Q.put((lvl, msg)),
+            on_log=push_log,
             on_trade=self._on_trade,
             on_status=lambda _s: None,
             feed=feed,
@@ -2022,8 +2059,9 @@ class App(QMainWindow):
         bold = level == "TRADE"
         tag_o = "<b>" if bold else ""
         tag_c = "</b>" if bold else ""
-        html = f'{tag_o}<span style="color:{color};">{ts} {msg}</span>{tag_c}'
-        self.event_log.append(html)
+        safe_msg = html.escape(msg).replace("\n", "<br>")
+        html_text = f'{tag_o}<span style="color:{color};">{ts} {safe_msg}</span>{tag_c}'
+        self.event_log.append(html_text)
         sb = self.event_log.verticalScrollBar()
         sb.setValue(sb.maximum())
         self._log_lines += 1
