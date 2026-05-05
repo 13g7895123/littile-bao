@@ -5,8 +5,16 @@ a = Analysis(
     ['src\\main.py'],
     pathex=['src'],
     binaries=[],
-    datas=[],
-    hiddenimports=['PyQt6', 'PyQt6.QtWidgets', 'PyQt6.QtCore', 'PyQt6.QtGui'],
+    datas=[
+        ('src\\broker', 'broker'),
+    ],
+    hiddenimports=[
+        'PyQt6', 'PyQt6.QtWidgets', 'PyQt6.QtCore', 'PyQt6.QtGui',
+        'fubon_neo', 'fubon_neo.sdk',
+        'broker', 'broker.adapter', 'broker.orders', 'broker.realtime',
+        'broker.account', 'broker.models', 'broker.errors',
+        'broker.fees', 'broker.universe',
+    ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

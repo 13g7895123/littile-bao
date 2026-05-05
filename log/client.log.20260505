@@ -1,0 +1,7 @@
+[2026-05-05 11:46:58.667221453 +08:00 INFO] [login] personal_id="R124443566"
+[2026-05-05 11:46:58.704401454 +08:00 INFO] this account require 2fa
+[2026-05-05 11:46:58.749137757 +08:00 INFO] [future_option_mapping]: 25.154389ms
+[2026-05-05 11:46:58.759830003 +08:00 INFO] [future_option_mapping]: 9.489965ms
+[2026-05-05 11:46:58.816408554 +08:00 INFO] [future_option_mapping]: 56.404232ms
+[2026-05-05 11:46:58.833474637 +08:00 INFO] [future_option_mapping]: 11.867518ms
+[2026-05-05 11:46:58.834136536 +08:00 INFO] [logout] user manually logout

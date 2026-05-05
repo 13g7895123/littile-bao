@@ -14,12 +14,20 @@ if errorlevel 1 (
 )
 
 :: 安裝依賴
-echo [1/3] 安裝 PyQt6 和 PyInstaller...
+echo [1/3] 安裝 PyQt6、PyInstaller 和富邦 SDK...
 pip install "PyQt6>=6.4.0" "pyinstaller>=6.0.0" --quiet
 if errorlevel 1 (
     echo [錯誤] 安裝依賴失敗
     pause
     exit /b 1
+)
+
+:: 安裝富邦 SDK（若 .whl 存在）
+if exist "..\fubon_neo-2.2.8-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl" (
+    echo [1/3] 安裝富邦 fubon_neo SDK...
+    pip install "..\fubon_neo-2.2.8-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl" --quiet
+) else (
+    echo [警告] 找不到 fubon_neo .whl，若需真實下單請手動安裝 SDK
 )
 
 :: 清理舊的 build/dist
