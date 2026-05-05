@@ -44,16 +44,33 @@ echo [2/3] 清理舊的輸出目錄...
 if exist dist rmdir /s /q dist
 if exist build rmdir /s /q build
 
+:: ── Windows Defender 排除（避免 WinError 225 誤判 PyInstaller bootloader）──
+echo [*] 加入 Windows Defender 排除路徑（需要系統管理員權限）...
+set BUILD_DIR=%CD%
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "Add-MpPreference -ExclusionPath '%BUILD_DIR%\build', '%BUILD_DIR%\dist', '%TEMP%\_MEI*' -ErrorAction SilentlyContinue; Write-Host '[*] Defender 排除已加入'"
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "Add-MpPreference -ExclusionProcess 'pyinstaller.exe', 'python.exe' -ErrorAction SilentlyContinue"
+
 :: 執行打包
 echo [3/3] 開始打包（這需要 1~3 分鐘）...
-pyinstaller build.spec
+pyinstaller build.spec --noconfirm
 
 if errorlevel 1 (
     echo.
-    echo [錯誤] 打包失敗，請查看上方訊息
+    echo [錯誤] 打包失敗
+    echo.
+    echo 如果仍出現 WinError 225，請手動執行以下步驟：
+    echo   1. 開啟「Windows 安全性」→「病毒與威脅防護設定」
+    echo   2. 加入排除資料夾：%CD%\build 和 %CD%\dist
+    echo   3. 重新執行 build.bat
     pause
     exit /b 1
 )
+
+:: ── 打包完成後移除 Defender 排除（清理）──
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "Remove-MpPreference -ExclusionProcess 'pyinstaller.exe', 'python.exe' -ErrorAction SilentlyContinue"
 
 :: 重命名 exe
 if exist dist\StockTrader.exe (
