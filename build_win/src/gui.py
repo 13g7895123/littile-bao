@@ -313,6 +313,7 @@ class App(QMainWindow):
         self._monitor_rows: Dict[str, int] = {}
         self._dashboard_preview_summary = []
         self._dashboard_preview_loading = False
+        self._dashboard_preview_broker_key = ""
 
         self._log_colors = {
             "INFO":  C["blue"],
@@ -1336,8 +1337,8 @@ class App(QMainWindow):
         if broker is None:
             return []
 
-        from broker import ScanCriteria, scan_daily
-        from broker.universe import FubonSymbolInfoLoader
+        from broker import ScanCriteria
+        from broker.universe import FubonSymbolInfoLoader, resolve_preview_price, scan_preview_candidates
 
         crit = ScanCriteria(
             price_min=Decimal(str(cfg.price_min)) if cfg.f9_enabled else Decimal("0"),
@@ -1353,11 +1354,11 @@ class App(QMainWindow):
         is_fubon = hasattr(broker, "_sdk") or type(broker).__name__ == "FubonAdapter"
         if is_fubon:
             loader = FubonSymbolInfoLoader(broker)
-            all_codes = loader.fetch_all_codes(markets=["TSE", "OTC"])
+            all_codes = loader.fetch_all_codes(markets=list(cfg.get_markets()))
             if not all_codes:
                 return []
             all_infos = loader.load(all_codes)
-            candidates = scan_daily(all_infos.values(), crit)
+            candidates = scan_preview_candidates(all_infos.values(), crit)
             symbol_infos = {si.code: si for si in candidates}
         else:
             from broker import DEFAULT_MOCK_INFOS
@@ -1371,13 +1372,17 @@ class App(QMainWindow):
                 min_prev_volume=0,
                 max_candidates=crit.max_candidates,
             )
-            candidates = scan_daily(DEFAULT_MOCK_INFOS, mock_crit)
+            candidates = scan_preview_candidates(DEFAULT_MOCK_INFOS, mock_crit)
             default_codes = [i.code for i in candidates]
             symbol_infos = broker.load_symbol_info(default_codes)
 
         summary = []
         for code, info in symbol_infos.items():
             prev_close = float(info.prev_close)
+            preview_price_dec = resolve_preview_price(info)
+            preview_price = float(preview_price_dec)
+            change = preview_price - prev_close
+            change_pct = (change / prev_close * 100.0) if prev_close > 0 else 0.0
             summary.append({
                 "code": code,
                 "name": info.name,
@@ -1387,19 +1392,27 @@ class App(QMainWindow):
                 "pending": False,
                 "vol_1s": 0,
                 "blocked": False,
-                "price": prev_close,
+                "price": preview_price,
                 "limit_up": float(info.limit_up_price),
                 "prev_close": prev_close,
-                "change": 0.0,
-                "change_pct": 0.0,
+                "change": change,
+                "change_pct": change_pct,
                 "ask_qty": 0,
                 "is_at_limit_up": False,
             })
         summary.sort(key=lambda item: item["code"])
         return summary
 
-    def _apply_dashboard_preview_summary(self, summary: list) -> None:
+    def _dashboard_broker_key(self, broker) -> str:
+        if broker is None:
+            return ""
+        account = getattr(broker, "account", None)
+        account_text = getattr(account, "display", "") if account else ""
+        return f"{type(broker).__name__}:{id(broker)}:{account_text}"
+
+    def _apply_dashboard_preview_summary(self, summary: list, broker=None) -> None:
         self._dashboard_preview_summary = summary
+        self._dashboard_preview_broker_key = self._dashboard_broker_key(broker or self.broker)
         if not self._running:
             self._render_monitor(summary)
 
@@ -1421,7 +1434,7 @@ class App(QMainWindow):
                     f"儀錶板即時監控預覽已更新 {len(summary)} 支"
                     f"（價格 {cfg.price_min:g}~{cfg.price_max:g} 元）",
                     include_traceback=False)
-                self._dispatch_ui(lambda summary=summary: self._apply_dashboard_preview_summary(summary))
+                self._dispatch_ui(lambda summary=summary, broker=broker: self._apply_dashboard_preview_summary(summary, broker))
             except Exception as e:
                 push_log("WARN", f"載入儀錶板即時監控預覽失敗：{e}")
             finally:
@@ -1456,7 +1469,7 @@ class App(QMainWindow):
                     except Exception:
                         pass
                     push_log("INFO", f"富邦連線測試成功：{acc_display}", include_traceback=False)
-                    self._dispatch_ui(lambda preview_summary=preview_summary: self._apply_dashboard_preview_summary(preview_summary))
+                    self._dispatch_ui(lambda preview_summary=preview_summary, adapter=adapter: self._apply_dashboard_preview_summary(preview_summary, adapter))
                     self._dispatch_ui(lambda msg=msg: self._set_broker_page_status(msg, C["green"]))
                     self._dispatch_ui(lambda acc_display=acc_display: QMessageBox.information(
                         self, "測試成功", f"富邦連線測試成功！\n帳號：{acc_display}"))
@@ -1507,7 +1520,7 @@ class App(QMainWindow):
                     cfg = self._collect_config()
                     self.cfg = cfg
                     preview_summary = self._load_dashboard_preview_summary(adapter, cfg)
-                    self._dispatch_ui(lambda preview_summary=preview_summary: self._apply_dashboard_preview_summary(preview_summary))
+                    self._dispatch_ui(lambda preview_summary=preview_summary, adapter=adapter: self._apply_dashboard_preview_summary(preview_summary, adapter))
                     self._dispatch_ui(lambda adapter=adapter: self.set_broker(adapter))
                     self._dispatch_ui(lambda msg=msg: self._set_broker_page_status(msg, C["green"]))
                     self._dispatch_ui(lambda: self._toggles["mock_mode"].set(False))
@@ -1685,6 +1698,11 @@ class App(QMainWindow):
                     push_log("INFO", "實體 log 檔記錄已停用", include_traceback=False)
                 configure_runtime_logging(False)
                 log_path = None
+            if self.broker is not None and not self._running:
+                self._dashboard_preview_summary = []
+                self._dashboard_preview_broker_key = ""
+                self._render_monitor([])
+                self._preload_dashboard_preview_async()
             message = "設定已儲存！"
             if log_path:
                 message += f"\nlog 檔案：{log_path}"
@@ -2035,6 +2053,19 @@ class App(QMainWindow):
             except Exception:  # noqa: BLE001
                 pass
         self._refresh_broker_status()
+
+        broker_key = self._dashboard_broker_key(broker)
+        if broker is None:
+            self._dashboard_preview_summary = []
+            self._dashboard_preview_broker_key = ""
+            if not self._running:
+                self._render_monitor([])
+            return
+        if not self._running and self._dashboard_preview_broker_key != broker_key:
+            self._dashboard_preview_summary = []
+            self._dashboard_preview_broker_key = ""
+            self._render_monitor([])
+            self._preload_dashboard_preview_async(broker)
 
     def _sync_order_mode_control(self) -> None:
         chk = self._checks.get("dry_run_mode")

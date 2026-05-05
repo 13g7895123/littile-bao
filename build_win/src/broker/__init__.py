@@ -48,7 +48,9 @@ from .universe import (
     build_symbol_info,
     calc_limit_down,
     calc_limit_up,
+    resolve_preview_price,
     round_to_tick,
+    scan_preview_candidates,
     tick_size,
 )
 from .fees import (
@@ -112,6 +114,8 @@ __all__ = [
     "build_symbol_info",
     "calc_limit_up",
     "calc_limit_down",
+    "resolve_preview_price",
+    "scan_preview_candidates",
     "tick_size",
     "round_to_tick",
     "FEE_RATE",

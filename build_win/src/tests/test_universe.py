@@ -10,10 +10,15 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from broker.universe import (  # noqa: E402
     DEFAULT_MOCK_INFOS,
+    FubonSymbolInfoLoader,
+    ScanCriteria,
     StaticSymbolInfoLoader,
     build_symbol_info,
     calc_limit_down,
     calc_limit_up,
+    resolve_preview_price,
+    scan_daily,
+    scan_preview_candidates,
     tick_size,
 )
 
@@ -63,6 +68,7 @@ class TestBuildSymbolInfo(unittest.TestCase):
         self.assertEqual(si.code, "2330")
         self.assertEqual(si.market, "TSE")
         self.assertEqual(si.prev_close, Decimal("1000"))
+        self.assertIsNone(si.quote_price)
         # 漲停應接近 1100，跌停接近 900
         self.assertGreater(si.limit_up_price, Decimal("1090"))
         self.assertLess(si.limit_down_price, Decimal("910"))
@@ -90,6 +96,72 @@ class TestMockAdapterLoadSymbolInfo(unittest.TestCase):
         out = m.load_symbol_info(["2330", "2317"])
         self.assertEqual(set(out.keys()), {"2330", "2317"})
         self.assertGreater(out["2330"].limit_up_price, out["2330"].prev_close)
+
+
+class TestPreviewPriceFiltering(unittest.TestCase):
+    def test_resolve_preview_price_falls_back_to_prev_close(self):
+        info = build_symbol_info("2330", "台積電", "TSE", 1000.0)
+        self.assertEqual(resolve_preview_price(info), Decimal("1000"))
+
+    def test_preview_scan_uses_quote_price_not_limit_up(self):
+        infos = [
+            build_symbol_info("1111", "甲", "TSE", 100.0, quote_price=Decimal("85"), prev_volume=5000),
+            build_symbol_info("2222", "乙", "TSE", 100.0, quote_price=Decimal("120"), prev_volume=6000),
+        ]
+        crit = ScanCriteria(
+            price_min=Decimal("80"),
+            price_max=Decimal("90"),
+            min_prev_volume=0,
+            exclude_disposal=False,
+            exclude_attention=False,
+            exclude_day_trade_restricted=False,
+            markets=("TSE",),
+            max_candidates=10,
+        )
+
+        preview = scan_preview_candidates(infos, crit)
+        strategy = scan_daily(infos, crit)
+
+        self.assertEqual([i.code for i in preview], ["1111"])
+        self.assertEqual(strategy, [])
+
+    def test_fubon_parse_item_reads_quote_price(self):
+        class DummyAdapter:
+            sdk = object()
+
+        loader = FubonSymbolInfoLoader(DummyAdapter())
+        info = loader._parse_item({
+            "symbol": "2330",
+            "name": "台積電",
+            "market": "TSE",
+            "previousClose": 100,
+            "closePrice": 88.5,
+            "totalVolume": 12345,
+        })
+
+        self.assertIsNotNone(info)
+        self.assertEqual(info.quote_price, Decimal("88.5"))
+        self.assertEqual(info.prev_volume, 12345)
+
+    def test_fubon_parse_item_skips_zero_close_price(self):
+        class DummyAdapter:
+            sdk = object()
+
+        loader = FubonSymbolInfoLoader(DummyAdapter())
+        info = loader._parse_item({
+            "symbol": "4919",
+            "name": "新唐",
+            "exchange": "TPEx",
+            "previousClose": 210,
+            "closePrice": "0",
+            "lastPrice": "232.5",
+            "previousVolume": 4567,
+        })
+
+        self.assertIsNotNone(info)
+        self.assertEqual(info.market, "OTC")
+        self.assertEqual(info.quote_price, Decimal("232.5"))
+        self.assertEqual(info.prev_volume, 4567)
 
 
 if __name__ == "__main__":

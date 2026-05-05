@@ -22,6 +22,7 @@ class SymbolInfo:
     name: str
     market: str  # TSE / OTC
     prev_close: Decimal
+    quote_price: Optional[Decimal]
     limit_up_price: Decimal
     limit_down_price: Decimal
     prev_volume: int = 0
@@ -97,6 +98,7 @@ def build_symbol_info(
     market: str,
     prev_close: float | Decimal,
     *,
+    quote_price: float | Decimal | None = None,
     prev_volume: int = 0,
     is_disposal: bool = False,
     is_attention: bool = False,
@@ -104,11 +106,20 @@ def build_symbol_info(
 ) -> SymbolInfo:
     """以昨收價自動算出漲跌停。"""
     pc = Decimal(str(prev_close))
+    qp: Optional[Decimal] = None
+    if quote_price not in (None, ""):
+        try:
+            qp = Decimal(str(quote_price))
+        except Exception:
+            qp = None
+        if qp is not None and qp <= 0:
+            qp = None
     return SymbolInfo(
         code=code,
         name=name,
         market=market,
         prev_close=pc,
+        quote_price=qp,
         limit_up_price=calc_limit_up(pc),
         limit_down_price=calc_limit_down(pc),
         prev_volume=prev_volume,
@@ -318,12 +329,25 @@ class FubonSymbolInfoLoader(SymbolInfoLoader):
         if pc <= 0:
             return None
 
-        market_raw = str(g("market") or g("exchange") or "TSE").upper()
-        market = "OTC" if "OTC" in market_raw or "TPEx" in market_raw.lower() else "TSE"
+        quote_price = self._decimal_from_fields(
+            g,
+            "closePrice", "close_price", "closingPrice", "close",
+            "lastPrice", "last_price", "latestPrice",
+            "tradePrice", "trade_price", "matchPrice", "match_price",
+            "currentPrice", "current_price", "price",
+        )
+
+        market_raw = str(g("market") or g("exchange") or "TSE")
+        market_upper = market_raw.upper()
+        market_lower = market_raw.lower()
+        market = "OTC" if "OTC" in market_upper or "TPEX" in market_upper or "tpex" in market_lower else "TSE"
 
         prev_vol = 0
         try:
-            prev_vol = int(g("totalVolume") or g("prev_volume") or g("volume") or 0)
+            prev_vol = int(
+                g("previousVolume") or g("prevVolume") or g("prev_volume")
+                or g("totalVolume") or g("volume") or 0
+            )
         except Exception:
             pass
 
@@ -332,6 +356,7 @@ class FubonSymbolInfoLoader(SymbolInfoLoader):
             name=str(g("name") or g("stock_name") or code),
             market=market,
             prev_close=pc,
+            quote_price=quote_price,
             prev_volume=prev_vol,
             is_disposal=bool(g("isDisposition") or g("isDisposal") or g("is_disposal")),
             is_attention=bool(g("isAttention") or g("is_attention")),
@@ -339,6 +364,20 @@ class FubonSymbolInfoLoader(SymbolInfoLoader):
                 g("isDayTradeRestricted") or g("is_day_trade_restricted")
             ),
         )
+
+    @staticmethod
+    def _decimal_from_fields(getter, *names: str) -> Optional[Decimal]:
+        for name in names:
+            raw = getter(name)
+            if raw in (None, "", "-"):
+                continue
+            try:
+                value = Decimal(str(raw))
+            except Exception:
+                continue
+            if value > 0:
+                return value
+        return None
 
     @staticmethod
     def _resolve_rest_stock(sdk):
@@ -425,5 +464,41 @@ def scan_daily(
             continue
         out.append(si)
     # 依昨日量由大到小排序，截斷上限
+    out.sort(key=lambda x: x.prev_volume, reverse=True)
+    return out[: crit.max_candidates]
+
+
+def resolve_preview_price(info: SymbolInfo) -> Decimal:
+    """儀錶板預覽用價格：盤中取最新可用報價，收盤後通常會落在當日收盤價。"""
+    if info.quote_price is not None and info.quote_price > 0:
+        return info.quote_price
+    return info.prev_close
+
+
+def scan_preview_candidates(
+    infos: Iterable[SymbolInfo],
+    criteria: Optional[ScanCriteria] = None,
+) -> List[SymbolInfo]:
+    """儀錶板預覽用篩選：價格區間以可用報價判斷，不改動策略 scan_daily 的漲停價邏輯。"""
+    crit = criteria or ScanCriteria()
+    markets = set(crit.markets)
+    out: List[SymbolInfo] = []
+    for si in infos:
+        if si.market not in markets:
+            continue
+        price = resolve_preview_price(si)
+        if price <= 0:
+            continue
+        if not (crit.price_min <= price <= crit.price_max):
+            continue
+        if si.prev_volume < crit.min_prev_volume:
+            continue
+        if crit.exclude_disposal and si.is_disposal:
+            continue
+        if crit.exclude_attention and si.is_attention:
+            continue
+        if crit.exclude_day_trade_restricted and si.is_day_trade_restricted:
+            continue
+        out.append(si)
     out.sort(key=lambda x: x.prev_volume, reverse=True)
     return out[: crit.max_candidates]

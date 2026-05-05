@@ -1,6 +1,7 @@
 """
 app_logging 與 TradingConfig 的單元測試。
 """
+import base64
 import os
 import sys
 import tempfile
@@ -68,6 +69,53 @@ class TestRuntimeLogging(unittest.TestCase):
 
         self.assertEqual(written, len("no-console mode"))
         self.assertEqual(captured, [("STDOUT", "no-console mode")])
+
+    def test_runtime_logging_filters_encoded_sdk_noise(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_path = configure_runtime_logging(True, base_dir=tmpdir)
+
+            encoded_noise = base64.b64encode(
+                b"[2026-05-05 11:46:58 +08:00 DEBUG sdk_core::transport::websocket_connection] Successfully connected to WebSocket: wss://example"
+            ).decode("ascii")
+            encoded_message = base64.b64encode(
+                b"[2026-05-05 11:46:58 +08:00 INFO client] this account require 2fa"
+            ).decode("ascii")
+
+            print(encoded_noise)
+            print(encoded_message)
+            sys.stdout.flush()
+            configure_runtime_logging(False, base_dir=tmpdir)
+
+            self.assertIsNotNone(log_path)
+            with open(log_path, "r", encoding="utf-8") as f:
+                content = f.read()
+
+            self.assertNotIn("sdk_core::transport::websocket_connection", content)
+            self.assertNotIn("Successfully connected to WebSocket", content)
+            self.assertIn("[STDOUT] this account require 2fa", content)
+
+    def test_runtime_logging_compacts_traceback_details(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_path = configure_runtime_logging(True, base_dir=tmpdir)
+
+            write_log_event("ERROR", "載入失敗\nTraceback (most recent call last):\n  File \"x.py\", line 1, in <module>\n    raise RuntimeError('boom')\nRuntimeError: boom")
+            sys.stderr.write("Traceback (most recent call last):\n")
+            sys.stderr.write("  File \"x.py\", line 1, in <module>\n")
+            sys.stderr.write("    raise ValueError('bad')\n")
+            sys.stderr.write("ValueError: bad\n")
+            sys.stderr.flush()
+            configure_runtime_logging(False, base_dir=tmpdir)
+
+            self.assertIsNotNone(log_path)
+            with open(log_path, "r", encoding="utf-8") as f:
+                content = f.read()
+
+            self.assertIn("[ERROR] 載入失敗", content)
+            self.assertIn("[ERROR] RuntimeError: boom", content)
+            self.assertIn("[STDERR] ValueError: bad", content)
+            self.assertNotIn("Traceback (most recent call last)", content)
+            self.assertNotIn("File \"x.py\"", content)
+            self.assertNotIn("raise RuntimeError", content)
 
 
 if __name__ == "__main__":
