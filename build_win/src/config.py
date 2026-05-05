@@ -208,13 +208,46 @@ class BrokerSettings:
             mock_mode=_env_bool("MOCK_MODE", default=False),
         )
 
+    @property
+    def login_mode(self) -> str:
+        """決定使用哪種 SDK 登入方式。
+        - 'apikey_dma' : 只需 personal_id + api_key（無憑證）
+        - 'apikey'     : personal_id + api_key + cert_path
+        - 'password'   : 傳統 personal_id + password + cert + branch + account
+        """
+        if self.api_key:
+            if self.cert_path:
+                return "apikey"
+            return "apikey_dma"
+        return "password"
+
     def is_complete(self) -> bool:
         """是否已備齊登入所需欄位。"""
-        return all([
-            self.personal_id,
-            self.password,
-            self.cert_path,
-            self.branch_no,
-            self.account_no,
-        ])
+        mode = self.login_mode
+        if mode == "apikey_dma":
+            return bool(self.personal_id and self.api_key)
+        if mode == "apikey":
+            return bool(self.personal_id and self.api_key and self.cert_path)
+        # password mode
+        return bool(self.personal_id and self.password and
+                    self.cert_path and self.branch_no and self.account_no)
+
+    def missing_fields(self) -> list:
+        """回傳目前模式下缺少的欄位名稱清單。"""
+        mode = self.login_mode
+        checks = []
+        if mode == "apikey_dma":
+            if not self.personal_id: checks.append("身分證字號")
+            if not self.api_key:     checks.append("API Key")
+        elif mode == "apikey":
+            if not self.personal_id: checks.append("身分證字號")
+            if not self.api_key:     checks.append("API Key")
+            if not self.cert_path:   checks.append("憑證檔案路徑")
+        else:
+            if not self.personal_id: checks.append("身分證字號")
+            if not self.password:    checks.append("網路下單密碼")
+            if not self.cert_path:   checks.append("憑證檔案路徑")
+            if not self.branch_no:   checks.append("分行代號")
+            if not self.account_no:  checks.append("帳號")
+        return checks
 

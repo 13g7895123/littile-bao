@@ -1290,12 +1290,7 @@ class App(QMainWindow):
         settings = self._broker_fields_to_settings()
 
         if not settings.is_complete():
-            missing = []
-            if not settings.personal_id: missing.append("身分證字號")
-            if not settings.password:    missing.append("網路下單密碼")
-            if not settings.cert_path:   missing.append("憑證檔案路徑")
-            if not settings.branch_no:   missing.append("分行代號")
-            if not settings.account_no:  missing.append("帳號")
+            missing = settings.missing_fields()
             self._set_broker_page_status(f"欄位不完整：{', '.join(missing)}", C["red"])
             return
 
@@ -1333,14 +1328,9 @@ class App(QMainWindow):
 
         settings = self._broker_fields_to_settings()
         if not settings.is_complete():
-            missing = []
-            if not settings.personal_id: missing.append("身分證字號")
-            if not settings.password:    missing.append("網路下單密碼")
-            if not settings.cert_path:   missing.append("憑證檔案路徑")
-            if not settings.branch_no:   missing.append("分行代號")
-            if not settings.account_no:  missing.append("帳號")
+            missing = settings.missing_fields()
             QMessageBox.warning(self, "欄位不完整",
-                f"請填寫以下欄位：\n" + "\n".join(f"• {m}" for m in missing))
+                "請填寫以下欄位：\n" + "\n".join(f"• {m}" for m in missing))
             return
 
         self._set_broker_page_status("登入中…", C["yellow_l"])

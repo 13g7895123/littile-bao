@@ -225,10 +225,19 @@ class FubonAdapter(BrokerAdapter):
         dry_run_fill_max_sec: float = 1.5,
         dry_run_audit_dir: str = "",
     ) -> None:
-        if not all([personal_id, password, cert_path, branch_no, account_no]):
-            raise FubonConfigError(
-                "FubonAdapter 缺少必填欄位（personal_id/password/cert_path/branch_no/account_no）"
-            )
+        # 依登入模式決定必填欄位
+        has_apikey = bool(api_key)
+        has_cert   = bool(cert_path)
+        if has_apikey:
+            # apikey_dma 或 apikey 模式
+            if not personal_id:
+                raise FubonConfigError("FubonAdapter（API Key 模式）缺少 personal_id")
+        else:
+            # 傳統密碼模式
+            if not all([personal_id, password, cert_path, branch_no, account_no]):
+                raise FubonConfigError(
+                    "FubonAdapter 缺少必填欄位（personal_id/password/cert_path/branch_no/account_no）"
+                )
 
         self._personal_id = personal_id
         self._password = password
@@ -295,16 +304,28 @@ class FubonAdapter(BrokerAdapter):
         self._state = ConnectionState.CONNECTING
         try:
             self._sdk = FubonSDK()
-            args = [
-                self._personal_id,
-                self._password,
-                self._cert_path,
-                self._cert_password,
-            ]
-            if self._api_key and self._api_secret:
-                args.extend([self._api_key, self._api_secret])
 
-            res = self._sdk.login(*args)
+            # ── 依登入模式選擇 SDK 方法 ──────────────────
+            if self._api_key and not self._cert_path:
+                # apikey_dma 模式：只需 personal_id + api_key
+                res = self._sdk.apikey_dma_login(self._personal_id, self._api_key)
+            elif self._api_key and self._cert_path:
+                # apikey 模式：personal_id + api_key + cert_path [+ cert_pass]
+                res = self._sdk.apikey_login(
+                    self._personal_id,
+                    self._api_key,
+                    self._cert_path,
+                    self._cert_password,
+                )
+            else:
+                # 傳統密碼模式
+                res = self._sdk.login(
+                    self._personal_id,
+                    self._password,
+                    self._cert_path,
+                    self._cert_password,
+                )
+
             if not getattr(res, "is_success", False):
                 msg = getattr(res, "message", "登入失敗")
                 self._state = ConnectionState.LOGIN_FAILED
