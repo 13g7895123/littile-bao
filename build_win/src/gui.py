@@ -311,6 +311,8 @@ class App(QMainWindow):
         self._toggles: Dict[str, ToggleButton] = {}
         self._combos: Dict[str, QComboBox] = {}
         self._monitor_rows: Dict[str, int] = {}
+        self._dashboard_preview_summary = []
+        self._dashboard_preview_loading = False
 
         self._log_colors = {
             "INFO":  C["blue"],
@@ -461,6 +463,14 @@ class App(QMainWindow):
                 """)
         for k, w in self._pages.items():
             w.setVisible(k == key)
+        if key == "dashboard":
+            if self._running and self.engine:
+                self._render_monitor(self.engine.get_summary())
+            elif self._dashboard_preview_summary:
+                self._render_monitor(self._dashboard_preview_summary)
+            else:
+                self._render_monitor([])
+                self._preload_dashboard_preview_async()
 
     # ── 主體 ─────────────────────────────────
 
@@ -1322,6 +1332,103 @@ class App(QMainWindow):
             dry_run=self._toggles["broker_dry_run"].value,
         )
 
+    def _load_dashboard_preview_summary(self, broker, cfg: TradingConfig) -> list:
+        if broker is None:
+            return []
+
+        from broker import ScanCriteria, scan_daily
+        from broker.universe import FubonSymbolInfoLoader
+
+        crit = ScanCriteria(
+            price_min=Decimal(str(cfg.price_min)) if cfg.f9_enabled else Decimal("0"),
+            price_max=Decimal(str(cfg.price_max)) if cfg.f9_enabled else Decimal("999999"),
+            exclude_disposal=cfg.f11_enabled,
+            exclude_attention=cfg.f11_enabled,
+            exclude_day_trade_restricted=cfg.f11_enabled,
+            markets=tuple(cfg.get_markets()),
+            min_prev_volume=(cfg.daily_volume_min if cfg.f8_enabled else 0),
+            max_candidates=200,
+        )
+
+        is_fubon = hasattr(broker, "_sdk") or type(broker).__name__ == "FubonAdapter"
+        if is_fubon:
+            loader = FubonSymbolInfoLoader(broker)
+            all_codes = loader.fetch_all_codes(markets=["TSE", "OTC"])
+            if not all_codes:
+                return []
+            all_infos = loader.load(all_codes)
+            candidates = scan_daily(all_infos.values(), crit)
+            symbol_infos = {si.code: si for si in candidates}
+        else:
+            from broker import DEFAULT_MOCK_INFOS
+            mock_crit = ScanCriteria(
+                price_min=crit.price_min,
+                price_max=crit.price_max,
+                exclude_disposal=crit.exclude_disposal,
+                exclude_attention=crit.exclude_attention,
+                exclude_day_trade_restricted=crit.exclude_day_trade_restricted,
+                markets=crit.markets,
+                min_prev_volume=0,
+                max_candidates=crit.max_candidates,
+            )
+            candidates = scan_daily(DEFAULT_MOCK_INFOS, mock_crit)
+            default_codes = [i.code for i in candidates]
+            symbol_infos = broker.load_symbol_info(default_codes)
+
+        summary = []
+        for code, info in symbol_infos.items():
+            prev_close = float(info.prev_close)
+            summary.append({
+                "code": code,
+                "name": info.name,
+                "market": info.market,
+                "candle": 0,
+                "qty": 0,
+                "pending": False,
+                "vol_1s": 0,
+                "blocked": False,
+                "price": prev_close,
+                "limit_up": float(info.limit_up_price),
+                "prev_close": prev_close,
+                "change": 0.0,
+                "change_pct": 0.0,
+                "ask_qty": 0,
+                "is_at_limit_up": False,
+            })
+        summary.sort(key=lambda item: item["code"])
+        return summary
+
+    def _apply_dashboard_preview_summary(self, summary: list) -> None:
+        self._dashboard_preview_summary = summary
+        if not self._running:
+            self._render_monitor(summary)
+
+    def _preload_dashboard_preview_async(self, broker=None) -> None:
+        if self._dashboard_preview_loading:
+            return
+        broker = broker or self.broker
+        if broker is None:
+            return
+
+        cfg = self._collect_config()
+        self.cfg = cfg
+        self._dashboard_preview_loading = True
+
+        def _worker():
+            try:
+                summary = self._load_dashboard_preview_summary(broker, cfg)
+                push_log("INFO",
+                    f"儀錶板即時監控預覽已更新 {len(summary)} 支"
+                    f"（價格 {cfg.price_min:g}~{cfg.price_max:g} 元）",
+                    include_traceback=False)
+                self._dispatch_ui(lambda summary=summary: self._apply_dashboard_preview_summary(summary))
+            except Exception as e:
+                push_log("WARN", f"載入儀錶板即時監控預覽失敗：{e}")
+            finally:
+                self._dashboard_preview_loading = False
+
+        threading.Thread(target=_worker, daemon=True).start()
+
     def _broker_test_connection(self):
         """測試連線（登入後立即登出，只驗證憑證）。"""
         self._set_broker_page_status("連線測試中…", C["yellow_l"])
@@ -1341,11 +1448,15 @@ class App(QMainWindow):
                     acc = result.selected
                     msg = f"連線成功：{acc.display}" if acc else "連線成功"
                     acc_display = acc.display if acc else "—"
+                    cfg = self._collect_config()
+                    self.cfg = cfg
+                    preview_summary = self._load_dashboard_preview_summary(adapter, cfg)
                     try:
                         adapter.logout()
                     except Exception:
                         pass
                     push_log("INFO", f"富邦連線測試成功：{acc_display}", include_traceback=False)
+                    self._dispatch_ui(lambda preview_summary=preview_summary: self._apply_dashboard_preview_summary(preview_summary))
                     self._dispatch_ui(lambda msg=msg: self._set_broker_page_status(msg, C["green"]))
                     self._dispatch_ui(lambda acc_display=acc_display: QMessageBox.information(
                         self, "測試成功", f"富邦連線測試成功！\n帳號：{acc_display}"))
@@ -1393,6 +1504,10 @@ class App(QMainWindow):
                     acc = result.selected
                     msg = f"已連線：{acc.display}" if acc else "已連線"
                     acc_display = acc.display if acc else "—"
+                    cfg = self._collect_config()
+                    self.cfg = cfg
+                    preview_summary = self._load_dashboard_preview_summary(adapter, cfg)
+                    self._dispatch_ui(lambda preview_summary=preview_summary: self._apply_dashboard_preview_summary(preview_summary))
                     self._dispatch_ui(lambda adapter=adapter: self.set_broker(adapter))
                     self._dispatch_ui(lambda msg=msg: self._set_broker_page_status(msg, C["green"]))
                     self._dispatch_ui(lambda: self._toggles["mock_mode"].set(False))
@@ -1831,7 +1946,17 @@ class App(QMainWindow):
                 else:
                     # MockAdapter：使用 DEFAULT_MOCK_INFOS
                     from broker import DEFAULT_MOCK_INFOS
-                    candidates = scan_daily(DEFAULT_MOCK_INFOS, crit) or DEFAULT_MOCK_INFOS
+                    mock_crit = ScanCriteria(
+                        price_min=crit.price_min,
+                        price_max=crit.price_max,
+                        exclude_disposal=crit.exclude_disposal,
+                        exclude_attention=crit.exclude_attention,
+                        exclude_day_trade_restricted=crit.exclude_day_trade_restricted,
+                        markets=crit.markets,
+                        min_prev_volume=0,
+                        max_candidates=crit.max_candidates,
+                    )
+                    candidates = scan_daily(DEFAULT_MOCK_INFOS, mock_crit)
                     default_codes = [i.code for i in candidates]
                     symbol_infos = self.broker.load_symbol_info(default_codes)
                     push_log("INFO", f"Mock 模式，載入 {len(symbol_infos)} 支模擬股票", include_traceback=False)
@@ -2225,6 +2350,8 @@ class App(QMainWindow):
 
         threshold = self.cfg.volume_spike_sell_threshold
         pos_cnt = 0
+        self.monitor_table.setRowCount(0)
+        self._monitor_rows.clear()
 
         for s in summary:
             if s["blocked"]:

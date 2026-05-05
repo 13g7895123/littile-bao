@@ -14,3 +14,68 @@
 2026-05-05 22:57:15 [STDOUT] Running Test Case 2: Success path...
 2026-05-05 22:57:15 [STDOUT] SUCCESS: Case 2 passed.
 2026-05-05 22:57:15 [STDOUT] All tests passed successfully.
+2026-05-05 23:07:16 [STDERR] Traceback (most recent call last):
+2026-05-05 23:07:16 [STDERR]   File "/home/jarvis/project/bonus/17_littile-bao/build_win/src/verify_dashboard.py", line 75, in <module>
+2026-05-05 23:07:16 [STDERR]     test_dashboard()
+2026-05-05 23:07:16 [STDERR]   File "/home/jarvis/project/bonus/17_littile-bao/build_win/src/verify_dashboard.py", line 30, in test_dashboard
+2026-05-05 23:07:16 [STDERR]     win._bfields["price_min"].setText("250")
+2026-05-05 23:07:16 [STDERR] KeyError: 'price_min'
+2026-05-05 23:07:27 [INFO] 儀錶板即時監控預覽已更新 0 支（價格 250~400 元）
+2026-05-05 23:07:27 [STDOUT] Monitor table row count: 0
+2026-05-05 23:07:27 [STDOUT] Included codes: []
+2026-05-05 23:07:27 [STDOUT] FAILURE:
+2026-05-05 23:07:27 [STDOUT] - Table is empty.
+2026-05-05 23:07:27 [STDOUT] - Expected code '2382' not found in table.
+2026-05-05 23:07:42 [STDOUT] Config price_min: 250.0, f9_enabled: True
+2026-05-05 23:07:42 [STDOUT] Summary length: 0
+2026-05-05 23:07:42 [INFO] 儀錶板即時監控預覽已更新 0 支（價格 250~400 元）
+2026-05-05 23:07:42 [STDOUT] Monitor table row count: 0
+2026-05-05 23:07:42 [STDOUT] Included codes: []
+2026-05-05 23:07:42 [STDOUT] FAILURE:
+2026-05-05 23:07:42 [STDOUT] - Table is empty.
+2026-05-05 23:07:42 [STDOUT] - Expected code '2382' not found in table.
+2026-05-05 23:07:50 [STDOUT] Config price_min: 250.0, f9_enabled: True
+2026-05-05 23:07:50 [STDOUT] Summary length: 0
+2026-05-05 23:07:50 [INFO] 儀錶板即時監控預覽已更新 0 支（價格 250~400 元）
+2026-05-05 23:07:50 [STDOUT] Monitor table row count: 0
+2026-05-05 23:07:50 [STDOUT] Included codes: []
+2026-05-05 23:07:50 [STDOUT] FAILURE:
+2026-05-05 23:07:50 [STDOUT] - Table is empty (monitor_table row count is 0).
+2026-05-05 23:07:50 [STDOUT] - Expected code '2382' not found in table. Found: []
+2026-05-05 23:07:59 [STDERR] Traceback (most recent call last):
+2026-05-05 23:07:59 [STDERR]   File "/home/jarvis/project/bonus/17_littile-bao/build_win/src/verify_dashboard.py", line 89, in <module>
+2026-05-05 23:07:59 [STDERR]     test_dashboard()
+2026-05-05 23:07:59 [STDERR]   File "/home/jarvis/project/bonus/17_littile-bao/build_win/src/verify_dashboard.py", line 31, in test_dashboard
+2026-05-05 23:07:59 [STDERR]     with mock.patch("gui.scan_daily") as mock_scan:
+2026-05-05 23:07:59 [STDERR]   File "/usr/lib/python3.10/unittest/mock.py", line 1447, in __enter__
+2026-05-05 23:07:59 [STDERR]     original, local = self.get_original()
+2026-05-05 23:07:59 [STDERR]   File "/usr/lib/python3.10/unittest/mock.py", line 1420, in get_original
+2026-05-05 23:07:59 [STDERR]     raise AttributeError(
+2026-05-05 23:07:59 [STDERR] AttributeError: <module 'gui' from '/home/jarvis/project/bonus/17_littile-bao/build_win/src/gui.py'> does not have the attribute 'scan_daily'
+2026-05-05 23:09:45 [STDERR] Traceback (most recent call last):
+2026-05-05 23:09:45 [STDERR]   File "/home/jarvis/project/bonus/17_littile-bao/build_win/src/verify_dashboard_v2.py", line 90, in <module>
+2026-05-05 23:09:45 [STDERR]     test_dashboard()
+2026-05-05 23:09:45 [STDERR]   File "/home/jarvis/project/bonus/17_littile-bao/build_win/src/verify_dashboard_v2.py", line 39, in test_dashboard
+2026-05-05 23:09:45 [STDERR]     with mock.patch("gui.scan_daily") as mock_scan:
+2026-05-05 23:09:45 [STDERR]   File "/usr/lib/python3.10/unittest/mock.py", line 1447, in __enter__
+2026-05-05 23:09:45 [STDERR]     original, local = self.get_original()
+2026-05-05 23:09:45 [STDERR]   File "/usr/lib/python3.10/unittest/mock.py", line 1420, in get_original
+2026-05-05 23:09:45 [STDERR]     raise AttributeError(
+2026-05-05 23:09:45 [STDERR] AttributeError: <module 'gui' from '/home/jarvis/project/bonus/17_littile-bao/build_win/src/gui.py'> does not have the attribute 'scan_daily'
+2026-05-05 23:09:54 [STDOUT] Config price_min: 250.0, f9_enabled: True
+2026-05-05 23:09:54 [STDOUT] Summary length: 0
+2026-05-05 23:09:54 [INFO] 儀錶板即時監控預覽已更新 0 支（價格 250~400 元）
+2026-05-05 23:09:54 [STDOUT] Monitor table row count: 0
+2026-05-05 23:09:54 [STDOUT] Included codes: []
+2026-05-05 23:09:54 [STDOUT] FAILURE:
+2026-05-05 23:09:54 [STDOUT] - Table is empty.
+2026-05-05 23:09:54 [STDOUT] - Expected code '2382' not found.
+2026-05-05 23:10:10 [STDERR] Traceback (most recent call last):
+2026-05-05 23:10:10 [STDERR]   File "/home/jarvis/project/bonus/17_littile-bao/build_win/src/verify_dashboard_v2.py", line 88, in <module>
+2026-05-05 23:10:10 [STDERR]     test_dashboard()
+2026-05-05 23:10:10 [STDERR]   File "/home/jarvis/project/bonus/17_littile-bao/build_win/src/verify_dashboard_v2.py", line 42, in test_dashboard
+2026-05-05 23:10:10 [STDERR]     win._fields["f9_enabled"].setChecked(True) # Force F9 enabled
+2026-05-05 23:10:10 [STDERR] KeyError: 'f9_enabled'
+2026-05-05 23:10:45 [STDOUT] summary codes: ['2382']
+2026-05-05 23:10:45 [STDOUT] table codes: ['2382']
+2026-05-05 23:10:45 [STDOUT] dashboard preview ok
