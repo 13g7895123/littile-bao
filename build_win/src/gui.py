@@ -295,6 +295,7 @@ class App(QMainWindow):
         self._syncing_order_mode_control = False
 
         self._fields: Dict[str, QLineEdit] = {}
+        self._bfields: Dict[str, QLineEdit] = {}   # 券商設定欄位
         self._checks: Dict[str, QCheckBox] = {}
         self._toggles: Dict[str, ToggleButton] = {}
         self._combos: Dict[str, QComboBox] = {}
@@ -355,6 +356,7 @@ class App(QMainWindow):
         tabs = [
             ("dashboard", "儀表板"),
             ("settings",  "策略設定"),
+            ("broker",    "券商設定"),
             ("orders",    "委託/成交"),
             ("positions", "持倉部位"),
             ("events",    "事件日誌"),
@@ -465,7 +467,7 @@ class App(QMainWindow):
         pages_lay.setSpacing(0)
 
         self._pages: Dict[str, QWidget] = {}
-        for key in ("dashboard", "settings", "orders", "positions", "events", "risk"):
+        for key in ("dashboard", "settings", "broker", "orders", "positions", "events", "risk"):
             page = QWidget()
             page.setStyleSheet(f"background-color: {C['bg']};")
             pages_lay.addWidget(page)
@@ -473,6 +475,7 @@ class App(QMainWindow):
 
         self._build_dashboard(self._pages["dashboard"])
         self._build_settings_page(self._pages["settings"])
+        self._build_broker_page(self._pages["broker"])
         self._build_placeholder(self._pages["orders"],    "委託/成交")
         self._build_placeholder(self._pages["positions"], "持倉部位")
         self._build_placeholder(self._pages["events"],    "事件日誌")
@@ -986,6 +989,399 @@ class App(QMainWindow):
         lay.addStretch()
         lay.addWidget(lbl)
         lay.addStretch()
+
+    # ══════════════════════════════════════════
+    #  券商設定分頁
+    # ══════════════════════════════════════════
+
+    def _build_broker_page(self, parent: QWidget):
+        from PyQt6.QtWidgets import QFileDialog, QGroupBox, QGridLayout
+
+        outer = QVBoxLayout(parent)
+        outer.setContentsMargins(20, 16, 20, 16)
+        outer.setSpacing(12)
+
+        # ── 標題列 ──────────────────────────────────
+        hdr = QHBoxLayout()
+        hdr.addWidget(_label("券商設定", C["text"], 13, bold=True))
+        hdr.addSpacing(12)
+        self._broker_conn_dot = QLabel("●")
+        self._broker_conn_dot.setFont(_font(10))
+        self._broker_conn_dot.setStyleSheet(f"color:{C['subtext']}; background:transparent;")
+        hdr.addWidget(self._broker_conn_dot)
+        self._broker_conn_lbl = _label("未連線", C["subtext"], 10)
+        hdr.addWidget(self._broker_conn_lbl)
+        hdr.addStretch()
+        outer.addLayout(hdr)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setStyleSheet(
+            f"QScrollArea {{ border: none; background-color: {C['bg']}; }}"
+            + _scroll_style()
+        )
+        content = QWidget()
+        content.setStyleSheet(f"background-color: {C['bg']};")
+        cl = QVBoxLayout(content)
+        cl.setContentsMargins(0, 0, 12, 0)
+        cl.setSpacing(14)
+
+        def _group(title: str) -> tuple:
+            """回傳 (QFrame, QGridLayout)"""
+            grp = _panel_frame()
+            gl = QGridLayout(grp)
+            gl.setContentsMargins(16, 10, 16, 14)
+            gl.setHorizontalSpacing(12)
+            gl.setVerticalSpacing(8)
+            gl.setColumnStretch(1, 1)
+            title_lbl = _label(title, C["subtext"], 9, bold=True)
+            title_lbl.setContentsMargins(0, 0, 0, 4)
+            gl.addWidget(title_lbl, 0, 0, 1, 3)
+            return grp, gl
+
+        def _row(gl, row: int, label: str, key: str,
+                 pw: bool = False, width: int = 260, placeholder: str = ""):
+            gl.addWidget(_label(label, C["subtext"], 9), row, 0)
+            e = _entry(width, password=pw)
+            if placeholder:
+                e.setPlaceholderText(placeholder)
+            self._bfields[key] = e
+            gl.addWidget(e, row, 1)
+
+        # ── 帳號資訊群組 ─────────────────────────────
+        grp1, gl1 = _group("帳號資訊")
+        _row(gl1, 1, "身分證字號", "personal_id",  placeholder="A123456789")
+        _row(gl1, 2, "網路下單密碼", "password",   pw=True, placeholder="登入密碼")
+        _row(gl1, 3, "分行代號",   "branch_no",   placeholder="例：6460")
+        _row(gl1, 4, "帳號（7碼）","account_no",  placeholder="1234567")
+        cl.addWidget(grp1)
+
+        # ── 憑證群組 ─────────────────────────────────
+        grp2, gl2 = _group("憑證設定")
+
+        gl2.addWidget(_label("憑證檔案", C["subtext"], 9), 1, 0)
+        cert_row = QHBoxLayout()
+        self._bfields["cert_path"] = _entry(190)
+        self._bfields["cert_path"].setPlaceholderText("憑證路徑 (.pfx / .p12)")
+        self._bfields["cert_path"].setReadOnly(False)
+        cert_row.addWidget(self._bfields["cert_path"])
+        cert_row.addSpacing(6)
+        browse_btn = QPushButton("瀏覽…")
+        browse_btn.setFont(_font(9))
+        browse_btn.setFixedSize(64, 26)
+        browse_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {C['surface']};
+                color: {C['text']};
+                border: 1px solid {C['border']};
+                border-radius: 4px;
+            }}
+            QPushButton:hover {{ background-color: #2d333b; }}
+        """)
+        browse_btn.clicked.connect(self._browse_cert)
+        cert_row.addWidget(browse_btn)
+        cert_w = QWidget()
+        cert_w.setLayout(cert_row)
+        cert_w.setStyleSheet("background:transparent;")
+        gl2.addWidget(cert_w, 1, 1)
+
+        _row(gl2, 2, "憑證密碼", "cert_password", pw=True, placeholder="留空則同身分證字號")
+        cl.addWidget(grp2)
+
+        # ── API Key 群組 ─────────────────────────────
+        grp3, gl3 = _group("API Key（選填）")
+        _row(gl3, 1, "API Key",    "api_key",    placeholder="選填，申請後填入")
+        _row(gl3, 2, "API Secret", "api_secret", pw=True, placeholder="選填")
+        cl.addWidget(grp3)
+
+        # ── 連線選項 ─────────────────────────────────
+        grp4, gl4 = _group("連線選項")
+        gl4.addWidget(_label("模擬下單", C["subtext"], 9), 1, 0)
+        dry_tog = ToggleButton(initial=True)
+        self._toggles["broker_dry_run"] = dry_tog
+        gl4.addWidget(dry_tog, 1, 1, Qt.AlignmentFlag.AlignLeft)
+        gl4.addWidget(_label("（開啟：不送出真實委託）", C["subtext"], 8), 1, 2)
+        cl.addWidget(grp4)
+
+        cl.addStretch()
+        scroll.setWidget(content)
+        outer.addWidget(scroll, 1)
+
+        # ── 底部按鈕列 ───────────────────────────────
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(10)
+
+        load_btn = QPushButton("從 .env 載入")
+        load_btn.setFont(_font(9, bold=True))
+        load_btn.setFixedHeight(34)
+        load_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {C['surface']};
+                color: {C['text']};
+                border: 1px solid {C['border']};
+                border-radius: 4px; padding: 0 14px;
+            }}
+            QPushButton:hover {{ background-color: #2d333b; }}
+        """)
+        load_btn.clicked.connect(self._broker_load_from_env)
+        btn_row.addWidget(load_btn)
+
+        save_env_btn = QPushButton("儲存至 .env")
+        save_env_btn.setFont(_font(9, bold=True))
+        save_env_btn.setFixedHeight(34)
+        save_env_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {C['surface']};
+                color: {C['text']};
+                border: 1px solid {C['border']};
+                border-radius: 4px; padding: 0 14px;
+            }}
+            QPushButton:hover {{ background-color: #2d333b; }}
+        """)
+        save_env_btn.clicked.connect(self._broker_save_to_env)
+        btn_row.addWidget(save_env_btn)
+
+        btn_row.addStretch()
+
+        test_btn = QPushButton("測試連線")
+        test_btn.setFont(_font(9, bold=True))
+        test_btn.setFixedHeight(34)
+        test_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {C['yellow']};
+                color: #000000;
+                border: none;
+                border-radius: 4px; padding: 0 16px;
+            }}
+            QPushButton:hover {{ background-color: {C['yellow_l']}; }}
+        """)
+        test_btn.clicked.connect(self._broker_test_connection)
+        btn_row.addWidget(test_btn)
+
+        connect_btn = QPushButton("連線並套用")
+        connect_btn.setFont(_font(9, bold=True))
+        connect_btn.setFixedHeight(34)
+        connect_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {C['blue']};
+                color: #ffffff;
+                border: none;
+                border-radius: 4px; padding: 0 16px;
+            }}
+            QPushButton:hover {{ background-color: {C['blue_l']}; }}
+        """)
+        connect_btn.clicked.connect(self._broker_connect)
+        btn_row.addWidget(connect_btn)
+
+        outer.addLayout(btn_row)
+
+        # 初始載入 .env
+        self._broker_load_from_env()
+
+    # ── 券商設定輔助方法 ────────────────────────
+
+    def _browse_cert(self):
+        from PyQt6.QtWidgets import QFileDialog
+        path, _ = QFileDialog.getOpenFileName(
+            self, "選擇憑證檔案", "",
+            "憑證檔案 (*.pfx *.p12 *.cer *.crt);;所有檔案 (*)"
+        )
+        if path:
+            self._bfields["cert_path"].setText(path)
+
+    def _broker_load_from_env(self):
+        """從 .env 讀取設定並填入欄位。"""
+        import os
+        # 重新解析 .env
+        env_path = None
+        for candidate in [
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"),
+            os.path.join(os.getcwd(), ".env"),
+        ]:
+            if os.path.exists(candidate):
+                env_path = candidate
+                break
+
+        env: dict = {}
+        if env_path:
+            try:
+                with open(env_path, "r", encoding="utf-8") as f:
+                    for raw in f:
+                        line = raw.strip()
+                        if not line or line.startswith("#") or "=" not in line:
+                            continue
+                        k, v = line.split("=", 1)
+                        env[k.strip()] = v.strip().strip('"').strip("'")
+            except Exception:
+                pass
+
+        mapping = {
+            "personal_id":  "FUBON_PERSONAL_ID",
+            "password":     "FUBON_PASSWORD",
+            "branch_no":    "FUBON_BRANCH_NO",
+            "account_no":   "FUBON_ACCOUNT_NO",
+            "cert_path":    "FUBON_CERT_PATH",
+            "cert_password":"FUBON_CERT_PASSWORD",
+            "api_key":      "FUBON_API_KEY",
+            "api_secret":   "FUBON_API_SECRET",
+        }
+        for field_key, env_key in mapping.items():
+            val = env.get(env_key, os.environ.get(env_key, ""))
+            self._bfields[field_key].setText(val)
+
+        dry_run = env.get("FUBON_DRY_RUN", os.environ.get("FUBON_DRY_RUN", "true")).lower()
+        self._toggles["broker_dry_run"].set(dry_run in ("1", "true", "yes"))
+
+        if env_path:
+            LOG_Q.put(("INFO", f"券商設定已從 {env_path} 載入"))
+
+    def _broker_save_to_env(self):
+        """將欄位值寫回 .env。"""
+        import os
+        env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+
+        lines_new = [
+            "# 富邦 Neo SDK 連線設定（由 GUI 儲存）\n",
+            f"FUBON_PERSONAL_ID={self._bfields['personal_id'].text().strip()}\n",
+            f"FUBON_PASSWORD={self._bfields['password'].text()}\n",
+            f"FUBON_CERT_PATH={self._bfields['cert_path'].text().strip()}\n",
+            f"FUBON_CERT_PASSWORD={self._bfields['cert_password'].text()}\n",
+            f"FUBON_BRANCH_NO={self._bfields['branch_no'].text().strip()}\n",
+            f"FUBON_ACCOUNT_NO={self._bfields['account_no'].text().strip()}\n",
+            f"FUBON_API_KEY={self._bfields['api_key'].text().strip()}\n",
+            f"FUBON_API_SECRET={self._bfields['api_secret'].text()}\n",
+            f"FUBON_DRY_RUN={'true' if self._toggles['broker_dry_run'].value else 'false'}\n",
+            "MOCK_MODE=false\n",
+        ]
+        try:
+            with open(env_path, "w", encoding="utf-8") as f:
+                f.writelines(lines_new)
+            QMessageBox.information(self, "儲存成功", f"設定已寫入：\n{env_path}")
+            LOG_Q.put(("INFO", f"券商設定已儲存至 {env_path}"))
+        except Exception as e:
+            QMessageBox.critical(self, "儲存失敗", str(e))
+
+    def _broker_fields_to_settings(self):
+        """將欄位值轉為 BrokerSettings，同時同步 os.environ。"""
+        import os
+        from config import BrokerSettings
+        f = self._bfields
+
+        mapping = {
+            "FUBON_PERSONAL_ID":   f["personal_id"].text().strip(),
+            "FUBON_PASSWORD":      f["password"].text(),
+            "FUBON_CERT_PATH":     f["cert_path"].text().strip(),
+            "FUBON_CERT_PASSWORD": f["cert_password"].text(),
+            "FUBON_BRANCH_NO":     f["branch_no"].text().strip(),
+            "FUBON_ACCOUNT_NO":    f["account_no"].text().strip(),
+            "FUBON_API_KEY":       f["api_key"].text().strip(),
+            "FUBON_API_SECRET":    f["api_secret"].text(),
+            "FUBON_DRY_RUN":       "true" if self._toggles["broker_dry_run"].value else "false",
+        }
+        for k, v in mapping.items():
+            os.environ[k] = v
+
+        return BrokerSettings.from_env()
+
+    def _broker_test_connection(self):
+        """測試連線（登入後立即登出，只驗證憑證）。"""
+        self._set_broker_page_status("連線測試中…", C["yellow_l"])
+        settings = self._broker_fields_to_settings()
+
+        if not settings.is_complete():
+            missing = []
+            if not settings.personal_id: missing.append("身分證字號")
+            if not settings.password:    missing.append("網路下單密碼")
+            if not settings.cert_path:   missing.append("憑證檔案路徑")
+            if not settings.branch_no:   missing.append("分行代號")
+            if not settings.account_no:  missing.append("帳號")
+            self._set_broker_page_status(f"欄位不完整：{', '.join(missing)}", C["red"])
+            return
+
+        def _do_test():
+            try:
+                from broker import FubonAdapter, BrokerError
+                adapter = FubonAdapter.from_config(settings)
+                result = adapter.login()
+                if result.success:
+                    acc = result.selected
+                    msg = f"連線成功：{acc.display}" if acc else "連線成功"
+                    try:
+                        adapter.logout()
+                    except Exception:
+                        pass
+                    from PyQt6.QtCore import QMetaObject, Q_ARG
+                    QTimer.singleShot(0, lambda: self._set_broker_page_status(msg, C["green"]))
+                    QTimer.singleShot(0, lambda: QMessageBox.information(
+                        self, "測試成功", f"富邦連線測試成功！\n帳號：{acc.display if acc else '—'}"))
+                else:
+                    err = result.message or "登入失敗"
+                    QTimer.singleShot(0, lambda: self._set_broker_page_status(f"失敗：{err}", C["red"]))
+            except Exception as e:
+                QTimer.singleShot(0, lambda: self._set_broker_page_status(f"錯誤：{e}", C["red"]))
+                QTimer.singleShot(0, lambda: QMessageBox.critical(self, "連線失敗", str(e)))
+
+        import threading
+        threading.Thread(target=_do_test, daemon=True).start()
+
+    def _broker_connect(self):
+        """用目前欄位登入，並套用為系統 broker（替換現有連線）。"""
+        if self._running:
+            QMessageBox.warning(self, "策略運行中", "請先停止策略再切換券商連線。")
+            return
+
+        settings = self._broker_fields_to_settings()
+        if not settings.is_complete():
+            missing = []
+            if not settings.personal_id: missing.append("身分證字號")
+            if not settings.password:    missing.append("網路下單密碼")
+            if not settings.cert_path:   missing.append("憑證檔案路徑")
+            if not settings.branch_no:   missing.append("分行代號")
+            if not settings.account_no:  missing.append("帳號")
+            QMessageBox.warning(self, "欄位不完整",
+                f"請填寫以下欄位：\n" + "\n".join(f"• {m}" for m in missing))
+            return
+
+        self._set_broker_page_status("登入中…", C["yellow_l"])
+
+        def _do_connect():
+            try:
+                from broker import FubonAdapter, BrokerError
+                if self.broker is not None:
+                    try:
+                        self.broker.logout()
+                    except Exception:
+                        pass
+                adapter = FubonAdapter.from_config(settings)
+                result = adapter.login()
+                if result.success:
+                    acc = result.selected
+                    msg = f"已連線：{acc.display}" if acc else "已連線"
+                    QTimer.singleShot(0, lambda: self.set_broker(adapter))
+                    QTimer.singleShot(0, lambda: self._set_broker_page_status(msg, C["green"]))
+                    QTimer.singleShot(0, lambda: self._toggles["mock_mode"].set(False))
+                    QTimer.singleShot(0, lambda: self._update_mock_mode_label(False))
+                    QTimer.singleShot(0, lambda: LOG_Q.put(("INFO", f"富邦券商已連線：{acc.display if acc else '—'}")))
+                    QTimer.singleShot(0, lambda: QMessageBox.information(
+                        self, "連線成功", f"已成功連線富邦券商！\n帳號：{acc.display if acc else '—'}"))
+                else:
+                    err = result.message or "登入失敗"
+                    QTimer.singleShot(0, lambda: self._set_broker_page_status(f"失敗：{err}", C["red"]))
+                    QTimer.singleShot(0, lambda: QMessageBox.critical(self, "登入失敗", err))
+            except Exception as e:
+                QTimer.singleShot(0, lambda: self._set_broker_page_status(f"錯誤：{e}", C["red"]))
+                QTimer.singleShot(0, lambda: QMessageBox.critical(self, "連線失敗", str(e)))
+
+        import threading
+        threading.Thread(target=_do_connect, daemon=True).start()
+
+    def _set_broker_page_status(self, text: str, color: str):
+        if hasattr(self, "_broker_conn_dot"):
+            self._broker_conn_dot.setStyleSheet(f"color:{color}; background:transparent;")
+        if hasattr(self, "_broker_conn_lbl"):
+            self._broker_conn_lbl.setText(text)
+            self._broker_conn_lbl.setStyleSheet(f"color:{color}; background:transparent;")
 
     # ── 狀態列 ───────────────────────────────
 
