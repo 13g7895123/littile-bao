@@ -558,6 +558,19 @@ class App(QMainWindow):
         self._checks["dry_run_mode"] = _checkbox("模擬下單（不送出真實委託）")
         self._checks["dry_run_mode"].toggled.connect(self._on_order_mode_toggled)
         form.addWidget(self._checks["dry_run_mode"])
+        form.addSpacing(6)
+
+        # ── Mock 模式開關（行情 / 下單全部模擬，不連富邦）
+        mock_row = QHBoxLayout()
+        mock_row.addWidget(_label("使用模擬行情", C["subtext"], 9))
+        mock_row.addStretch()
+        mock_tog = ToggleButton(initial=True)
+        mock_tog.toggled.connect(self._on_mock_mode_toggled)
+        self._toggles["mock_mode"] = mock_tog
+        mock_row.addWidget(mock_tog)
+        form.addLayout(mock_row)
+        self._mock_mode_lbl = _label("目前：Mock 模式（不連富邦）", C["yellow_l"], 8)
+        form.addWidget(self._mock_mode_lbl)
         form.addSpacing(4)
         form.addWidget(_divider())
 
@@ -1144,6 +1157,104 @@ class App(QMainWindow):
         self._update_order_mode_badge()
         self._refresh_broker_status()
 
+    def _on_mock_mode_toggled(self, use_mock: bool) -> None:
+        """切換 Mock ↔ 真實富邦模式（即時替換 broker 實例）。"""
+        if self._running:
+            QMessageBox.warning(self, "策略運行中",
+                "請先停止策略再切換行情模式。")
+            # 恢復 toggle 狀態
+            self._toggles["mock_mode"].set(not use_mock)
+            return
+
+        if use_mock:
+            # 切回 Mock
+            reply = QMessageBox.question(
+                self, "切換 Mock 模式",
+                "切換為 Mock 模擬行情模式，不連線富邦。確定？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                self._toggles["mock_mode"].set(False)
+                return
+            self._switch_to_mock_broker()
+        else:
+            # 切換為真實富邦
+            reply = QMessageBox.question(
+                self, "切換真實行情",
+                "切換為富邦真實行情模式，系統將嘗試重新登入。\n"
+                "請確認 .env 憑證設定正確。確定？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                self._toggles["mock_mode"].set(True)
+                return
+            self._switch_to_fubon_broker()
+
+    def _switch_to_mock_broker(self) -> None:
+        """切換為 MockAdapter。"""
+        from broker import MockAdapter
+        if self.broker is not None:
+            try:
+                self.broker.logout()
+            except Exception:
+                pass
+        adapter = MockAdapter()
+        adapter.login()
+        self.set_broker(adapter)
+        self._update_mock_mode_label(True)
+        LOG_Q.put(("INFO", "已切換為 Mock 模擬行情模式"))
+
+    def _switch_to_fubon_broker(self) -> None:
+        """切換為 FubonAdapter，登入失敗時自動退回 Mock。"""
+        try:
+            from config import BrokerSettings
+            from broker import FubonAdapter, MockAdapter, BrokerError
+            settings = BrokerSettings.from_env()
+            if not settings.is_complete():
+                QMessageBox.critical(
+                    self, "設定不完整",
+                    "未設定富邦帳號資訊，請先填寫 .env 檔案中的：\n"
+                    "FUBON_PERSONAL_ID / FUBON_PASSWORD / FUBON_CERT_PATH\n"
+                    "FUBON_BRANCH_NO / FUBON_ACCOUNT_NO"
+                )
+                self._toggles["mock_mode"].set(True)
+                return
+
+            if self.broker is not None:
+                try:
+                    self.broker.logout()
+                except Exception:
+                    pass
+
+            LOG_Q.put(("INFO", "正在登入富邦券商…"))
+            adapter = FubonAdapter.from_config(settings)
+            result = adapter.login()
+            if result.success and result.selected:
+                self.set_broker(adapter)
+                self._update_mock_mode_label(False)
+                LOG_Q.put(("INFO", f"富邦登入成功：{result.selected.display}"))
+            else:
+                raise Exception(result.message or "登入失敗")
+
+        except Exception as e:
+            LOG_Q.put(("ERROR", f"富邦登入失敗：{e}，退回 Mock 模式"))
+            QMessageBox.critical(self, "登入失敗",
+                f"無法連線富邦券商：\n{e}\n\n系統已退回 Mock 模式。")
+            self._toggles["mock_mode"].set(True)
+            self._switch_to_mock_broker()
+
+    def _update_mock_mode_label(self, is_mock: bool) -> None:
+        if not hasattr(self, "_mock_mode_lbl"):
+            return
+        if is_mock:
+            self._mock_mode_lbl.setText("目前：Mock 模式（不連富邦）")
+            self._mock_mode_lbl.setStyleSheet(f"color: {C['yellow_l']}; background: transparent;")
+        else:
+            acc = getattr(self.broker, "account", None)
+            acc_txt = f" {acc.display}" if acc else ""
+            self._mock_mode_lbl.setText(f"目前：富邦真實行情{acc_txt}")
+            self._mock_mode_lbl.setStyleSheet(f"color: {C['green_l']}; background: transparent;")
+
     # ══════════════════════════════════════════
     #  策略開關
     # ══════════════════════════════════════════
@@ -1163,13 +1274,14 @@ class App(QMainWindow):
             self._set_badge_active(False)
             return
 
-        # ── Milestone 3：先載入 SymbolInfo（昨收 / 漲停 / 特殊股）──
+        # ── 載入 SymbolInfo（昨收 / 漲停 / 特殊股）──────────────
         symbol_infos = None
         feed = None
         if self.broker:
             try:
-                from broker import DEFAULT_MOCK_INFOS, ScanCriteria, scan_daily
-                # M6：依設定的價格區間動態篩選候選股
+                from broker import ScanCriteria, scan_daily
+                from broker.universe import FubonSymbolInfoLoader
+
                 crit = ScanCriteria(
                     price_min=Decimal(str(self.cfg.price_min)) if self.cfg.f9_enabled else Decimal("0"),
                     price_max=Decimal(str(self.cfg.price_max)) if self.cfg.f9_enabled else Decimal("999999"),
@@ -1178,14 +1290,50 @@ class App(QMainWindow):
                     exclude_day_trade_restricted=self.cfg.f11_enabled,
                     markets=tuple(self.cfg.get_markets()),
                     min_prev_volume=(self.cfg.daily_volume_min if self.cfg.f8_enabled else 0),
+                    max_candidates=200,
                 )
-                candidates = scan_daily(DEFAULT_MOCK_INFOS, crit) or DEFAULT_MOCK_INFOS
-                default_codes = [i.code for i in candidates]
-                symbol_infos = self.broker.load_symbol_info(default_codes)
+
+                # 判斷是否為真實券商（FubonAdapter）
+                is_fubon = hasattr(self.broker, "_sdk") or type(self.broker).__name__ == "FubonAdapter"
+
+                if is_fubon:
+                    LOG_Q.put(("INFO", "正在從富邦 API 取得全市場股票清單（1900+ 支）…"))
+                    loader = FubonSymbolInfoLoader(self.broker)
+
+                    # 步驟 1：取全市場代碼
+                    all_codes = loader.fetch_all_codes(markets=list(self.cfg.get_markets()))
+                    LOG_Q.put(("INFO", f"全市場取得 {len(all_codes)} 支股票代碼"))
+
+                    if all_codes:
+                        # 步驟 2：批次取 SymbolInfo
+                        LOG_Q.put(("INFO", "正在批次取得個股基本資料（昨收/漲停/特殊股）…"))
+                        all_infos = loader.load(all_codes)
+                        LOG_Q.put(("INFO", f"成功載入 {len(all_infos)} 支個股資料"))
+
+                        # 步驟 3：依設定條件篩選候選股
+                        candidates = scan_daily(all_infos.values(), crit)
+                        symbol_infos = {si.code: si for si in candidates}
+                        LOG_Q.put(("INFO",
+                            f"篩選後候選 {len(symbol_infos)} 支"
+                            f"（價格 {crit.price_min}~{crit.price_max} 元"
+                            f"，昨量 ≥ {crit.min_prev_volume} 張）"))
+                    else:
+                        LOG_Q.put(("WARN", "無法取得全市場代碼，請確認已登入且行情權限正常"))
+
+                else:
+                    # MockAdapter：使用 DEFAULT_MOCK_INFOS
+                    from broker import DEFAULT_MOCK_INFOS
+                    candidates = scan_daily(DEFAULT_MOCK_INFOS, crit) or DEFAULT_MOCK_INFOS
+                    default_codes = [i.code for i in candidates]
+                    symbol_infos = self.broker.load_symbol_info(default_codes)
+                    LOG_Q.put(("INFO", f"Mock 模式，載入 {len(symbol_infos)} 支模擬股票"))
+
                 feed = self.broker.create_realtime_feed()
-                LOG_Q.put(("INFO", f"動態選股完成，候選 {len(default_codes)} 檔"))
-            except Exception as e:  # noqa: BLE001
+
+            except Exception as e:
                 LOG_Q.put(("WARN", f"載入個股基本資料失敗：{e}"))
+                import traceback
+                LOG_Q.put(("DEBUG", traceback.format_exc()))
 
         self.engine = TradingEngine(
             config=self.cfg,
@@ -1233,6 +1381,13 @@ class App(QMainWindow):
             except Exception:  # noqa: BLE001
                 pass
         self._sync_order_mode_control()
+
+        # 同步 mock_mode toggle 狀態
+        is_mock = broker is None or type(broker).__name__ == "MockAdapter"
+        if "mock_mode" in self._toggles:
+            self._toggles["mock_mode"].set(is_mock)
+        self._update_mock_mode_label(is_mock)
+
         # M5：訂閱委託回報，更新「委託狀態」表
         if broker is not None and hasattr(broker, "on_order"):
             try:
@@ -1581,9 +1736,40 @@ class App(QMainWindow):
             fg = QColor(STATUS_COLOR.get(status, C["text"]))
             vol_fg = QColor(C["red"]) if s["vol_1s"] > threshold else fg
 
+            # ── 價格欄位 ──────────────────────────────────
+            price = s.get("price")
+            change = s.get("change")
+            change_pct = s.get("change_pct")
+            ask_qty = s.get("ask_qty", 0)
+
+            price_txt = f"{price:,.2f}" if price is not None else "—"
+
+            if change is not None:
+                change_txt = f"{'+' if change >= 0 else ''}{change:,.2f}"
+                change_pct_txt = f"{'+' if change_pct >= 0 else ''}{change_pct:.2f}%"
+                if change > 0:
+                    price_color = QColor(C["red"])
+                elif change < 0:
+                    price_color = QColor(C["green"])
+                else:
+                    price_color = QColor(C["text"])
+            else:
+                change_txt = "—"
+                change_pct_txt = "—"
+                price_color = QColor(C["subtext"])
+
+            ask_qty_txt = str(ask_qty) if s.get("is_at_limit_up") else "—"
+            ask_qty_color = QColor(C["orange"]) if ask_qty > 0 else QColor(C["subtext"])
+
             vals = [
-                s["code"], s["name"], "—", "—", "—",
-                "—", str(s["vol_1s"]), candle_txt, status, "查看",
+                s["code"], s["name"],
+                price_txt, change_txt, change_pct_txt,
+                ask_qty_txt, str(s["vol_1s"]), candle_txt, status, "查看",
+            ]
+            col_colors = [
+                fg, fg,
+                price_color, price_color, price_color,
+                ask_qty_color, vol_fg, fg, fg, QColor(C["blue_l"]),
             ]
 
             if s["code"] in self._monitor_rows:
@@ -1593,18 +1779,14 @@ class App(QMainWindow):
                 self.monitor_table.insertRow(row)
                 self._monitor_rows[s["code"]] = row
 
-            for col, val in enumerate(vals):
+            for col, (val, color) in enumerate(zip(vals, col_colors)):
                 item = QTableWidgetItem(val)
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 if col == 8:  # 狀態徽章
                     item.setForeground(QColor(STATUS_COLOR.get(status, C["text"])))
                     item.setBackground(QColor(STATUS_BG.get(status, C["bg"])))
-                elif col == 9:  # 查看
-                    item.setForeground(QColor(C["blue_l"]))
-                elif col == 6:
-                    item.setForeground(vol_fg)
                 else:
-                    item.setForeground(fg)
+                    item.setForeground(color)
                 self.monitor_table.setItem(row, col, item)
 
         self.stat_positions.setText(str(pos_cnt))

@@ -562,14 +562,32 @@ class TradingEngine:
         with self._lock:
             result = []
             for code, s in self._states.items():
+                # 價格與漲跌計算
+                price = float(s.last_price) if s.last_price is not None else None
+                prev_close = s.info.prev_close  # float
+                if price is not None and prev_close:
+                    change = round(price - prev_close, 2)
+                    change_pct = round(change / prev_close * 100, 2)
+                else:
+                    change = None
+                    change_pct = None
+
                 result.append({
-                    "code":    code,
-                    "name":    s.info.name,
-                    "market":  s.info.market,
-                    "candle":  s.candle_index,
-                    "qty":     s.position_qty,
-                    "pending": s.pending,
-                    "vol_1s":  s.last_1s_vol,
-                    "blocked": s.entry_blocked,
+                    "code":       code,
+                    "name":       s.info.name,
+                    "market":     s.info.market,
+                    "candle":     s.candle_index,
+                    "qty":        s.position_qty,
+                    "pending":    s.pending,
+                    "vol_1s":     s.last_1s_vol,
+                    "blocked":    s.entry_blocked,
+                    # ── 新增欄位 ──
+                    "price":      price,          # 最新成交價（None = 尚無行情）
+                    "limit_up":   s.info.limit_up,
+                    "prev_close": prev_close,
+                    "change":     change,         # 漲跌價差
+                    "change_pct": change_pct,     # 漲跌幅 %
+                    "ask_qty":    s.ask_qty_at_limit,  # 漲停委賣張數
+                    "is_at_limit_up": s.is_at_limit_up,
                 })
             return result

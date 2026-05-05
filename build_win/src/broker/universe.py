@@ -141,54 +141,204 @@ class StaticSymbolInfoLoader(SymbolInfoLoader):
 
 class FubonSymbolInfoLoader(SymbolInfoLoader):
     """
-    透過 fubon_neo SDK 取得個股基本資料（骨架）。
+    透過 fubon_neo SDK 取得個股基本資料。
 
-    SDK 路徑（不同版本可能略異）：
-      sdk.marketdata.rest_client.stock.intraday.ticker(symbol)
-      → 含 prevClose / referencePrice / isDisposition 等欄位
-
-    特殊股 / 限當沖屬性需另呼叫對應 endpoint，本期僅提供骨架。
+    主要流程：
+      1. fetch_all_codes()  — 呼叫 snapshot 取得全市場代碼清單
+      2. load(codes)        — 依代碼清單批次取得 ticker（prevClose / 特殊股標記）
     """
 
     def __init__(self, adapter) -> None:
         self._adapter = adapter
 
+    # ── 取得全市場代碼清單 ──────────────────────────────────
+
+    def fetch_all_codes(self, markets: Iterable[str] = ("TSE", "OTC")) -> List[str]:
+        """
+        從 Fubon marketdata REST API 取得全市場股票代碼。
+
+        嘗試路徑：
+          sdk.marketdata.rest_client.stock.snapshot.quotes(market=market)
+          → items[].symbol
+        回傳去重後的代碼清單。
+        """
+        try:
+            sdk = self._adapter.sdk
+        except Exception:
+            return []
+
+        rest = self._resolve_rest_stock(sdk)
+        if rest is None:
+            return []
+
+        codes: List[str] = []
+        for market in markets:
+            try:
+                snapshot = getattr(rest, "snapshot", None)
+                quotes_fn = getattr(snapshot, "quotes", None) if snapshot else None
+                if not callable(quotes_fn):
+                    continue
+
+                # 嘗試各種 API 呼叫方式
+                try:
+                    res = quotes_fn(market=market)
+                except TypeError:
+                    try:
+                        res = quotes_fn({"market": market})
+                    except Exception:
+                        res = quotes_fn()
+
+                # 解析回傳值
+                items = None
+                if isinstance(res, dict):
+                    items = res.get("data") or res.get("items") or res.get("quotes") or []
+                elif hasattr(res, "data"):
+                    items = res.data or []
+                elif isinstance(res, list):
+                    items = res
+
+                if not items:
+                    continue
+
+                for item in items:
+                    if isinstance(item, dict):
+                        sym = item.get("symbol") or item.get("code") or item.get("stock_no")
+                    else:
+                        sym = (getattr(item, "symbol", None)
+                               or getattr(item, "code", None)
+                               or getattr(item, "stock_no", None))
+                    if sym and str(sym).isdigit() and len(str(sym)) == 4:
+                        codes.append(str(sym))
+
+            except Exception as e:
+                print(f"[Universe] fetch_all_codes market={market} 失敗：{e}")
+
+        # 去重保序
+        seen: set = set()
+        result = []
+        for c in codes:
+            if c not in seen:
+                seen.add(c)
+                result.append(c)
+        return result
+
+    # ── 批次取得個股 SymbolInfo ──────────────────────────────
+
     def load(self, codes: Iterable[str]) -> Dict[str, SymbolInfo]:
         try:
             sdk = self._adapter.sdk
-        except Exception:  # noqa: BLE001
+        except Exception:
             return {}
 
         out: Dict[str, SymbolInfo] = {}
         rest = self._resolve_rest_stock(sdk)
         if rest is None:
             return {}
+
+        code_list = list(codes)
+
+        # 優先嘗試批次 snapshot（一次取全部，效能最好）
+        batch_ok = self._try_batch_load(rest, code_list, out)
+        if not batch_ok:
+            # 退回逐筆查詢
+            self._load_one_by_one(rest, code_list, out)
+
+        return out
+
+    def _try_batch_load(self, rest, codes: List[str], out: Dict[str, SymbolInfo]) -> bool:
+        """嘗試用 snapshot.quotes(symbols=[...]) 批次取得，成功回傳 True。"""
+        try:
+            snapshot = getattr(rest, "snapshot", None)
+            quotes_fn = getattr(snapshot, "quotes", None) if snapshot else None
+            if not callable(quotes_fn):
+                return False
+
+            # 分批 200 支
+            for i in range(0, len(codes), 200):
+                chunk = codes[i:i + 200]
+                try:
+                    res = quotes_fn(symbols=chunk)
+                except TypeError:
+                    try:
+                        res = quotes_fn({"symbols": chunk})
+                    except Exception:
+                        return False
+
+                items = None
+                if isinstance(res, dict):
+                    items = res.get("data") or res.get("items") or []
+                elif hasattr(res, "data"):
+                    items = res.data or []
+                elif isinstance(res, list):
+                    items = res
+
+                if not items:
+                    continue
+
+                for item in items:
+                    si = self._parse_item(item)
+                    if si:
+                        out[si.code] = si
+
+            return True
+        except Exception:
+            return False
+
+    def _load_one_by_one(self, rest, codes: List[str], out: Dict[str, SymbolInfo]) -> None:
+        """逐筆查 intraday.ticker（備援）。"""
         for code in codes:
             try:
                 raw = self._fetch_ticker(rest, code)
                 if not raw:
                     continue
-                pc = Decimal(str(
-                    raw.get("previousClose")
-                    or raw.get("prevClose")
-                    or raw.get("referencePrice")
-                    or 0
-                ))
-                if pc <= 0:
-                    continue
-                out[code] = build_symbol_info(
-                    code=code,
-                    name=str(raw.get("name") or code),
-                    market=str(raw.get("market") or "TSE"),
-                    prev_close=pc,
-                    prev_volume=int(raw.get("totalVolume") or 0),
-                    is_disposal=bool(raw.get("isDisposition") or raw.get("isDisposal")),
-                    is_attention=bool(raw.get("isAttention")),
-                    is_day_trade_restricted=bool(raw.get("isDayTradeRestricted")),
-                )
-            except Exception as e:  # noqa: BLE001
+                si = self._parse_item(raw, fallback_code=code)
+                if si:
+                    out[si.code] = si
+            except Exception as e:
                 print(f"[Universe] 載入 {code} 失敗：{e}")
-        return out
+
+    def _parse_item(self, raw, fallback_code: str = "") -> Optional["SymbolInfo"]:
+        """將 API 回傳的 dict / object 轉為 SymbolInfo。"""
+        if isinstance(raw, dict):
+            g = raw.get
+        else:
+            def g(k, d=None):
+                return getattr(raw, k, d)
+
+        code = str(g("symbol") or g("code") or g("stock_no") or fallback_code)
+        if not code:
+            return None
+
+        pc_raw = (g("previousClose") or g("prevClose")
+                  or g("referencePrice") or g("prev_close") or 0)
+        try:
+            pc = Decimal(str(pc_raw))
+        except Exception:
+            return None
+        if pc <= 0:
+            return None
+
+        market_raw = str(g("market") or g("exchange") or "TSE").upper()
+        market = "OTC" if "OTC" in market_raw or "TPEx" in market_raw.lower() else "TSE"
+
+        prev_vol = 0
+        try:
+            prev_vol = int(g("totalVolume") or g("prev_volume") or g("volume") or 0)
+        except Exception:
+            pass
+
+        return build_symbol_info(
+            code=code,
+            name=str(g("name") or g("stock_name") or code),
+            market=market,
+            prev_close=pc,
+            prev_volume=prev_vol,
+            is_disposal=bool(g("isDisposition") or g("isDisposal") or g("is_disposal")),
+            is_attention=bool(g("isAttention") or g("is_attention")),
+            is_day_trade_restricted=bool(
+                g("isDayTradeRestricted") or g("is_day_trade_restricted")
+            ),
+        )
 
     @staticmethod
     def _resolve_rest_stock(sdk):
@@ -204,7 +354,10 @@ class FubonSymbolInfoLoader(SymbolInfoLoader):
         ticker = getattr(intraday, "ticker", None)
         if not callable(ticker):
             return None
-        res = ticker(symbol=code) if "symbol" in ticker.__code__.co_varnames else ticker(code)
+        try:
+            res = ticker(symbol=code)
+        except TypeError:
+            res = ticker(code)
         if isinstance(res, dict):
             return res
         return getattr(res, "data", None) or getattr(res, "__dict__", None)
