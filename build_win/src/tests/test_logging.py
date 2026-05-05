@@ -8,7 +8,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app_logging import compose_log_message, configure_runtime_logging, write_log_event  # noqa: E402
+from app_logging import _TeeStream, compose_log_message, configure_runtime_logging, write_log_event  # noqa: E402
 from config import TradingConfig  # noqa: E402
 
 
@@ -53,6 +53,21 @@ class TestRuntimeLogging(unittest.TestCase):
 
             self.assertIn("[INFO] 事件已寫入", content)
             self.assertIn("[STDOUT] stdout 測試訊息", content)
+
+    def test_tee_stream_handles_missing_underlying_stream(self):
+        captured = []
+
+        class DummyManager:
+            def write_stream(self, name: str, data: str) -> None:
+                captured.append((name, data))
+
+        stream = _TeeStream(DummyManager(), None, "STDOUT")
+
+        written = stream.write("no-console mode")
+        stream.flush()
+
+        self.assertEqual(written, len("no-console mode"))
+        self.assertEqual(captured, [("STDOUT", "no-console mode")])
 
 
 if __name__ == "__main__":

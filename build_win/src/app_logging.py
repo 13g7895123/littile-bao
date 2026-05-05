@@ -66,21 +66,28 @@ def compose_log_message(
 
 
 class _TeeStream:
-    def __init__(self, manager: "RuntimeLogManager", stream: TextIO, name: str):
+    def __init__(self, manager: "RuntimeLogManager", stream: Optional[TextIO], name: str):
         self._manager = manager
         self._stream = stream
         self._name = name
+        self.encoding = getattr(stream, "encoding", "utf-8")
 
     def write(self, data: str) -> int:
-        written = self._stream.write(data)
-        self._stream.flush()
+        if self._stream is not None:
+            written = self._stream.write(data)
+            self._stream.flush()
+        else:
+            written = len(data)
         self._manager.write_stream(self._name, data)
         return written
 
     def flush(self) -> None:
-        self._stream.flush()
+        if self._stream is not None:
+            self._stream.flush()
 
     def __getattr__(self, item):
+        if self._stream is None:
+            raise AttributeError(item)
         return getattr(self._stream, item)
 
 
