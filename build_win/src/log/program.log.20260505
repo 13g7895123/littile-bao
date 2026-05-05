@@ -1,3 +1,16 @@
 2026-05-05 22:06:30 [STDOUT] Logging stdout: <class 'app_logging._TeeStream'>
 2026-05-05 22:50:58 [STDOUT] DEBUG: Actual text is '測試完成'
 2026-05-05 22:50:58 [STDOUT] SUCCESS: GUI update verified.
+2026-05-05 22:56:47 [STDOUT] Running Test Case 1: Exception path...
+2026-05-05 22:56:47 [STDOUT] FAILURE: Case 1 failed. Actual text: '欄位不完整：身分證字號, 網路下單密碼, 憑證檔案路徑, 分行代號, 帳號'
+2026-05-05 22:56:54 [STDERR] Traceback (most recent call last):
+2026-05-05 22:56:54 [STDERR]   File "/home/jarvis/project/bonus/17_littile-bao/build_win/src/verify_logic.py", line 59, in <module>
+2026-05-05 22:56:54 [STDERR]     test_logic()
+2026-05-05 22:56:54 [STDERR]   File "/home/jarvis/project/bonus/17_littile-bao/build_win/src/verify_logic.py", line 12, in test_logic
+2026-05-05 22:56:54 [STDERR]     win._broker_id_ln.setText('test_id')
+2026-05-05 22:56:54 [STDERR] AttributeError: 'App' object has no attribute '_broker_id_ln'
+2026-05-05 22:57:15 [STDOUT] Running Test Case 1: Exception path...
+2026-05-05 22:57:15 [STDOUT] SUCCESS: Case 1 passed.
+2026-05-05 22:57:15 [STDOUT] Running Test Case 2: Success path...
+2026-05-05 22:57:15 [STDOUT] SUCCESS: Case 2 passed.
+2026-05-05 22:57:15 [STDOUT] All tests passed successfully.

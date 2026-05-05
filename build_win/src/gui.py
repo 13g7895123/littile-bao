@@ -1340,22 +1340,26 @@ class App(QMainWindow):
                 if result.success:
                     acc = result.selected
                     msg = f"連線成功：{acc.display}" if acc else "連線成功"
+                    acc_display = acc.display if acc else "—"
                     try:
                         adapter.logout()
                     except Exception:
                         pass
-                    push_log("INFO", f"富邦連線測試成功：{acc.display if acc else '—'}", include_traceback=False)
-                    self._dispatch_ui(lambda: self._set_broker_page_status(msg, C["green"]))
-                    self._dispatch_ui(lambda: QMessageBox.information(
-                        self, "測試成功", f"富邦連線測試成功！\n帳號：{acc.display if acc else '—'}"))
+                    push_log("INFO", f"富邦連線測試成功：{acc_display}", include_traceback=False)
+                    self._dispatch_ui(lambda msg=msg: self._set_broker_page_status(msg, C["green"]))
+                    self._dispatch_ui(lambda acc_display=acc_display: QMessageBox.information(
+                        self, "測試成功", f"富邦連線測試成功！\n帳號：{acc_display}"))
                 else:
                     err = result.message or "登入失敗"
                     push_log("ERROR", f"富邦連線測試失敗：{err}")
-                    self._dispatch_ui(lambda: self._set_broker_page_status(f"失敗：{err}", C["red"]))
+                    status_text = f"失敗：{err}"
+                    self._dispatch_ui(lambda status_text=status_text: self._set_broker_page_status(status_text, C["red"]))
             except Exception as e:
-                push_log("ERROR", f"富邦連線測試失敗：{e}")
-                self._dispatch_ui(lambda: self._set_broker_page_status(f"錯誤：{e}", C["red"]))
-                self._dispatch_ui(lambda: QMessageBox.critical(self, "連線失敗", str(e)))
+                error_text = str(e)
+                status_text = f"錯誤：{error_text}"
+                push_log("ERROR", f"富邦連線測試失敗：{error_text}")
+                self._dispatch_ui(lambda status_text=status_text: self._set_broker_page_status(status_text, C["red"]))
+                self._dispatch_ui(lambda error_text=error_text: QMessageBox.critical(self, "連線失敗", error_text))
 
         import threading
         threading.Thread(target=_do_test, daemon=True).start()
@@ -1388,22 +1392,26 @@ class App(QMainWindow):
                 if result.success:
                     acc = result.selected
                     msg = f"已連線：{acc.display}" if acc else "已連線"
-                    self._dispatch_ui(lambda: self.set_broker(adapter))
-                    self._dispatch_ui(lambda: self._set_broker_page_status(msg, C["green"]))
+                    acc_display = acc.display if acc else "—"
+                    self._dispatch_ui(lambda adapter=adapter: self.set_broker(adapter))
+                    self._dispatch_ui(lambda msg=msg: self._set_broker_page_status(msg, C["green"]))
                     self._dispatch_ui(lambda: self._toggles["mock_mode"].set(False))
                     self._dispatch_ui(lambda: self._update_mock_mode_label(False))
-                    self._dispatch_ui(lambda: push_log("INFO", f"富邦券商已連線：{acc.display if acc else '—'}", include_traceback=False))
-                    self._dispatch_ui(lambda: QMessageBox.information(
-                        self, "連線成功", f"已成功連線富邦券商！\n帳號：{acc.display if acc else '—'}"))
+                    self._dispatch_ui(lambda acc_display=acc_display: push_log("INFO", f"富邦券商已連線：{acc_display}", include_traceback=False))
+                    self._dispatch_ui(lambda acc_display=acc_display: QMessageBox.information(
+                        self, "連線成功", f"已成功連線富邦券商！\n帳號：{acc_display}"))
                 else:
                     err = result.message or "登入失敗"
                     push_log("ERROR", f"富邦券商登入失敗：{err}")
-                    self._dispatch_ui(lambda: self._set_broker_page_status(f"失敗：{err}", C["red"]))
-                    self._dispatch_ui(lambda: QMessageBox.critical(self, "登入失敗", err))
+                    status_text = f"失敗：{err}"
+                    self._dispatch_ui(lambda status_text=status_text: self._set_broker_page_status(status_text, C["red"]))
+                    self._dispatch_ui(lambda err=err: QMessageBox.critical(self, "登入失敗", err))
             except Exception as e:
-                push_log("ERROR", f"富邦券商連線失敗：{e}")
-                self._dispatch_ui(lambda: self._set_broker_page_status(f"錯誤：{e}", C["red"]))
-                self._dispatch_ui(lambda: QMessageBox.critical(self, "連線失敗", str(e)))
+                error_text = str(e)
+                status_text = f"錯誤：{error_text}"
+                push_log("ERROR", f"富邦券商連線失敗：{error_text}")
+                self._dispatch_ui(lambda status_text=status_text: self._set_broker_page_status(status_text, C["red"]))
+                self._dispatch_ui(lambda error_text=error_text: QMessageBox.critical(self, "連線失敗", error_text))
 
         import threading
         threading.Thread(target=_do_connect, daemon=True).start()
