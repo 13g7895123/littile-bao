@@ -19,7 +19,7 @@ applyTo:
 ## 2. 目前分頁邊界
 | 分頁 | 內容 | 主要屬性 |
 |---|---|---|
-| `dashboard` / 儀表板 | 原本總覽：左側策略設定、統計卡、即時監控、事件日誌、持倉、委託、成交 | `_strategy_settings_panel`、`stat_*` labels、`monitor_table`、`event_log`、`positions_table`、`orders_table`、`trades_table` |
+| `dashboard` / 儀表板 | 原本總覽：左側策略設定、統計卡、即時監控、事件日誌、持倉、委託、成交 | `_strategy_settings_panel`、`stat_*` labels、`monitor_count_lbl`、`monitor_table`、`event_log`、`positions_table`、`orders_table`、`trades_table` |
 | `settings` / 策略設定 | 滿版策略參數、進場/排除/出場設定、JSON 匯入匯出 | `_strategy_settings_panel`、`_fields`、`_checks`、`_toggles`、`_combos` |
 | `broker` / 券商設定 | 富邦帳號、憑證、API Key、連線控制 | `_bfields`、`_broker_*` |
 | `orders` / 委託/成交 | 委託狀態、成交記錄 | `orders_full_table`、`trades_full_table` |
@@ -31,6 +31,9 @@ applyTo:
 - `dashboard` 保留原本總覽功能，不要移除左側策略設定、事件日誌、持倉、委託、成交小區塊。
 - `settings` 分頁使用滿版設定頁，不要保留 270px 側欄寬度限制；目前透過 `_place_strategy_settings_panel()` 在儀表板側欄與滿版設定頁之間移動同一份 widget。
 - 完整分頁表格應獨立於儀表板小表格，並由 `_append_order()`、`_append_trade()`、`_render_account()`、`_append_log()` 即時同步。
+- 即時監控標題旁需顯示目前表格總檔數（`monitor_count_lbl`，文字格式 `共 N 檔`），由 `_render_monitor()` 每次刷新同步更新。
+- 即時監控表格需在 `_render_monitor()` 後呼叫欄寬自動調整，讓代碼、名稱、價格、狀態、動作等內容盡量完整顯示；若欄位總寬超出區塊，允許水平捲動。
+- 即時監控 `動作` 欄目前是狀態指引文字，不是可點擊按鈕。內容應描述下一步可做/會做的事，例如 `等待漲停`、`等待封板`、`檢查進場`、`等委賣降`、`等待成交`、`監控出場`、`已封鎖`。
 - `_switch_tab()` 只負責切換可見頁與必要資料刷新；不要在切換時清空同一張表格。
 - 跨執行緒 GUI 更新仍需走 `_dispatch_ui()`，不要從 broker 或 engine callback 直接寫 Qt widget。
 
@@ -52,3 +55,4 @@ PYTHONDONTWRITEBYTECODE=1 QT_QPA_PLATFORM=offscreen python3 -m unittest discover
 - **日誌出現兩次或沒有同步**：檢查 `event_log`（儀表板小區塊）與 `events_full_log`（事件日誌分頁）是否為不同 widget，且 `_append_log()` 有同步追加兩邊。
 - **策略設定頁仍像側欄**：檢查 `_set_strategy_panel_mode(full_page=True)` 是否解除 `maximumWidth`，且 panel 背景切回 `C["bg"]`。
 - **策略設定沒有套用**：確認欄位仍寫入 `_fields` / `_checks` / `_toggles`，且 `_apply_config()`、`_collect_config()` 使用相同 key。
+- **即時監控內容被截斷**：檢查 `_autosize_monitor_columns()` 是否在 `_render_monitor()` 結尾被呼叫，且 `monitor_table` 沒有把最後一欄強制 stretch 造成其他欄位被壓縮。

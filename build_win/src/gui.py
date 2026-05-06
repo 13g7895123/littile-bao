@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QFrame, QLabel, QPushButton,
     QLineEdit, QCheckBox, QScrollArea, QTextEdit,
     QTableWidget, QTableWidgetItem,
-    QMessageBox, QHBoxLayout, QVBoxLayout, QComboBox,
+    QMessageBox, QHBoxLayout, QVBoxLayout, QComboBox, QHeaderView,
 )
 from PyQt6.QtCore import Qt, QTimer, QPoint, pyqtSignal
 from PyQt6.QtGui import QPainter, QColor, QFont, QBrush
@@ -945,6 +945,9 @@ class App(QMainWindow):
 
         mh = QHBoxLayout()
         mh.addWidget(_label("即時監控", C["text"], 10, bold=True))
+        mh.addSpacing(8)
+        self.monitor_count_lbl = _label("共 0 檔", C["subtext"], 9)
+        mh.addWidget(self.monitor_count_lbl)
         mh.addStretch()
         ml.addLayout(mh)
 
@@ -957,9 +960,13 @@ class App(QMainWindow):
         self.monitor_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.monitor_table.verticalHeader().setVisible(False)
         self.monitor_table.setShowGrid(True)
-        self.monitor_table.horizontalHeader().setStretchLastSection(False)
+        self.monitor_table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        monitor_header = self.monitor_table.horizontalHeader()
+        monitor_header.setStretchLastSection(False)
+        monitor_header.setMinimumSectionSize(44)
+        monitor_header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         self.monitor_table.verticalHeader().setDefaultSectionSize(28)
-        for i, w in enumerate([52, 60, 58, 52, 62, 68, 72, 60, 72, 52]):
+        for i, w in enumerate([52, 70, 66, 62, 72, 78, 86, 70, 78, 86]):
             self.monitor_table.setColumnWidth(i, w)
         ml.addWidget(self.monitor_table, 1)
         rl.addWidget(mon, 3)
@@ -2849,6 +2856,8 @@ class App(QMainWindow):
 
         threshold = self.cfg.volume_spike_sell_threshold
         pos_cnt = 0
+        if hasattr(self, "monitor_count_lbl"):
+            self.monitor_count_lbl.setText(f"共 {len(summary)} 檔")
         self.monitor_table.setRowCount(0)
         self._monitor_rows.clear()
 
@@ -2893,16 +2902,17 @@ class App(QMainWindow):
 
             ask_qty_txt = str(ask_qty) if s.get("is_at_limit_up") else "—"
             ask_qty_color = QColor(C["orange"]) if ask_qty > 0 else QColor(C["subtext"])
+            action_txt, action_color = self._monitor_action_text(s, status)
 
             vals = [
                 s["code"], s["name"],
                 price_txt, change_txt, change_pct_txt,
-                ask_qty_txt, str(s["vol_1s"]), candle_txt, status, "查看",
+                ask_qty_txt, str(s["vol_1s"]), candle_txt, status, action_txt,
             ]
             col_colors = [
                 fg, fg,
                 price_color, price_color, price_color,
-                ask_qty_color, vol_fg, fg, fg, QColor(C["blue_l"]),
+                ask_qty_color, vol_fg, fg, fg, QColor(action_color),
             ]
 
             if s["code"] in self._monitor_rows:
@@ -2926,6 +2936,32 @@ class App(QMainWindow):
         self.stat_trade_cnt.setText(
             f"{self._trade_count} / {self.cfg.daily_max_trades}"
         )
+        self._autosize_monitor_columns()
+
+    def _monitor_action_text(self, summary_item: dict, status: str) -> tuple[str, str]:
+        if status == "已完成":
+            return "已封鎖", C["subtext"]
+        if status == "已進場":
+            return "監控出場", C["green_l"]
+        if status == "委託中":
+            return "等待成交", C["yellow_l"]
+        if summary_item.get("is_at_limit_up"):
+            ask_qty = int(summary_item.get("ask_qty") or 0)
+            if ask_qty >= self.cfg.ask_queue_threshold:
+                return "等委賣降", C["orange"]
+            return "檢查進場", C["blue_l"]
+        if summary_item.get("candle", 0) > 0:
+            return "等待封板", C["yellow_l"]
+        return "等待漲停", C["subtext"]
+
+    def _autosize_monitor_columns(self) -> None:
+        if not hasattr(self, "monitor_table"):
+            return
+        min_widths = [52, 70, 66, 62, 72, 78, 86, 70, 78, 86]
+        self.monitor_table.resizeColumnsToContents()
+        for col, min_width in enumerate(min_widths):
+            width = max(self.monitor_table.columnWidth(col) + 10, min_width)
+            self.monitor_table.setColumnWidth(col, width)
 
 
 # ──────────────────────────────────────────────

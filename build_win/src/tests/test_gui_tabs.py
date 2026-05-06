@@ -155,6 +155,51 @@ class TestGuiTabLayout(unittest.TestCase):
             self._is_descendant(self.win.events_full_log, self.win._pages["events"])
         )
 
+    def test_monitor_count_action_text_and_column_autosize(self):
+        summary = [
+            {
+                "code": "2330",
+                "name": "台積電超長名稱測試股份有限公司",
+                "market": "TSE",
+                "candle": 1,
+                "qty": 0,
+                "pending": False,
+                "vol_1s": 12,
+                "blocked": False,
+                "price": 88.5,
+                "limit_up": 99.0,
+                "prev_close": 90.0,
+                "change": -1.5,
+                "change_pct": -1.67,
+                "ask_qty": 10,
+                "is_at_limit_up": True,
+            },
+            {
+                "code": "2317",
+                "name": "鴻海",
+                "market": "TSE",
+                "candle": 2,
+                "qty": 1,
+                "pending": False,
+                "vol_1s": 8,
+                "blocked": False,
+                "price": 120.0,
+                "limit_up": 121.0,
+                "prev_close": 110.0,
+                "change": 10.0,
+                "change_pct": 9.09,
+                "ask_qty": 0,
+                "is_at_limit_up": False,
+            },
+        ]
+
+        self.win._render_monitor(summary)
+
+        self.assertEqual(self.win.monitor_count_lbl.text(), "共 2 檔")
+        self.assertEqual(self.win.monitor_table.item(0, 9).text(), "檢查進場")
+        self.assertEqual(self.win.monitor_table.item(1, 9).text(), "監控出場")
+        self.assertGreater(self.win.monitor_table.columnWidth(1), 70)
+
     def test_after_close_fubon_preview_uses_close_price_range(self):
         class FakeSnapshot:
             def __init__(self):
