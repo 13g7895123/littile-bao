@@ -821,6 +821,7 @@ class App(QMainWindow):
 
         self._build_stats_row(lay)
         self._build_mid_row(lay)
+        self._build_bot_row(lay)
 
     # ── 統計卡列 ─────────────────────────────
 
@@ -855,7 +856,7 @@ class App(QMainWindow):
 
         lay.addWidget(row)
 
-    # ── 即時監控 ───────────────────────────
+    # ── 中段：即時監控 + 事件日誌 ────────────
 
     def _build_mid_row(self, lay: QVBoxLayout):
         row = QWidget()
@@ -889,7 +890,49 @@ class App(QMainWindow):
         for i, w in enumerate([52, 60, 58, 52, 62, 68, 72, 60, 72, 52]):
             self.monitor_table.setColumnWidth(i, w)
         ml.addWidget(self.monitor_table, 1)
-        rl.addWidget(mon, 1)
+        rl.addWidget(mon, 3)
+
+        # 事件日誌
+        ev = _panel_frame()
+        el = QVBoxLayout(ev)
+        el.setContentsMargins(10, 8, 10, 8)
+        el.setSpacing(6)
+
+        eh = QHBoxLayout()
+        eh.addWidget(_label("事件日誌", C["text"], 10, bold=True))
+        eh.addStretch()
+        clr_btn = QPushButton("清除")
+        clr_btn.setFont(_font(9))
+        clr_btn.setFixedSize(46, 22)
+        clr_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        clr_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {C['red']};
+                color: #ffffff;
+                border: none;
+                border-radius: 3px;
+            }}
+            QPushButton:hover {{ background-color: {C['red_l']}; }}
+        """)
+        clr_btn.clicked.connect(self._clear_log)
+        eh.addWidget(clr_btn)
+        el.addLayout(eh)
+
+        self.event_log = QTextEdit()
+        self.event_log.setReadOnly(True)
+        self.event_log.setFont(QFont(FONT_MAIN, 9))
+        self.event_log.setStyleSheet(f"""
+            QTextEdit {{
+                background-color: {C['bg']};
+                color: {C['text']};
+                border: none;
+                border-radius: 4px;
+                padding: 4px;
+            }}
+            {_scroll_style()}
+        """)
+        el.addWidget(self.event_log, 1)
+        rl.addWidget(ev, 1)
 
         lay.addWidget(row, 3)
 
@@ -1032,7 +1075,6 @@ class App(QMainWindow):
         ol.addWidget(self.orders_full_table, 1)
         self.orders_full_summary_lbl = _label("委託總計 (0)", C["subtext"], 9)
         ol.addWidget(self.orders_full_summary_lbl)
-        self.orders_table = self.orders_full_table
         lay.addWidget(ord_f, 1)
 
         # 成交記錄
@@ -1064,9 +1106,6 @@ class App(QMainWindow):
         ts_row.addStretch()
         ts_row.addWidget(self.trades_full_pnl_lbl)
         tl.addLayout(ts_row)
-        self.trades_table = self.trades_full_table
-        self.trd_summary_lbl = self.trades_full_summary_lbl
-        self.trd_pnl_lbl = self.trades_full_pnl_lbl
         lay.addWidget(trd_f, 1)
 
     # ── 持倉部位 全頁面 ──────────────────────
@@ -1104,9 +1143,6 @@ class App(QMainWindow):
         ps_row.addStretch()
         ps_row.addWidget(self.pos_full_pnl_lbl)
         pl.addLayout(ps_row)
-        self.positions_table = self.positions_full_table
-        self.pos_summary_lbl = self.pos_full_summary_lbl
-        self.pos_pnl_lbl = self.pos_full_pnl_lbl
         lay.addWidget(pos_f, 1)
 
     # ── 事件日誌 全頁面 ──────────────────────
@@ -1153,7 +1189,6 @@ class App(QMainWindow):
             {_scroll_style()}
         """)
         el.addWidget(self.events_full_log, 1)
-        self.event_log = self.events_full_log
         lay.addWidget(ev_f, 1)
 
     # ── 頁面資料同步輔助 ──────────────────────

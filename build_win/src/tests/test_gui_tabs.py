@@ -67,22 +67,38 @@ class TestGuiTabLayout(unittest.TestCase):
             )
         )
 
-    def test_dashboard_keeps_only_stats_and_monitor_sections(self):
+    def test_dashboard_preserves_original_summary_sections(self):
         self.assertTrue(
             self._is_descendant(self.win.monitor_table, self.win._pages["dashboard"])
         )
-        self.assertFalse(
+        self.assertTrue(
             self._is_descendant(self.win.orders_table, self.win._pages["dashboard"])
         )
-        self.assertFalse(
+        self.assertTrue(
             self._is_descendant(self.win.trades_table, self.win._pages["dashboard"])
         )
-        self.assertFalse(
+        self.assertTrue(
             self._is_descendant(self.win.positions_table, self.win._pages["dashboard"])
         )
-        self.assertFalse(
+        self.assertTrue(
             self._is_descendant(self.win.event_log, self.win._pages["dashboard"])
         )
+        self.assertTrue(
+            self._is_descendant(self.win.orders_full_table, self.win._pages["orders"])
+        )
+        self.assertTrue(
+            self._is_descendant(self.win.trades_full_table, self.win._pages["orders"])
+        )
+        self.assertTrue(
+            self._is_descendant(self.win.positions_full_table, self.win._pages["positions"])
+        )
+        self.assertTrue(
+            self._is_descendant(self.win.events_full_log, self.win._pages["events"])
+        )
+        self.assertIsNot(self.win.orders_table, self.win.orders_full_table)
+        self.assertIsNot(self.win.trades_table, self.win.trades_full_table)
+        self.assertIsNot(self.win.positions_table, self.win.positions_full_table)
+        self.assertIsNot(self.win.event_log, self.win.events_full_log)
 
     def test_tables_and_log_update_their_own_tabs(self):
         order = SimpleNamespace(
@@ -96,6 +112,7 @@ class TestGuiTabLayout(unittest.TestCase):
             source="DRY",
         )
         self.win._append_order(order)
+        self.assertEqual(self.win.orders_table.rowCount(), 1)
         self.assertEqual(self.win.orders_full_table.rowCount(), 1)
         self.assertTrue(
             self._is_descendant(self.win.orders_full_table, self.win._pages["orders"])
@@ -103,8 +120,13 @@ class TestGuiTabLayout(unittest.TestCase):
 
         order.status = _Value("FILLED")
         self.win._append_order(order)
+        self.assertEqual(self.win.orders_table.rowCount(), 1)
         self.assertEqual(self.win.orders_full_table.rowCount(), 1)
+        self.assertEqual(self.win.orders_table.item(0, 5).text(), "已成交")
         self.assertEqual(self.win.orders_full_table.item(0, 5).text(), "已成交")
+
+        self.win._switch_tab("orders")
+        self.assertEqual(self.win.orders_full_table.rowCount(), 1)
 
         self.win._append_trade({
             "time": "09:01:00",
@@ -114,9 +136,11 @@ class TestGuiTabLayout(unittest.TestCase):
             "price": 100.0,
             "qty": 1,
         })
+        self.assertEqual(self.win.trades_table.rowCount(), 1)
         self.assertEqual(self.win.trades_full_table.rowCount(), 1)
 
         self.win._append_log("INFO", "tab log smoke")
+        self.assertIn("tab log smoke", self.win.event_log.toPlainText())
         self.assertIn("tab log smoke", self.win.events_full_log.toPlainText())
         self.assertTrue(
             self._is_descendant(self.win.events_full_log, self.win._pages["events"])

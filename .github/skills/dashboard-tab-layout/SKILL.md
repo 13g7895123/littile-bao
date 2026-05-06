@@ -14,12 +14,12 @@ applyTo:
 # Dashboard Tab Layout — 儀表板分頁配置
 
 ## 1. 目標
-主視窗的每個主要功能區都應存在於對應分頁內，不使用常駐左側設定欄。使用者點擊頁籤後，才顯示該頁籤的內容。
+主視窗不使用常駐左側策略設定欄；策略設定改在 `settings` 分頁內。`dashboard` 分頁需保留原本總覽長相與功能，包含統計卡、即時監控、事件日誌、持倉、委託、成交小區塊；其他分頁則顯示對應資訊的完整版本。
 
 ## 2. 目前分頁邊界
 | 分頁 | 內容 | 主要屬性 |
 |---|---|---|
-| `dashboard` / 儀表板 | 統計卡、即時監控 | `stat_*` labels、`monitor_table` |
+| `dashboard` / 儀表板 | 原本總覽：統計卡、即時監控、事件日誌、持倉、委託、成交 | `stat_*` labels、`monitor_table`、`event_log`、`positions_table`、`orders_table`、`trades_table` |
 | `settings` / 策略設定 | 策略參數、進場/排除/出場設定、JSON 匯入匯出 | `_fields`、`_checks`、`_toggles`、`_combos` |
 | `broker` / 券商設定 | 富邦帳號、憑證、API Key、連線控制 | `_bfields`、`_broker_*` |
 | `orders` / 委託/成交 | 委託狀態、成交記錄 | `orders_full_table`、`trades_full_table` |
@@ -29,8 +29,8 @@ applyTo:
 
 ## 3. 實作準則
 - 不要把策略設定常駐在主體左側；策略設定欄位應掛在 `settings` 分頁內。
-- `dashboard` 只放總覽與即時監控，不再放事件日誌、持倉、委託、成交的縮小版。
-- 完整頁面的表格是可見資料來源；若保留舊屬性名稱（如 `orders_table`），應 alias 到完整表格並避免重複同步插入。
+- `dashboard` 保留原本總覽功能，不要移除事件日誌、持倉、委託、成交小區塊。
+- 完整分頁表格應獨立於儀表板小表格，並由 `_append_order()`、`_append_trade()`、`_render_account()`、`_append_log()` 即時同步。
 - `_switch_tab()` 只負責切換可見頁與必要資料刷新；不要在切換時清空同一張表格。
 - 跨執行緒 GUI 更新仍需走 `_dispatch_ui()`，不要從 broker 或 engine callback 直接寫 Qt widget。
 
@@ -48,6 +48,6 @@ PYTHONDONTWRITEBYTECODE=1 QT_QPA_PLATFORM=offscreen python3 -m unittest discover
 ```
 
 ## 5. 常見問題
-- **切到委託/成交後表格變空**：檢查 `_sync_orders_full_table()` 是否對同一張 alias 表格執行 `setRowCount(0)`；同表格應直接 return。
-- **日誌出現兩次**：檢查 `event_log` 與 `events_full_log` 是否為同一個 widget；若是同一個，不要再 mirror append。
+- **切到委託/成交後表格變空**：檢查 `_sync_orders_full_table()` 是否從儀表板小表格複製到完整表格，而不是反向清空來源。
+- **日誌出現兩次或沒有同步**：檢查 `event_log`（儀表板小區塊）與 `events_full_log`（事件日誌分頁）是否為不同 widget，且 `_append_log()` 有同步追加兩邊。
 - **策略設定沒有套用**：確認欄位仍寫入 `_fields` / `_checks` / `_toggles`，且 `_apply_config()`、`_collect_config()` 使用相同 key。
