@@ -1340,13 +1340,16 @@ class App(QMainWindow):
         from broker import ScanCriteria
         from broker.universe import FubonSymbolInfoLoader, resolve_preview_price, scan_preview_candidates
 
+        # 若市場選項全未勾選，則預設兩個市場都納入（避免回傳 0 支）
+        markets = tuple(cfg.get_markets()) or ("TSE", "OTC")
+
         crit = ScanCriteria(
             price_min=Decimal(str(cfg.price_min)) if cfg.f9_enabled else Decimal("0"),
             price_max=Decimal(str(cfg.price_max)) if cfg.f9_enabled else Decimal("999999"),
             exclude_disposal=cfg.f11_enabled,
             exclude_attention=cfg.f11_enabled,
             exclude_day_trade_restricted=cfg.f11_enabled,
-            markets=tuple(cfg.get_markets()),
+            markets=markets,
             min_prev_volume=(cfg.daily_volume_min if cfg.f8_enabled else 0),
             max_candidates=200,
         )

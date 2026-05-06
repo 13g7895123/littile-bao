@@ -173,6 +173,8 @@ class FubonSymbolInfoLoader(SymbolInfoLoader):
           → items[].symbol
         回傳去重後的代碼清單。
         """
+        # 若傳入空市場清單，預設取兩個市場
+        markets = list(markets) or ["TSE", "OTC"]
         try:
             sdk = self._adapter.sdk
         except Exception:
