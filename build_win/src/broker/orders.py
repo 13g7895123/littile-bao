@@ -207,11 +207,11 @@ class DryRunOrderManager(OrderManager):
             status=OrderStatus.FILLED, time=now,
             name=req.name, source="DRY",
         ))
+        self._write_audit("FILL", order_id, req, price=fill_price, time=now)
         self.adapter.dispatch_fill(FillEvent(
             order_id=order_id, code=req.code, name=req.name,
             side=req.side, price=fill_price, qty=req.qty, time=now,
         ))
-        self._write_audit("FILL", order_id, req, price=fill_price, time=now)
 
     def cancel_order(self, order_id: str) -> bool:
         with self._lock:

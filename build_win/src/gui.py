@@ -473,7 +473,6 @@ class App(QMainWindow):
                 self._render_monitor([])
                 self._preload_dashboard_preview_async()
         elif key == "orders":
-            # 從儀表板 mini table 同步至全頁面 table
             self._sync_orders_full_table()
             self._sync_trades_full_table()
         elif key == "positions":
@@ -487,13 +486,6 @@ class App(QMainWindow):
         lay = QHBoxLayout(body)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
-
-        self._build_sidebar(lay)
-
-        sep = QFrame()
-        sep.setFixedWidth(1)
-        sep.setStyleSheet(f"background-color: {C['border']};")
-        lay.addWidget(sep)
 
         # 右側分頁容器
         pages_w = QWidget()
@@ -522,14 +514,19 @@ class App(QMainWindow):
         self._switch_tab("dashboard")
 
     # ══════════════════════════════════════════
-    #  左側邊欄（策略設定）
+    #  策略設定頁
     # ══════════════════════════════════════════
 
-    def _build_sidebar(self, body_lay: QHBoxLayout):
-        sidebar = QFrame()
-        sidebar.setFixedWidth(270)
-        sidebar.setStyleSheet(f"background-color: {C['sidebar']}; border: none;")
-        outer = QVBoxLayout(sidebar)
+    def _build_strategy_settings_panel(self, parent: QWidget):
+        page_lay = QHBoxLayout(parent)
+        page_lay.setContentsMargins(20, 16, 20, 16)
+        page_lay.setSpacing(0)
+
+        panel = QFrame()
+        panel.setMinimumWidth(320)
+        panel.setMaximumWidth(420)
+        panel.setStyleSheet(f"background-color: {C['sidebar']}; border: none;")
+        outer = QVBoxLayout(panel)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
 
@@ -796,11 +793,12 @@ class App(QMainWindow):
         bl.addLayout(row2)
 
         outer.addWidget(btn_bar)
-        body_lay.addWidget(sidebar)
+        page_lay.addWidget(panel)
+        page_lay.addStretch(1)
 
     def _sf(self, form: QVBoxLayout, lbl: str, key: str,
             suffix: str = "", w: int = 90):
-        """sidebar 單行欄位"""
+        """設定頁單行欄位"""
         row = QHBoxLayout()
         row.addWidget(_label(lbl, C["subtext"], 9))
         row.addStretch()
@@ -823,7 +821,6 @@ class App(QMainWindow):
 
         self._build_stats_row(lay)
         self._build_mid_row(lay)
-        self._build_bot_row(lay)
 
     # ── 統計卡列 ─────────────────────────────
 
@@ -858,7 +855,7 @@ class App(QMainWindow):
 
         lay.addWidget(row)
 
-    # ── 中段：即時監控 + 事件日誌 ────────────
+    # ── 即時監控 ───────────────────────────
 
     def _build_mid_row(self, lay: QVBoxLayout):
         row = QWidget()
@@ -892,49 +889,7 @@ class App(QMainWindow):
         for i, w in enumerate([52, 60, 58, 52, 62, 68, 72, 60, 72, 52]):
             self.monitor_table.setColumnWidth(i, w)
         ml.addWidget(self.monitor_table, 1)
-        rl.addWidget(mon, 3)
-
-        # 事件日誌
-        ev = _panel_frame()
-        el = QVBoxLayout(ev)
-        el.setContentsMargins(10, 8, 10, 8)
-        el.setSpacing(6)
-
-        eh = QHBoxLayout()
-        eh.addWidget(_label("事件日誌", C["text"], 10, bold=True))
-        eh.addStretch()
-        clr_btn = QPushButton("清除")
-        clr_btn.setFont(_font(9))
-        clr_btn.setFixedSize(46, 22)
-        clr_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        clr_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {C['red']};
-                color: #ffffff;
-                border: none;
-                border-radius: 3px;
-            }}
-            QPushButton:hover {{ background-color: {C['red_l']}; }}
-        """)
-        clr_btn.clicked.connect(self._clear_log)
-        eh.addWidget(clr_btn)
-        el.addLayout(eh)
-
-        self.event_log = QTextEdit()
-        self.event_log.setReadOnly(True)
-        self.event_log.setFont(QFont(FONT_MAIN, 9))
-        self.event_log.setStyleSheet(f"""
-            QTextEdit {{
-                background-color: {C['bg']};
-                color: {C['text']};
-                border: none;
-                border-radius: 4px;
-                padding: 4px;
-            }}
-            {_scroll_style()}
-        """)
-        el.addWidget(self.event_log, 1)
-        rl.addWidget(ev, 1)
+        rl.addWidget(mon, 1)
 
         lay.addWidget(row, 3)
 
@@ -1035,13 +990,7 @@ class App(QMainWindow):
     # ── 其他分頁（佔位）───────────────────────
 
     def _build_settings_page(self, parent: QWidget):
-        lay = QVBoxLayout(parent)
-        lay.setContentsMargins(24, 24, 24, 24)
-        lbl = _label("策略設定 — 請使用左側面板調整", C["subtext"], 12)
-        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        lay.addStretch()
-        lay.addWidget(lbl)
-        lay.addStretch()
+        self._build_strategy_settings_panel(parent)
 
     def _build_placeholder(self, parent: QWidget, title: str):
         lay = QVBoxLayout(parent)
@@ -1083,6 +1032,7 @@ class App(QMainWindow):
         ol.addWidget(self.orders_full_table, 1)
         self.orders_full_summary_lbl = _label("委託總計 (0)", C["subtext"], 9)
         ol.addWidget(self.orders_full_summary_lbl)
+        self.orders_table = self.orders_full_table
         lay.addWidget(ord_f, 1)
 
         # 成交記錄
@@ -1114,6 +1064,9 @@ class App(QMainWindow):
         ts_row.addStretch()
         ts_row.addWidget(self.trades_full_pnl_lbl)
         tl.addLayout(ts_row)
+        self.trades_table = self.trades_full_table
+        self.trd_summary_lbl = self.trades_full_summary_lbl
+        self.trd_pnl_lbl = self.trades_full_pnl_lbl
         lay.addWidget(trd_f, 1)
 
     # ── 持倉部位 全頁面 ──────────────────────
@@ -1151,6 +1104,9 @@ class App(QMainWindow):
         ps_row.addStretch()
         ps_row.addWidget(self.pos_full_pnl_lbl)
         pl.addLayout(ps_row)
+        self.positions_table = self.positions_full_table
+        self.pos_summary_lbl = self.pos_full_summary_lbl
+        self.pos_pnl_lbl = self.pos_full_pnl_lbl
         lay.addWidget(pos_f, 1)
 
     # ── 事件日誌 全頁面 ──────────────────────
@@ -1197,6 +1153,7 @@ class App(QMainWindow):
             {_scroll_style()}
         """)
         el.addWidget(self.events_full_log, 1)
+        self.event_log = self.events_full_log
         lay.addWidget(ev_f, 1)
 
     # ── 頁面資料同步輔助 ──────────────────────
@@ -1205,6 +1162,8 @@ class App(QMainWindow):
         """從儀表板 orders_table 同步至全頁面 orders_full_table。"""
         src = self.orders_table
         dst = self.orders_full_table
+        if src is dst:
+            return
         dst.setRowCount(0)
         for r in range(src.rowCount()):
             dst.insertRow(r)
@@ -1224,6 +1183,8 @@ class App(QMainWindow):
         """從儀表板 trades_table 同步至全頁面 trades_full_table。"""
         src = self.trades_table
         dst = self.trades_full_table
+        if src is dst:
+            return
         dst.setRowCount(0)
         for r in range(src.rowCount()):
             dst.insertRow(r)
@@ -1242,6 +1203,8 @@ class App(QMainWindow):
         """從儀表板 positions_table 同步至全頁面 positions_full_table。"""
         src = self.positions_table
         dst = self.positions_full_table
+        if src is dst:
+            return
         dst.setRowCount(0)
         for r in range(src.rowCount()):
             dst.insertRow(r)
@@ -2342,8 +2305,12 @@ class App(QMainWindow):
 
     def _render_account(self, snap) -> None:
         # 持倉表
+        mirror_positions = (
+            hasattr(self, "positions_full_table")
+            and self.positions_full_table is not self.positions_table
+        )
         self.positions_table.setRowCount(0)
-        if hasattr(self, "positions_full_table"):
+        if mirror_positions:
             self.positions_full_table.setRowCount(0)
         total_unr = 0.0
         total_cost = 0.0
@@ -2371,7 +2338,7 @@ class App(QMainWindow):
                 item.setForeground(QColor(c))
                 self.positions_table.setItem(row, col, item)
             # 即時同步至全頁面持倉表
-            if hasattr(self, "positions_full_table"):
+            if mirror_positions:
                 self.positions_full_table.insertRow(row)
                 for col, (val, c) in enumerate(cells):
                     item2 = QTableWidgetItem(val)
@@ -2402,6 +2369,10 @@ class App(QMainWindow):
     def _append_order(self, ev) -> None:
         # 依 order_id 找既有列；若有則更新狀態欄，否則插入新列
         oid = getattr(ev, "order_id", "")
+        mirror_orders = (
+            hasattr(self, "orders_full_table")
+            and self.orders_full_table is not self.orders_table
+        )
         row_idx = -1
         for r in range(self.orders_table.rowCount()):
             it = self.orders_table.item(r, 0)
@@ -2441,7 +2412,7 @@ class App(QMainWindow):
                     item.setData(Qt.ItemDataRole.UserRole, oid)
                 self.orders_table.setItem(row_idx, col, item)
             # 即時同步至全頁面委託表
-            if hasattr(self, "orders_full_table"):
+            if mirror_orders:
                 self.orders_full_table.insertRow(0)
                 for col, (val, color) in enumerate(cells):
                     item2 = QTableWidgetItem(val)
@@ -2450,15 +2421,16 @@ class App(QMainWindow):
                     if col == 0:
                         item2.setData(Qt.ItemDataRole.UserRole, oid)
                     self.orders_full_table.setItem(0, col, item2)
+            if hasattr(self, "orders_full_summary_lbl"):
                 self.orders_full_summary_lbl.setText(
-                    f"委託總計 ({self.orders_full_table.rowCount()})")
+                    f"委託總計 ({self.orders_table.rowCount()})")
         else:
             cell = self.orders_table.item(row_idx, 5)
             if cell:
                 cell.setText(st_txt)
                 cell.setForeground(QColor(st_color))
             # 同步更新全頁面狀態欄
-            if hasattr(self, "orders_full_table"):
+            if mirror_orders:
                 for r in range(self.orders_full_table.rowCount()):
                     it = self.orders_full_table.item(r, 0)
                     if it and it.data(Qt.ItemDataRole.UserRole) == oid:
@@ -2523,12 +2495,16 @@ class App(QMainWindow):
             pass
         if self._log_lines > MAX_LINES:
             from PyQt6.QtGui import QTextCursor
+            mirror_logs = (
+                hasattr(self, "events_full_log")
+                and self.events_full_log is not self.event_log
+            )
             cursor = self.event_log.textCursor()
             cursor.movePosition(QTextCursor.MoveOperation.Start)
             cursor.movePosition(QTextCursor.MoveOperation.Down,
                                 QTextCursor.MoveMode.KeepAnchor, 100)
             cursor.removeSelectedText()
-            if hasattr(self, "events_full_log"):
+            if mirror_logs:
                 cursor2 = self.events_full_log.textCursor()
                 cursor2.movePosition(QTextCursor.MoveOperation.Start)
                 cursor2.movePosition(QTextCursor.MoveOperation.Down,
@@ -2543,7 +2519,8 @@ class App(QMainWindow):
 
     def _clear_log(self):
         self.event_log.clear()
-        if hasattr(self, "events_full_log"):
+        if (hasattr(self, "events_full_log")
+                and self.events_full_log is not self.event_log):
             self.events_full_log.clear()
         self._log_lines = 0
 
@@ -2559,7 +2536,8 @@ class App(QMainWindow):
         sb = self.event_log.verticalScrollBar()
         sb.setValue(sb.maximum())
         # 同步至「事件日誌」全頁面
-        if hasattr(self, "events_full_log"):
+        if (hasattr(self, "events_full_log")
+            and self.events_full_log is not self.event_log):
             self.events_full_log.append(html_text)
             sb2 = self.events_full_log.verticalScrollBar()
             sb2.setValue(sb2.maximum())
@@ -2567,6 +2545,10 @@ class App(QMainWindow):
 
     def _append_trade(self, d: dict):
         self._trade_count += 1
+        mirror_trades = (
+            hasattr(self, "trades_full_table")
+            and self.trades_full_table is not self.trades_table
+        )
         if d["action"] == "BUY":
             self._buy_count += 1
         else:
@@ -2602,7 +2584,7 @@ class App(QMainWindow):
             item.setForeground(QColor(color))
             self.trades_table.setItem(row, col, item)
         # 即時同步至全頁面
-        if hasattr(self, "trades_full_table"):
+        if mirror_trades:
             self.trades_full_table.insertRow(0)
             for col, (val, color) in enumerate(cells):
                 item2 = QTableWidgetItem(val)
