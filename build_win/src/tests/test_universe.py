@@ -5,6 +5,7 @@ import os
 import sys
 import unittest
 from decimal import Decimal
+from types import SimpleNamespace
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -162,6 +163,80 @@ class TestPreviewPriceFiltering(unittest.TestCase):
         self.assertEqual(info.market, "OTC")
         self.assertEqual(info.quote_price, Decimal("232.5"))
         self.assertEqual(info.prev_volume, 4567)
+
+
+class TestFubonMarketSnapshots(unittest.TestCase):
+    def test_load_market_snapshots_uses_close_price_and_market_fallback(self):
+        class FakeSnapshot:
+            def __init__(self):
+                self.calls = []
+
+            def quotes(self, **kwargs):
+                self.calls.append(kwargs)
+                market = kwargs.get("market")
+                if market == "TSE":
+                    return {"data": [{
+                        "symbol": "2330",
+                        "name": "台積電",
+                        "closePrice": "88.5",
+                        "change": "-1.5",
+                        "tradeVolume": "12345",
+                    }]}
+                return {"data": [{
+                    "symbol": "4919",
+                    "name": "新唐",
+                    "closePrice": "52",
+                    "change": "2",
+                    "tradeVolume": "4567",
+                }]}
+
+        class FakeSdk:
+            def __init__(self, snapshot):
+                self.init_count = 0
+                self.marketdata = SimpleNamespace(
+                    rest_client=SimpleNamespace(
+                        stock=SimpleNamespace(snapshot=snapshot)
+                    )
+                )
+
+            def init_realtime(self):
+                self.init_count += 1
+
+        snapshot = FakeSnapshot()
+        sdk = FakeSdk(snapshot)
+        adapter = SimpleNamespace(sdk=sdk)
+
+        loader = FubonSymbolInfoLoader(adapter)
+        infos = loader.load_market_snapshots(["TSE", "OTC"])
+
+        self.assertEqual(sdk.init_count, 1)
+        self.assertEqual(snapshot.calls[0], {"market": "TSE", "type": "COMMONSTOCK"})
+        self.assertEqual(snapshot.calls[1], {"market": "OTC", "type": "COMMONSTOCK"})
+        self.assertEqual(infos["2330"].quote_price, Decimal("88.5"))
+        self.assertEqual(infos["2330"].prev_close, Decimal("90.0"))
+        self.assertEqual(infos["2330"].prev_volume, 12345)
+        self.assertEqual(infos["4919"].market, "OTC")
+
+    def test_market_snapshot_infos_filter_by_preview_price(self):
+        infos = [
+            build_symbol_info("1111", "甲", "TSE", 90, quote_price=Decimal("88")),
+            build_symbol_info("2222", "乙", "OTC", 110, quote_price=Decimal("120")),
+        ]
+        crit = ScanCriteria(
+            price_min=Decimal("80"),
+            price_max=Decimal("90"),
+            min_prev_volume=0,
+            exclude_disposal=False,
+            exclude_attention=False,
+            exclude_day_trade_restricted=False,
+            markets=("TSE", "OTC"),
+            max_candidates=10,
+        )
+
+        self.assertEqual(
+            [info.code for info in scan_preview_candidates(infos, crit)],
+            ["1111"],
+        )
 
 
 if __name__ == "__main__":

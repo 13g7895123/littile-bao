@@ -9,7 +9,7 @@ import queue
 import threading
 from decimal import Decimal
 from typing import Dict, Optional
-from datetime import datetime
+from datetime import datetime, time as dtime
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QFrame, QLabel, QPushButton,
@@ -1618,12 +1618,31 @@ class App(QMainWindow):
         is_fubon = hasattr(broker, "_sdk") or type(broker).__name__ == "FubonAdapter"
         if is_fubon:
             loader = FubonSymbolInfoLoader(broker)
-            all_codes = loader.fetch_all_codes(markets=list(cfg.get_markets()))
-            if not all_codes:
-                return []
-            all_infos = loader.load(all_codes)
-            candidates = scan_preview_candidates(all_infos.values(), crit)
-            symbol_infos = {si.code: si for si in candidates}
+            symbol_infos = {}
+            close_snapshot_loaded = False
+            if self._is_after_market_close():
+                close_crit = ScanCriteria(
+                    price_min=crit.price_min,
+                    price_max=crit.price_max,
+                    exclude_disposal=crit.exclude_disposal,
+                    exclude_attention=crit.exclude_attention,
+                    exclude_day_trade_restricted=crit.exclude_day_trade_restricted,
+                    markets=crit.markets,
+                    min_prev_volume=0,
+                    max_candidates=crit.max_candidates,
+                )
+                all_infos = loader.load_market_snapshots(
+                    markets=markets, quote_type="COMMONSTOCK")
+                close_snapshot_loaded = bool(all_infos)
+                candidates = scan_preview_candidates(all_infos.values(), close_crit)
+                symbol_infos = {si.code: si for si in candidates}
+            if not close_snapshot_loaded:
+                all_codes = loader.fetch_all_codes(markets=markets)
+                if not all_codes:
+                    return []
+                all_infos = loader.load(all_codes)
+                candidates = scan_preview_candidates(all_infos.values(), crit)
+                symbol_infos = {si.code: si for si in candidates}
         else:
             from broker import DEFAULT_MOCK_INFOS
             mock_crit = ScanCriteria(
@@ -1666,6 +1685,10 @@ class App(QMainWindow):
             })
         summary.sort(key=lambda item: item["code"])
         return summary
+
+    def _is_after_market_close(self, now: Optional[datetime] = None) -> bool:
+        current = now or datetime.now()
+        return current.time() >= dtime(13, 30)
 
     def _dashboard_broker_key(self, broker) -> str:
         if broker is None:

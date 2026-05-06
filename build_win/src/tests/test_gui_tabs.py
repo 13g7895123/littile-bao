@@ -154,6 +154,71 @@ class TestGuiTabLayout(unittest.TestCase):
             self._is_descendant(self.win.events_full_log, self.win._pages["events"])
         )
 
+    def test_after_close_fubon_preview_uses_close_price_range(self):
+        class FakeSnapshot:
+            def __init__(self):
+                self.calls = []
+
+            def quotes(self, **kwargs):
+                self.calls.append(kwargs)
+                market = kwargs.get("market")
+                data = {
+                    "TSE": [
+                        {
+                            "symbol": "2330",
+                            "name": "台積電",
+                            "previousClose": "90",
+                            "closePrice": "88.5",
+                            "tradeVolume": "1",
+                        },
+                        {
+                            "symbol": "2317",
+                            "name": "鴻海",
+                            "previousClose": "110",
+                            "closePrice": "120",
+                            "tradeVolume": "1",
+                        },
+                    ],
+                    "OTC": [
+                        {
+                            "symbol": "4919",
+                            "name": "新唐",
+                            "previousClose": "50",
+                            "closePrice": "55",
+                            "tradeVolume": "1",
+                        },
+                    ],
+                }
+                return {"data": data.get(market, [])}
+
+        class FakeSdk:
+            def __init__(self, snapshot):
+                self.marketdata = SimpleNamespace(
+                    rest_client=SimpleNamespace(
+                        stock=SimpleNamespace(snapshot=snapshot)
+                    )
+                )
+
+            def init_realtime(self):
+                return None
+
+        snapshot = FakeSnapshot()
+        sdk = FakeSdk(snapshot)
+        broker = SimpleNamespace(_sdk=sdk, sdk=sdk)
+        self.win._fields["price_min"].setText("80")
+        self.win._fields["price_max"].setText("90")
+        self.win._fields["daily_volume_min"].setText("999999")
+        self.win._checks["market_twse"].setChecked(True)
+        self.win._checks["market_tpex"].setChecked(True)
+        self.win._is_after_market_close = lambda: True
+
+        summary = self.win._load_dashboard_preview_summary(
+            broker, self.win._collect_config())
+
+        self.assertEqual([item["code"] for item in summary], ["2330"])
+        self.assertEqual(summary[0]["price"], 88.5)
+        self.assertEqual(snapshot.calls[0], {"market": "TSE", "type": "COMMONSTOCK"})
+
 
 if __name__ == "__main__":
     unittest.main()

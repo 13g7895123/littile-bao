@@ -179,6 +179,7 @@ class FubonSymbolInfoLoader(SymbolInfoLoader):
             sdk = self._adapter.sdk
         except Exception:
             return []
+        self._ensure_marketdata_ready(sdk)
 
         rest = self._resolve_rest_stock(sdk)
         if rest is None:
@@ -235,6 +236,34 @@ class FubonSymbolInfoLoader(SymbolInfoLoader):
                 result.append(c)
         return result
 
+    def load_market_snapshots(
+        self,
+        markets: Iterable[str] = ("TSE", "OTC"),
+        *,
+        quote_type: str = "COMMONSTOCK",
+    ) -> Dict[str, SymbolInfo]:
+        """用 snapshot.quotes(market=...) 一次載入整個市場快照。"""
+        markets = list(markets) or ["TSE", "OTC"]
+        try:
+            sdk = self._adapter.sdk
+        except Exception:
+            return {}
+        self._ensure_marketdata_ready(sdk)
+
+        rest = self._resolve_rest_stock(sdk)
+        if rest is None:
+            return {}
+
+        out: Dict[str, SymbolInfo] = {}
+        for market in markets:
+            items = self._fetch_market_snapshot_items(
+                rest, market, quote_type=quote_type)
+            for item in items:
+                si = self._parse_item(item, fallback_market=market)
+                if si:
+                    out[si.code] = si
+        return out
+
     # ── 批次取得個股 SymbolInfo ──────────────────────────────
 
     def load(self, codes: Iterable[str]) -> Dict[str, SymbolInfo]:
@@ -242,6 +271,7 @@ class FubonSymbolInfoLoader(SymbolInfoLoader):
             sdk = self._adapter.sdk
         except Exception:
             return {}
+        self._ensure_marketdata_ready(sdk)
 
         out: Dict[str, SymbolInfo] = {}
         rest = self._resolve_rest_stock(sdk)
@@ -310,7 +340,8 @@ class FubonSymbolInfoLoader(SymbolInfoLoader):
             except Exception as e:
                 print(f"[Universe] 載入 {code} 失敗：{e}")
 
-    def _parse_item(self, raw, fallback_code: str = "") -> Optional["SymbolInfo"]:
+    def _parse_item(self, raw, fallback_code: str = "",
+                    fallback_market: str = "") -> Optional["SymbolInfo"]:
         """將 API 回傳的 dict / object 轉為 SymbolInfo。"""
         if isinstance(raw, dict):
             g = raw.get
@@ -322,15 +353,6 @@ class FubonSymbolInfoLoader(SymbolInfoLoader):
         if not code:
             return None
 
-        pc_raw = (g("previousClose") or g("prevClose")
-                  or g("referencePrice") or g("prev_close") or 0)
-        try:
-            pc = Decimal(str(pc_raw))
-        except Exception:
-            return None
-        if pc <= 0:
-            return None
-
         quote_price = self._decimal_from_fields(
             g,
             "closePrice", "close_price", "closingPrice", "close",
@@ -339,7 +361,22 @@ class FubonSymbolInfoLoader(SymbolInfoLoader):
             "currentPrice", "current_price", "price",
         )
 
-        market_raw = str(g("market") or g("exchange") or "TSE")
+        pc_raw = (g("previousClose") or g("prevClose")
+                  or g("referencePrice") or g("prev_close") or 0)
+        if (not pc_raw or str(pc_raw) in ("0", "0.0")) and quote_price is not None:
+            change = self._decimal_from_fields(
+                g, "change", "priceChange", "changePrice",
+                positive_only=False)
+            if change is not None:
+                pc_raw = quote_price - change
+        try:
+            pc = Decimal(str(pc_raw))
+        except Exception:
+            return None
+        if pc <= 0:
+            return None
+
+        market_raw = str(g("market") or g("exchange") or fallback_market or "TSE")
         market_upper = market_raw.upper()
         market_lower = market_raw.lower()
         market = "OTC" if "OTC" in market_upper or "TPEX" in market_upper or "tpex" in market_lower else "TSE"
@@ -348,7 +385,7 @@ class FubonSymbolInfoLoader(SymbolInfoLoader):
         try:
             prev_vol = int(
                 g("previousVolume") or g("prevVolume") or g("prev_volume")
-                or g("totalVolume") or g("volume") or 0
+                or g("tradeVolume") or g("totalVolume") or g("volume") or 0
             )
         except Exception:
             pass
@@ -368,7 +405,8 @@ class FubonSymbolInfoLoader(SymbolInfoLoader):
         )
 
     @staticmethod
-    def _decimal_from_fields(getter, *names: str) -> Optional[Decimal]:
+    def _decimal_from_fields(getter, *names: str,
+                             positive_only: bool = True) -> Optional[Decimal]:
         for name in names:
             raw = getter(name)
             if raw in (None, "", "-"):
@@ -377,7 +415,7 @@ class FubonSymbolInfoLoader(SymbolInfoLoader):
                 value = Decimal(str(raw))
             except Exception:
                 continue
-            if value > 0:
+            if not positive_only or value > 0:
                 return value
         return None
 
@@ -386,6 +424,64 @@ class FubonSymbolInfoLoader(SymbolInfoLoader):
         md = getattr(sdk, "marketdata", None)
         rc = getattr(md, "rest_client", None) if md else None
         return getattr(rc, "stock", None) if rc else None
+
+    @staticmethod
+    def _ensure_marketdata_ready(sdk) -> None:
+        if getattr(sdk, "_stock_trader_marketdata_ready", False):
+            return
+        init_realtime = getattr(sdk, "init_realtime", None)
+        if not callable(init_realtime):
+            return
+        try:
+            init_realtime()
+            try:
+                setattr(sdk, "_stock_trader_marketdata_ready", True)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    @staticmethod
+    def _extract_items(res):
+        if isinstance(res, dict):
+            return res.get("data") or res.get("items") or res.get("quotes") or []
+        if hasattr(res, "data"):
+            return res.data or []
+        if isinstance(res, list):
+            return res
+        return []
+
+    @classmethod
+    def _fetch_market_snapshot_items(cls, rest, market: str,
+                                     *, quote_type: str = "") -> list:
+        snapshot = getattr(rest, "snapshot", None)
+        quotes_fn = getattr(snapshot, "quotes", None) if snapshot else None
+        if not callable(quotes_fn):
+            return []
+
+        attempts = []
+        if quote_type:
+            attempts.extend([
+                lambda: quotes_fn(market=market, type=quote_type),
+                lambda: quotes_fn({"market": market, "type": quote_type}),
+            ])
+        attempts.extend([
+            lambda: quotes_fn(market=market),
+            lambda: quotes_fn({"market": market}),
+            lambda: quotes_fn(),
+        ])
+
+        for attempt in attempts:
+            try:
+                items = cls._extract_items(attempt())
+                if items:
+                    return items
+            except TypeError:
+                continue
+            except Exception as exc:
+                print(f"[Universe] snapshot market={market} 失敗：{exc}")
+                return []
+        return []
 
     @staticmethod
     def _fetch_ticker(rest, code: str) -> Optional[dict]:
