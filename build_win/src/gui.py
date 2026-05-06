@@ -447,6 +447,8 @@ class App(QMainWindow):
             self.strategy_badge.setText("● 策略已停用")
 
     def _switch_tab(self, key: str):
+        if hasattr(self, "_strategy_settings_panel"):
+            self._place_strategy_settings_panel(full_page=(key == "settings"))
         for k, btn in self._tab_btns.items():
             if k == key:
                 btn.setStyleSheet(f"""
@@ -517,14 +519,9 @@ class App(QMainWindow):
     #  策略設定頁
     # ══════════════════════════════════════════
 
-    def _build_strategy_settings_panel(self, parent: QWidget):
-        page_lay = QHBoxLayout(parent)
-        page_lay.setContentsMargins(20, 16, 20, 16)
-        page_lay.setSpacing(0)
-
+    def _create_strategy_settings_panel(self) -> QFrame:
         panel = QFrame()
-        panel.setMinimumWidth(320)
-        panel.setMaximumWidth(420)
+        self._strategy_settings_panel = panel
         panel.setStyleSheet(f"background-color: {C['sidebar']}; border: none;")
         outer = QVBoxLayout(panel)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -537,6 +534,7 @@ class App(QMainWindow):
             f"background-color: {C['header']};"
             f"border-bottom: 1px solid {C['border']};"
         )
+        self._strategy_settings_header = hdr
         hl = QHBoxLayout(hdr)
         hl.setContentsMargins(14, 0, 14, 0)
         icon = QLabel("⚙")
@@ -556,8 +554,10 @@ class App(QMainWindow):
             f"QScrollArea {{ border: none; background-color: {C['sidebar']}; }}"
             + _scroll_style()
         )
+        self._strategy_settings_scroll = scroll
         content = QWidget()
         content.setStyleSheet(f"background-color: {C['sidebar']};")
+        self._strategy_settings_content = content
         form = QVBoxLayout(content)
         form.setContentsMargins(14, 10, 14, 10)
         form.setSpacing(0)
@@ -734,6 +734,7 @@ class App(QMainWindow):
             f"background-color: {C['header']};"
             f"border-top: 1px solid {C['border']};"
         )
+        self._strategy_settings_button_bar = btn_bar
         bl = QVBoxLayout(btn_bar)
         bl.setContentsMargins(12, 8, 12, 8)
         bl.setSpacing(8)
@@ -793,8 +794,36 @@ class App(QMainWindow):
         bl.addLayout(row2)
 
         outer.addWidget(btn_bar)
-        page_lay.addWidget(panel)
-        page_lay.addStretch(1)
+        return panel
+
+    def _set_strategy_panel_mode(self, *, full_page: bool) -> None:
+        panel = self._strategy_settings_panel
+        if full_page:
+            panel.setMinimumWidth(0)
+            panel.setMaximumWidth(16777215)
+            panel.setStyleSheet(f"background-color: {C['bg']}; border: none;")
+            self._strategy_settings_scroll.setStyleSheet(
+                f"QScrollArea {{ border: none; background-color: {C['bg']}; }}"
+                + _scroll_style()
+            )
+            self._strategy_settings_content.setStyleSheet(f"background-color: {C['bg']};")
+        else:
+            panel.setMinimumWidth(270)
+            panel.setMaximumWidth(270)
+            panel.setStyleSheet(f"background-color: {C['sidebar']}; border: none;")
+            self._strategy_settings_scroll.setStyleSheet(
+                f"QScrollArea {{ border: none; background-color: {C['sidebar']}; }}"
+                + _scroll_style()
+            )
+            self._strategy_settings_content.setStyleSheet(f"background-color: {C['sidebar']};")
+
+    def _place_strategy_settings_panel(self, *, full_page: bool) -> None:
+        target_lay = (
+            self._settings_page_settings_lay
+            if full_page else self._dashboard_settings_lay
+        )
+        self._set_strategy_panel_mode(full_page=full_page)
+        target_lay.addWidget(self._strategy_settings_panel)
 
     def _sf(self, form: QVBoxLayout, lbl: str, key: str,
             suffix: str = "", w: int = 90):
@@ -815,13 +844,33 @@ class App(QMainWindow):
     # ══════════════════════════════════════════
 
     def _build_dashboard(self, parent: QWidget):
-        lay = QVBoxLayout(parent)
+        outer = QHBoxLayout(parent)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        self._dashboard_settings_host = QWidget()
+        self._dashboard_settings_host.setStyleSheet(f"background-color: {C['sidebar']};")
+        self._dashboard_settings_lay = QVBoxLayout(self._dashboard_settings_host)
+        self._dashboard_settings_lay.setContentsMargins(0, 0, 0, 0)
+        self._dashboard_settings_lay.setSpacing(0)
+        self._dashboard_settings_lay.addWidget(self._create_strategy_settings_panel())
+        outer.addWidget(self._dashboard_settings_host)
+
+        sep = QFrame()
+        sep.setFixedWidth(1)
+        sep.setStyleSheet(f"background-color: {C['border']};")
+        outer.addWidget(sep)
+
+        content = QWidget()
+        content.setStyleSheet(f"background-color: {C['bg']};")
+        lay = QVBoxLayout(content)
         lay.setContentsMargins(10, 10, 10, 10)
         lay.setSpacing(8)
 
         self._build_stats_row(lay)
         self._build_mid_row(lay)
         self._build_bot_row(lay)
+        outer.addWidget(content, 1)
 
     # ── 統計卡列 ─────────────────────────────
 
@@ -1033,7 +1082,15 @@ class App(QMainWindow):
     # ── 其他分頁（佔位）───────────────────────
 
     def _build_settings_page(self, parent: QWidget):
-        self._build_strategy_settings_panel(parent)
+        lay = QVBoxLayout(parent)
+        lay.setContentsMargins(20, 16, 20, 16)
+        lay.setSpacing(0)
+        self._settings_page_settings_host = QWidget()
+        self._settings_page_settings_host.setStyleSheet(f"background-color: {C['bg']};")
+        self._settings_page_settings_lay = QVBoxLayout(self._settings_page_settings_host)
+        self._settings_page_settings_lay.setContentsMargins(0, 0, 0, 0)
+        self._settings_page_settings_lay.setSpacing(0)
+        lay.addWidget(self._settings_page_settings_host, 1)
 
     def _build_placeholder(self, parent: QWidget, title: str):
         lay = QVBoxLayout(parent)

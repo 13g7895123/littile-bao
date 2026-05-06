@@ -66,8 +66,16 @@ class TestGuiTabLayout(unittest.TestCase):
                 self.win._pages["settings"],
             )
         )
+        self.assertGreater(self.win._strategy_settings_panel.maximumWidth(), 1000)
 
     def test_dashboard_preserves_original_summary_sections(self):
+        self.assertTrue(
+            self._is_descendant(
+                self.win._fields["per_stock_amount"],
+                self.win._pages["dashboard"],
+            )
+        )
+        self.assertLessEqual(self.win._strategy_settings_panel.maximumWidth(), 320)
         self.assertTrue(
             self._is_descendant(self.win.monitor_table, self.win._pages["dashboard"])
         )
