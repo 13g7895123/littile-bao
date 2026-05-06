@@ -28,3 +28,5 @@ data/
 
 # ── 設定檔（使用者本機產生） ──
 build_win/src/config.json
+
+build_win/dist/
