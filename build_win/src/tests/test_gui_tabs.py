@@ -3,6 +3,7 @@ GUI 分頁配置測試。
 """
 import os
 import sys
+import threading
 import unittest
 from decimal import Decimal
 from types import SimpleNamespace
@@ -218,6 +219,108 @@ class TestGuiTabLayout(unittest.TestCase):
         self.assertEqual([item["code"] for item in summary], ["2330"])
         self.assertEqual(summary[0]["price"], 88.5)
         self.assertEqual(snapshot.calls[0], {"market": "TSE", "type": "COMMONSTOCK"})
+
+    def test_fubon_strategy_start_loads_in_background_and_can_cancel(self):
+        class BlockingSnapshot:
+            def __init__(self):
+                self.entered = threading.Event()
+                self.release = threading.Event()
+
+            def quotes(self, **_kwargs):
+                self.entered.set()
+                self.release.wait(1.0)
+                return {"data": []}
+
+        class FakeSdk:
+            def __init__(self, snapshot):
+                self.marketdata = SimpleNamespace(
+                    rest_client=SimpleNamespace(
+                        stock=SimpleNamespace(snapshot=snapshot)
+                    )
+                )
+
+            def init_realtime(self):
+                return None
+
+        class FakeBroker:
+            def __init__(self, sdk):
+                self._sdk = sdk
+                self.sdk = sdk
+
+            def create_realtime_feed(self):
+                return None
+
+        snapshot = BlockingSnapshot()
+        broker = FakeBroker(FakeSdk(snapshot))
+        self.win.broker = broker
+        self.win._is_after_market_close = lambda: False
+        self.win._checks["market_twse"].setChecked(True)
+        self.win._checks["market_tpex"].setChecked(False)
+
+        self.win._start_trading()
+
+        self.assertTrue(snapshot.entered.wait(1.0))
+        self.assertTrue(self.win._strategy_starting)
+        self.assertFalse(self.win._running)
+        self.assertIn("載入中", self.win.strategy_status_lbl.text())
+
+        self.win._stop_trading()
+        snapshot.release.set()
+        self.assertFalse(self.win._strategy_starting)
+        self.assertFalse(self.win._running)
+
+    def test_after_close_strategy_start_uses_market_snapshot(self):
+        class FakeSnapshot:
+            def __init__(self):
+                self.calls = []
+
+            def quotes(self, **kwargs):
+                self.calls.append(kwargs)
+                self.assertNotIn("symbols", kwargs)
+                return {"data": [{
+                    "symbol": "2330",
+                    "name": "台積電",
+                    "previousClose": "90",
+                    "closePrice": "88.5",
+                    "tradeVolume": "2000",
+                }]}
+
+            def assertNotIn(self, key, values):
+                if key in values:
+                    raise AssertionError(f"unexpected {key} call")
+
+        class FakeSdk:
+            def __init__(self, snapshot):
+                self.marketdata = SimpleNamespace(
+                    rest_client=SimpleNamespace(
+                        stock=SimpleNamespace(snapshot=snapshot)
+                    )
+                )
+
+            def init_realtime(self):
+                return None
+
+        class FakeBroker:
+            def __init__(self, sdk):
+                self._sdk = sdk
+                self.sdk = sdk
+
+            def create_realtime_feed(self):
+                return None
+
+        snapshot = FakeSnapshot()
+        self.win.broker = FakeBroker(FakeSdk(snapshot))
+        self.win._is_after_market_close = lambda: True
+        self.win._checks["market_twse"].setChecked(True)
+        self.win._checks["market_tpex"].setChecked(False)
+        self.win._fields["daily_volume_min"].setText("1")
+
+        symbol_infos, feed = self.win._load_trading_runtime(
+            self.win.broker, self.win._collect_config())
+
+        self.assertIsNone(feed)
+        self.assertEqual(snapshot.calls[0], {"market": "TSE", "type": "COMMONSTOCK"})
+        self.assertEqual(list(symbol_infos.keys()), ["2330"])
 
 
 if __name__ == "__main__":

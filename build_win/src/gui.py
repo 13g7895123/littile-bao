@@ -298,6 +298,8 @@ class App(QMainWindow):
         self.engine: Optional[TradingEngine] = None
         self.broker = None  # type: ignore[assignment]  # broker.BrokerAdapter，由 main.py 注入
         self._running = False
+        self._strategy_starting = False
+        self._strategy_start_token = 0
         self._trade_count = 0
         self._buy_count = 0
         self._sell_count = 0
@@ -445,6 +447,27 @@ class App(QMainWindow):
                 }}
             """)
             self.strategy_badge.setText("● 策略已停用")
+
+    def _set_badge_loading(self):
+        self.strategy_badge.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {C['badge_ready']};
+                color: {C['yellow_l']};
+                border: 1px solid {C['yellow']};
+                border-radius: 4px;
+                padding: 0 12px;
+            }}
+        """)
+        self.strategy_badge.setText("● 策略載入中")
+
+    def _set_strategy_status(self, state: str, color: str):
+        if hasattr(self, "strategy_dot"):
+            self.strategy_dot.setStyleSheet(
+                f"color: {color}; background: transparent;")
+        if hasattr(self, "strategy_status_lbl"):
+            self.strategy_status_lbl.setText(f"策略狀態：{state}")
+            self.strategy_status_lbl.setStyleSheet(
+                f"color: {color}; background: transparent;")
 
     def _switch_tab(self, key: str):
         if hasattr(self, "_strategy_settings_panel"):
@@ -2187,56 +2210,128 @@ class App(QMainWindow):
     # ══════════════════════════════════════════
 
     def _on_strategy_toggle(self, enabled: bool):
-        self._set_badge_active(enabled)
         if enabled:
             self._start_trading()
         else:
             self._stop_trading()
 
     def _start_trading(self):
-        self.cfg = self._collect_config()
-        if not self.cfg.get_markets():
+        if self._running:
+            return
+        if self._strategy_starting:
+            push_log("INFO", "策略資料仍在載入中，請稍候…", include_traceback=False)
+            return
+
+        cfg = self._collect_config()
+        self.cfg = cfg
+        if not cfg.get_markets():
             QMessageBox.warning(self, "市場未選擇", "請至少選擇上市或上櫃！")
             self._toggles["strategy_enabled"].set(False)
             self._set_badge_active(False)
+            self._set_strategy_status("已停止", C["subtext"])
             return
+
+        self._strategy_starting = True
+        self._strategy_start_token += 1
+        token = self._strategy_start_token
+        broker = self.broker
+
+        self._realized_pnl = 0.0
+        self._trade_count = 0
+        self._buy_count = 0
+        self._sell_count = 0
+        self._set_badge_loading()
+        self._set_strategy_status("載入中…", C["yellow_l"])
+        push_log("INFO", "策略啟動準備中，正在背景載入市場資料…", include_traceback=False)
+
+        threading.Thread(
+            target=self._start_trading_worker,
+            args=(token, cfg, broker),
+            daemon=True,
+        ).start()
+
+    def _start_trading_worker(self, token: int, cfg: TradingConfig, broker) -> None:
+        try:
+            symbol_infos, feed = self._load_trading_runtime(broker, cfg)
+            if not self._is_start_token_current(token):
+                return
+
+            engine = TradingEngine(
+                config=cfg,
+                on_log=push_log,
+                on_trade=self._on_trade,
+                on_status=lambda _s: None,
+                feed=feed,
+                symbol_infos=symbol_infos,
+                broker=broker,
+            )
+            engine.start()
+
+            if not self._is_start_token_current(token):
+                try:
+                    engine.stop()
+                except Exception:
+                    pass
+                return
+
+            self._dispatch_ui(
+                lambda token=token, engine=engine: self._finish_start_trading(token, engine))
+        except Exception as e:
+            self._dispatch_ui(
+                lambda token=token, e=e: self._fail_start_trading(token, e))
+
+    def _is_start_token_current(self, token: int) -> bool:
+        return self._strategy_starting and self._strategy_start_token == token
+
+    def _load_trading_runtime(self, broker, cfg: TradingConfig):
 
         # ── 載入 SymbolInfo（昨收 / 漲停 / 特殊股）──────────────
         symbol_infos = None
         feed = None
-        if self.broker:
+        if broker:
             try:
                 from broker import ScanCriteria, scan_daily
                 from broker.universe import FubonSymbolInfoLoader
 
                 crit = ScanCriteria(
-                    price_min=Decimal(str(self.cfg.price_min)) if self.cfg.f9_enabled else Decimal("0"),
-                    price_max=Decimal(str(self.cfg.price_max)) if self.cfg.f9_enabled else Decimal("999999"),
-                    exclude_disposal=self.cfg.f11_enabled,
-                    exclude_attention=self.cfg.f11_enabled,
-                    exclude_day_trade_restricted=self.cfg.f11_enabled,
-                    markets=tuple(self.cfg.get_markets()),
-                    min_prev_volume=(self.cfg.daily_volume_min if self.cfg.f8_enabled else 0),
+                    price_min=Decimal(str(cfg.price_min)) if cfg.f9_enabled else Decimal("0"),
+                    price_max=Decimal(str(cfg.price_max)) if cfg.f9_enabled else Decimal("999999"),
+                    exclude_disposal=cfg.f11_enabled,
+                    exclude_attention=cfg.f11_enabled,
+                    exclude_day_trade_restricted=cfg.f11_enabled,
+                    markets=tuple(cfg.get_markets()),
+                    min_prev_volume=(cfg.daily_volume_min if cfg.f8_enabled else 0),
                     max_candidates=200,
                 )
 
                 # 判斷是否為真實券商（FubonAdapter）
-                is_fubon = hasattr(self.broker, "_sdk") or type(self.broker).__name__ == "FubonAdapter"
+                is_fubon = hasattr(broker, "_sdk") or type(broker).__name__ == "FubonAdapter"
 
                 if is_fubon:
-                    push_log("INFO", "正在從富邦 API 取得全市場股票清單（1900+ 支）…", include_traceback=False)
-                    loader = FubonSymbolInfoLoader(self.broker)
+                    loader = FubonSymbolInfoLoader(broker)
+                    all_infos = {}
+                    if self._is_after_market_close():
+                        push_log("INFO", "收盤後啟動，正在直接取得富邦整市場收盤價快照…", include_traceback=False)
+                        all_infos = loader.load_market_snapshots(
+                            markets=crit.markets, quote_type="COMMONSTOCK")
+                        push_log("INFO", f"收盤價快照載入 {len(all_infos)} 支個股資料", include_traceback=False)
 
-                    # 步驟 1：取全市場代碼
-                    all_codes = loader.fetch_all_codes(markets=list(self.cfg.get_markets()))
-                    push_log("INFO", f"全市場取得 {len(all_codes)} 支股票代碼", include_traceback=False)
+                    if not all_infos:
+                        push_log("INFO", "正在從富邦 API 取得全市場股票清單（1900+ 支）…", include_traceback=False)
 
-                    if all_codes:
-                        # 步驟 2：批次取 SymbolInfo
-                        push_log("INFO", "正在批次取得個股基本資料（昨收/漲停/特殊股）…", include_traceback=False)
-                        all_infos = loader.load(all_codes)
-                        push_log("INFO", f"成功載入 {len(all_infos)} 支個股資料", include_traceback=False)
+                        # 步驟 1：取全市場代碼
+                        all_codes = loader.fetch_all_codes(markets=list(cfg.get_markets()))
+                        push_log("INFO", f"全市場取得 {len(all_codes)} 支股票代碼", include_traceback=False)
 
+                        if all_codes:
+                            # 步驟 2：批次取 SymbolInfo
+                            push_log("INFO", "正在批次取得個股基本資料（昨收/漲停/特殊股）…", include_traceback=False)
+                            all_infos = loader.load(all_codes)
+                            push_log("INFO", f"成功載入 {len(all_infos)} 支個股資料", include_traceback=False)
+                        else:
+                            push_log("WARN", "無法取得全市場代碼，請確認已登入且行情權限正常", include_traceback=False)
+
+                    if all_infos:
                         # 步驟 3：依設定條件篩選候選股
                         candidates = scan_daily(all_infos.values(), crit)
                         symbol_infos = {si.code: si for si in candidates}
@@ -2245,8 +2340,6 @@ class App(QMainWindow):
                             f"（價格 {crit.price_min}~{crit.price_max} 元"
                             f"，昨量 ≥ {crit.min_prev_volume} 張）",
                             include_traceback=False)
-                    else:
-                        push_log("WARN", "無法取得全市場代碼，請確認已登入且行情權限正常", include_traceback=False)
 
                 else:
                     # MockAdapter：使用 DEFAULT_MOCK_INFOS
@@ -2263,43 +2356,49 @@ class App(QMainWindow):
                     )
                     candidates = scan_daily(DEFAULT_MOCK_INFOS, mock_crit)
                     default_codes = [i.code for i in candidates]
-                    symbol_infos = self.broker.load_symbol_info(default_codes)
+                    symbol_infos = broker.load_symbol_info(default_codes)
                     push_log("INFO", f"Mock 模式，載入 {len(symbol_infos)} 支模擬股票", include_traceback=False)
 
-                feed = self.broker.create_realtime_feed()
+                feed = broker.create_realtime_feed()
 
             except Exception as e:
                 push_log("WARN", f"載入個股基本資料失敗：{e}")
+        return symbol_infos, feed
 
-        self.engine = TradingEngine(
-            config=self.cfg,
-            on_log=push_log,
-            on_trade=self._on_trade,
-            on_status=lambda _s: None,
-            feed=feed,
-            symbol_infos=symbol_infos,
-            broker=self.broker,
-        )
-        # M4：重置今日損益
-        self._realized_pnl = 0.0
-        self._trade_count = 0
-        self._buy_count = 0
-        self._sell_count = 0
-        self.engine.start()
+    def _finish_start_trading(self, token: int, engine: TradingEngine) -> None:
+        if not self._is_start_token_current(token):
+            try:
+                engine.stop()
+            except Exception:
+                pass
+            return
+        self.engine = engine
+        self._strategy_starting = False
         self._running = True
-        self.strategy_dot.setStyleSheet(f"color: {C['green']}; background: transparent;")
-        self.strategy_status_lbl.setText("策略狀態：運行中")
-        self.strategy_status_lbl.setStyleSheet(f"color: {C['green']}; background: transparent;")
+        self._set_badge_active(True)
+        self._set_strategy_status("運行中", C["green"])
+
+    def _fail_start_trading(self, token: int, error: Exception) -> None:
+        if not self._is_start_token_current(token):
+            return
+        self._strategy_starting = False
+        self._running = False
+        self._toggles["strategy_enabled"].set(False)
+        self._set_badge_active(False)
+        self._set_strategy_status("啟動失敗", C["red"])
+        push_log("ERROR", f"策略啟動失敗：{error}")
 
     def _stop_trading(self):
+        was_starting = self._strategy_starting
+        self._strategy_start_token += 1
+        self._strategy_starting = False
         if self.engine:
             threading.Thread(target=self.engine.stop, daemon=True).start()
         self._running = False
-        self.strategy_dot.setStyleSheet(f"color: {C['red']}; background: transparent;")
-        self.strategy_status_lbl.setText("策略狀態：已停止")
-        self.strategy_status_lbl.setStyleSheet(
-            f"color: {C['subtext']}; background: transparent;"
-        )
+        self._set_badge_active(False)
+        self._set_strategy_status("已停止", C["subtext"])
+        if was_starting:
+            push_log("INFO", "策略啟動載入已取消", include_traceback=False)
 
     def _on_trade(self, d: dict):
         self._dispatch_ui(lambda: self._append_trade(d))
