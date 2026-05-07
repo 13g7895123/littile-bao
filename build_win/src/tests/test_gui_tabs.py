@@ -265,6 +265,61 @@ class TestGuiTabLayout(unittest.TestCase):
         self.assertEqual(summary[0]["price"], 88.5)
         self.assertEqual(snapshot.calls[0], {"market": "TSE", "type": "COMMONSTOCK"})
 
+    def test_after_close_preview_shows_next_day_f7_exclusions(self):
+        class FakeSnapshot:
+            def quotes(self, **_kwargs):
+                return {"data": [
+                    {
+                        "symbol": "1111",
+                        "name": "甲",
+                        "previousClose": "100",
+                        "closePrice": "110",
+                        "tradeVolume": "2000",
+                    },
+                    {
+                        "symbol": "2222",
+                        "name": "乙",
+                        "previousClose": "100",
+                        "closePrice": "105",
+                        "tradeVolume": "2000",
+                    },
+                ]}
+
+        class FakeSdk:
+            def __init__(self):
+                self.marketdata = SimpleNamespace(
+                    rest_client=SimpleNamespace(
+                        stock=SimpleNamespace(snapshot=FakeSnapshot())
+                    )
+                )
+
+            def init_realtime(self):
+                return None
+
+        broker = SimpleNamespace(_sdk=FakeSdk(), sdk=FakeSdk())
+        self.win._is_after_market_close = lambda: True
+        self.win._checks["market_twse"].setChecked(True)
+        self.win._checks["market_tpex"].setChecked(False)
+        self.win._checks["candle_k1"].setChecked(True)
+        self.win._checks["candle_k2"].setChecked(False)
+        self.win._fields["price_min"].setText("10")
+        self.win._fields["price_max"].setText("500")
+        self.win._fields["daily_volume_min"].setText("1")
+
+        summary = self.win._load_dashboard_preview_summary(
+            broker, self.win._collect_config())
+        self.win._render_monitor(summary)
+
+        rows = {item["code"]: item for item in summary}
+        self.assertTrue(rows["1111"]["next_day_excluded"])
+        self.assertFalse(rows["2222"].get("next_day_excluded", False))
+        self.assertEqual(self.win.monitor_count_lbl.text(), "候選 1 / 明日排除 1 檔")
+        status_by_code = {
+            self.win.monitor_table.item(row, 0).text(): self.win.monitor_table.item(row, 8).text()
+            for row in range(self.win.monitor_table.rowCount())
+        }
+        self.assertEqual(status_by_code["1111"], "明日排除")
+
     def test_fubon_strategy_start_loads_in_background_and_can_cancel(self):
         class BlockingSnapshot:
             def __init__(self):

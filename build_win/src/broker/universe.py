@@ -104,6 +104,33 @@ def is_limit_up_close(close: Decimal, prev_close: Decimal) -> bool:
     return close_dec == calc_limit_up(prev_dec)
 
 
+def next_session_prior_limit_up_streak(info: "SymbolInfo") -> Optional[int]:
+    """用今日收盤快照推估隔日開盤前的連續收漲停天數。"""
+    if info.quote_price is None or info.quote_price <= 0:
+        return None
+    if not is_limit_up_close(info.quote_price, info.prev_close):
+        return 0
+    return (info.prior_limit_up_streak or 0) + 1
+
+
+def build_next_session_symbol_info(info: "SymbolInfo") -> Optional["SymbolInfo"]:
+    """將收盤後快照轉成隔日選股會使用的 SymbolInfo。"""
+    if info.quote_price is None or info.quote_price <= 0:
+        return None
+    return build_symbol_info(
+        code=info.code,
+        name=info.name,
+        market=info.market,
+        prev_close=info.quote_price,
+        quote_price=info.quote_price,
+        prev_volume=info.prev_volume,
+        is_disposal=info.is_disposal,
+        is_attention=info.is_attention,
+        is_day_trade_restricted=info.is_day_trade_restricted,
+        prior_limit_up_streak=next_session_prior_limit_up_streak(info),
+    )
+
+
 def _default_snapshot_cache_path() -> str:
     if getattr(__import__("sys"), "frozen", False):
         base = os.path.dirname(__import__("sys").executable)

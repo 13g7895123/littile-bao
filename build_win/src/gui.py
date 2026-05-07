@@ -1630,9 +1630,11 @@ class App(QMainWindow):
 
         from broker import ScanCriteria
         from broker.universe import (
+            build_next_session_symbol_info,
             FubonSymbolInfoLoader,
             MarketSnapshotCache,
             resolve_preview_price,
+            scan_daily,
             scan_preview_candidates,
         )
 
@@ -1653,6 +1655,7 @@ class App(QMainWindow):
         )
 
         is_fubon = hasattr(broker, "_sdk") or type(broker).__name__ == "FubonAdapter"
+        next_day_exclusions = []
         if is_fubon:
             loader = FubonSymbolInfoLoader(broker)
             snapshot_cache = MarketSnapshotCache()
@@ -1687,6 +1690,15 @@ class App(QMainWindow):
                     snapshot_cache.apply_prior_limit_up_streaks(
                         all_infos.values(), max_days=cfg.candle_limit)
                 candidates = scan_preview_candidates(all_infos.values(), preview_crit)
+                if self._is_after_market_close():
+                    next_day_exclusions = self._build_next_day_exclusion_rows(
+                        all_infos.values(), crit)
+                    excluded_codes = {item["code"] for item in next_day_exclusions}
+                    if excluded_codes:
+                        candidates = [
+                            si for si in candidates
+                            if si.code not in excluded_codes
+                        ]
                 symbol_infos = {si.code: si for si in candidates}
             else:
                 # 備援：snapshot 不可用時才退回舊的「列代碼 → 逐支查 ticker」流程
@@ -1737,7 +1749,80 @@ class App(QMainWindow):
                 "is_at_limit_up": False,
             })
         summary.sort(key=lambda item: item["code"])
+        if next_day_exclusions:
+            summary.extend(next_day_exclusions)
+            self._log_next_day_exclusions(next_day_exclusions)
         return summary
+
+    def _build_next_day_exclusion_rows(self, infos, crit) -> list:
+        if crit.max_prior_limit_up_streak is None:
+            return []
+
+        from broker import ScanCriteria, scan_daily
+        from broker.universe import build_next_session_symbol_info
+
+        next_infos = []
+        for info in infos:
+            next_info = build_next_session_symbol_info(info)
+            if next_info is not None:
+                next_infos.append(next_info)
+
+        base_crit = ScanCriteria(
+            price_min=crit.price_min,
+            price_max=crit.price_max,
+            min_prev_volume=crit.min_prev_volume,
+            exclude_disposal=crit.exclude_disposal,
+            exclude_attention=crit.exclude_attention,
+            exclude_day_trade_restricted=crit.exclude_day_trade_restricted,
+            markets=crit.markets,
+            max_candidates=10000,
+            max_prior_limit_up_streak=None,
+        )
+        potential = scan_daily(next_infos, base_crit)
+        excluded = [
+            info for info in potential
+            if info.prior_limit_up_streak is not None
+            and info.prior_limit_up_streak > crit.max_prior_limit_up_streak
+        ]
+
+        rows = []
+        for info in excluded:
+            price = float(info.prev_close)
+            rows.append({
+                "code": info.code,
+                "name": info.name,
+                "market": info.market,
+                "candle": 0,
+                "qty": 0,
+                "pending": False,
+                "vol_1s": 0,
+                "blocked": True,
+                "price": price,
+                "limit_up": float(info.limit_up_price),
+                "prev_close": price,
+                "change": 0.0,
+                "change_pct": 0.0,
+                "ask_qty": 0,
+                "is_at_limit_up": False,
+                "next_day_excluded": True,
+                "prior_limit_up_streak": info.prior_limit_up_streak,
+            })
+        rows.sort(key=lambda item: (item.get("prior_limit_up_streak") or 0, item["code"]), reverse=True)
+        return rows
+
+    def _log_next_day_exclusions(self, rows: list) -> None:
+        if not rows:
+            return
+        preview = []
+        for item in rows[:50]:
+            streak = item.get("prior_limit_up_streak") or 0
+            preview.append(f"{item['code']} {item['name']}（連{streak}根）")
+        more = "" if len(rows) <= 50 else f"，另 {len(rows) - 50} 支"
+        push_log(
+            "INFO",
+            f"明日 F7 排除預覽 {len(rows)} 支：" + "、".join(preview) + more,
+            include_traceback=False,
+        )
 
     def _is_after_market_close(self, now: Optional[datetime] = None) -> bool:
         current = now or datetime.now()
@@ -2910,6 +2995,7 @@ class App(QMainWindow):
             "已完成":   C["subtext"],
             "委託中":   C["yellow_l"],
             "等待":     C["subtext"],
+            "明日排除": C["red_l"],
         }
         STATUS_BG = {
             "準備進場": C["badge_ready"],
@@ -2920,17 +3006,25 @@ class App(QMainWindow):
             "已完成":   C["badge_dim"],
             "委託中":   C["badge_order"],
             "等待":     C["badge_dim"],
+            "明日排除": C["badge_cancel"],
         }
 
         threshold = self.cfg.volume_spike_sell_threshold
         pos_cnt = 0
+        next_excluded_cnt = sum(1 for s in summary if s.get("next_day_excluded"))
         if hasattr(self, "monitor_count_lbl"):
-            self.monitor_count_lbl.setText(f"共 {len(summary)} 檔")
+            if next_excluded_cnt:
+                self.monitor_count_lbl.setText(
+                    f"候選 {len(summary) - next_excluded_cnt} / 明日排除 {next_excluded_cnt} 檔")
+            else:
+                self.monitor_count_lbl.setText(f"共 {len(summary)} 檔")
         self.monitor_table.setRowCount(0)
         self._monitor_rows.clear()
 
         for s in summary:
-            if s["blocked"]:
+            if s.get("next_day_excluded"):
+                status = "明日排除"
+            elif s["blocked"]:
                 status = "已完成"
             elif s["qty"] > 0:
                 status = "已進場"
@@ -2942,7 +3036,10 @@ class App(QMainWindow):
             else:
                 status = "等待"
 
-            candle_txt = f"第{s['candle']}根" if s["candle"] > 0 else "—"
+            if s.get("next_day_excluded"):
+                candle_txt = f"連{s.get('prior_limit_up_streak') or 0}根"
+            else:
+                candle_txt = f"第{s['candle']}根" if s["candle"] > 0 else "—"
             fg = QColor(STATUS_COLOR.get(status, C["text"]))
             vol_fg = QColor(C["red"]) if s["vol_1s"] > threshold else fg
 
@@ -3007,6 +3104,8 @@ class App(QMainWindow):
         self._autosize_monitor_columns()
 
     def _monitor_action_text(self, summary_item: dict, status: str) -> tuple[str, str]:
+        if status == "明日排除":
+            return "隔日不追", C["red_l"]
         if status == "已完成":
             return "已封鎖", C["subtext"]
         if status == "已進場":
