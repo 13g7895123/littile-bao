@@ -9,6 +9,7 @@ Engine 端只需註冊 callback，無需區分資料來源。
 """
 from __future__ import annotations
 
+import json
 import random
 import threading
 import time
@@ -16,7 +17,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
-from typing import Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from .errors import FubonNetworkError, FubonNotLoggedInError
 from .models import BookEvent, BookLevel, TickEvent
@@ -261,12 +262,17 @@ class FubonRealtimeFeed(RealtimeFeed):
                 raise FubonNetworkError("無法取得 WebSocket client（SDK 介面異常）")
 
             connect = getattr(self._ws, "connect", None)
-            if callable(connect):
-                connect()
-
             on_msg = getattr(self._ws, "on", None)
             if callable(on_msg):
+                # 多個事件全部註冊，方便除錯與訂閱失敗時及早察覺
                 on_msg("message", self._on_raw_message)
+                on_msg("connect", lambda *a, **k: print("[FubonFeed] websocket connected"))
+                on_msg("disconnect",
+                       lambda *a, **k: print(f"[FubonFeed] websocket disconnected args={a} kwargs={k}"))
+                on_msg("error",
+                       lambda *a, **k: print(f"[FubonFeed] websocket error args={a} kwargs={k}"))
+            if callable(connect):
+                connect()
 
             self._started = True
             if self._subscribed:
@@ -294,38 +300,125 @@ class FubonRealtimeFeed(RealtimeFeed):
             return
         sub = getattr(self._ws, "subscribe", None)
         if not callable(sub):
+            print("[FubonFeed] websocket has no subscribe()")
             return
         # 分片 200 / connection
-        for i in range(0, len(self._subscribed), 200):
+        total = len(self._subscribed)
+        ok_chunks = 0
+        for i in range(0, total, 200):
             chunk = self._subscribed[i:i + 200]
             try:
                 sub({"channel": "trades", "symbols": chunk})
                 sub({"channel": "books", "symbols": chunk})
+                ok_chunks += 1
             except Exception as e:  # noqa: BLE001
                 print(f"[FubonFeed] subscribe error chunk={chunk[:3]}…: {e}")
+        print(f"[FubonFeed] subscribed: {total} symbols in {ok_chunks} chunk(s)")
 
     def _on_raw_message(self, msg) -> None:
-        """SDK 推送的訊息，依 channel 分派至 tick / book callback。"""
+        """SDK 推送的訊息（多半是 JSON 字串），依 channel 分派到 tick / book callback。
+
+        實測 fubon_neo Stock WS 推送格式概略為：
+          {"event":"data",   "data":{"symbol":"2330","type":"trade","price":...,"size":...}}
+          {"event":"snapshot","data":{"symbol":"2330","asks":[...],"bids":[...]}}
+          {"event":"data",   "data":{"symbol":"2330","asks":[...],"bids":[...]}}
+        舊版亦可能直接以 channel="trades"/"books" 推送。
+        因此本函式對多種變體都做容錯解析。
+        """
         try:
-            data = msg if isinstance(msg, dict) else getattr(msg, "data", None) or {}
-            channel = data.get("event") or data.get("channel") or ""
-            payload = data.get("data") or data
-            if channel == "trades" or "price" in payload:
-                self._emit_tick(self._to_tick(payload))
-            elif channel == "books" or "asks" in payload or "ask" in payload:
-                self._emit_book(self._to_book(payload))
+            payload = self._extract_payload(msg)
+            if not payload:
+                return
+
+            event = str(payload.get("event") or payload.get("channel") or "").lower()
+            data = payload.get("data")
+            if isinstance(data, list):
+                # 有些訊息 data 是 list（多筆），逐筆派發
+                for item in data:
+                    self._dispatch(event, item if isinstance(item, dict) else {})
+                return
+            if not isinstance(data, dict):
+                # 沒包 data 欄位時，整個 payload 就是內容
+                data = payload
+            self._dispatch(event, data)
         except Exception as e:  # noqa: BLE001
-            print(f"[FubonFeed] parse error: {e}")
+            print(f"[FubonFeed] parse error: {e} | raw={str(msg)[:200]}")
+
+    @staticmethod
+    def _extract_payload(msg: Any) -> Optional[dict]:
+        """把多型訊息（dict / str / 物件）轉成統一的 dict。"""
+        if msg is None:
+            return None
+        if isinstance(msg, dict):
+            return msg
+        if isinstance(msg, (bytes, bytearray)):
+            try:
+                msg = msg.decode("utf-8", errors="ignore")
+            except Exception:
+                return None
+        if isinstance(msg, str):
+            text = msg.strip()
+            if not text:
+                return None
+            try:
+                obj = json.loads(text)
+                return obj if isinstance(obj, dict) else None
+            except Exception:
+                return None
+        # 其他物件型別：嘗試讀 .data / .__dict__
+        data_attr = getattr(msg, "data", None)
+        if isinstance(data_attr, dict):
+            return data_attr
+        if isinstance(data_attr, str):
+            try:
+                obj = json.loads(data_attr)
+                return obj if isinstance(obj, dict) else None
+            except Exception:
+                return None
+        return getattr(msg, "__dict__", None)
+
+    def _dispatch(self, event: str, data: dict) -> None:
+        """依事件名稱 + payload 形狀，派發到 tick / book。"""
+        if not isinstance(data, dict):
+            return
+        type_ = str(data.get("type") or "").lower()
+
+        # ── 判斷是否為 tick（成交） ──
+        is_trade_event = event in ("trades", "trade")
+        is_trade_type = type_ in ("trade", "trades")
+        has_tick_fields = ("price" in data and ("size" in data or "volume" in data)) \
+                          and not ("asks" in data or "bids" in data or "ask" in data or "bid" in data)
+        if is_trade_event or is_trade_type or has_tick_fields:
+            self._emit_tick(self._to_tick(data))
+            return
+
+        # ── 判斷是否為 book（五檔） ──
+        has_book_fields = any(k in data for k in ("asks", "bids", "ask", "bid"))
+        if event in ("books", "book", "snapshot") or has_book_fields:
+            self._emit_book(self._to_book(data))
+            return
+
+        # event="data" 但沒有可辨識欄位 → 忽略（例如 heartbeat）
 
     @staticmethod
     def _to_tick(p: dict) -> TickEvent:
+        # 價格容錯：price / lastPrice / closePrice / matchPrice
+        price_raw = (p.get("price") or p.get("lastPrice")
+                     or p.get("closePrice") or p.get("matchPrice") or 0)
+        # 量容錯：size / volume / lastSize / qty
+        vol_raw = (p.get("size") or p.get("volume")
+                   or p.get("lastSize") or p.get("qty") or 0)
+        # 累計量容錯
+        cum_raw = (p.get("total") or p.get("cum_volume")
+                   or p.get("totalVolume") or p.get("accVolume") or 0)
+        prev = p.get("prev_close") or p.get("previousClose") or p.get("referencePrice")
         return TickEvent(
             code=str(p.get("symbol") or p.get("code") or ""),
             time=datetime.now(),
-            price=Decimal(str(p.get("price") or 0)),
-            volume=int(p.get("size") or p.get("volume") or 0),
-            cum_volume=int(p.get("total") or p.get("cum_volume") or 0),
-            prev_close=Decimal(str(p.get("prev_close") or 0)) if p.get("prev_close") else None,
+            price=Decimal(str(price_raw or 0)),
+            volume=int(vol_raw or 0),
+            cum_volume=int(cum_raw or 0),
+            prev_close=Decimal(str(prev)) if prev else None,
         )
 
     @staticmethod
@@ -333,15 +426,36 @@ class FubonRealtimeFeed(RealtimeFeed):
         def _levels(items) -> List[BookLevel]:
             out: List[BookLevel] = []
             for it in items or []:
+                if not isinstance(it, dict):
+                    continue
+                price_raw = (it.get("price") or it.get("p") or 0)
+                vol_raw = (it.get("size") or it.get("volume") or it.get("v") or 0)
                 out.append(BookLevel(
-                    price=Decimal(str(it.get("price") or 0)),
-                    volume=int(it.get("size") or it.get("volume") or 0),
+                    price=Decimal(str(price_raw or 0)),
+                    volume=int(vol_raw or 0),
                 ))
             return out
+
+        # 兼容兩種五檔結構：
+        #   1) {"asks":[{price,size},...], "bids":[...]}
+        #   2) {"ask":[{price,size},...],  "bid":[...]}
+        #   3) 單檔扁平：{"askPrice":..., "askSize":..., "bidPrice":..., "bidSize":...}
+        ask_list = p.get("asks") or p.get("ask")
+        bid_list = p.get("bids") or p.get("bid")
+        ask_levels = _levels(ask_list) if isinstance(ask_list, list) else []
+        bid_levels = _levels(bid_list) if isinstance(bid_list, list) else []
+        if not ask_levels and ("askPrice" in p or "ask_price" in p):
+            ap = p.get("askPrice") or p.get("ask_price") or 0
+            av = p.get("askSize") or p.get("ask_size") or p.get("askVolume") or 0
+            ask_levels = [BookLevel(price=Decimal(str(ap or 0)), volume=int(av or 0))]
+        if not bid_levels and ("bidPrice" in p or "bid_price" in p):
+            bp = p.get("bidPrice") or p.get("bid_price") or 0
+            bv = p.get("bidSize") or p.get("bid_size") or p.get("bidVolume") or 0
+            bid_levels = [BookLevel(price=Decimal(str(bp or 0)), volume=int(bv or 0))]
 
         return BookEvent(
             code=str(p.get("symbol") or p.get("code") or ""),
             time=datetime.now(),
-            ask=_levels(p.get("asks") or p.get("ask")),
-            bid=_levels(p.get("bids") or p.get("bid")),
+            ask=ask_levels,
+            bid=bid_levels,
         )
