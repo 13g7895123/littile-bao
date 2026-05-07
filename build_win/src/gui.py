@@ -1649,9 +1649,11 @@ class App(QMainWindow):
         if is_fubon:
             loader = FubonSymbolInfoLoader(broker)
             symbol_infos = {}
-            close_snapshot_loaded = False
+
+            # 收盤後使用零波動的快照條件（不限昨量），盤中沿用原始 crit
+            preview_crit = crit
             if self._is_after_market_close():
-                close_crit = ScanCriteria(
+                preview_crit = ScanCriteria(
                     price_min=crit.price_min,
                     price_max=crit.price_max,
                     exclude_disposal=crit.exclude_disposal,
@@ -1661,12 +1663,17 @@ class App(QMainWindow):
                     min_prev_volume=0,
                     max_candidates=crit.max_candidates,
                 )
-                all_infos = loader.load_market_snapshots(
-                    markets=markets, quote_type="COMMONSTOCK")
-                close_snapshot_loaded = bool(all_infos)
-                candidates = scan_preview_candidates(all_infos.values(), close_crit)
+
+            # 統一走 snapshot.quotes(market=...)：每個市場僅 1 次 REST 即可拿到
+            # 昨收/昨量/特殊股旗標，避免逐支呼叫 intraday/ticker/{code}。
+            all_infos = loader.load_market_snapshots(
+                markets=markets, quote_type="COMMONSTOCK")
+
+            if all_infos:
+                candidates = scan_preview_candidates(all_infos.values(), preview_crit)
                 symbol_infos = {si.code: si for si in candidates}
-            if not close_snapshot_loaded:
+            else:
+                # 備援：snapshot 不可用時才退回舊的「列代碼 → 逐支查 ticker」流程
                 all_codes = loader.fetch_all_codes(markets=markets)
                 if not all_codes:
                     return []
@@ -2317,21 +2324,28 @@ class App(QMainWindow):
                 if is_fubon:
                     loader = FubonSymbolInfoLoader(broker)
                     all_infos = {}
-                    if self._is_after_market_close():
-                        push_log("INFO", "收盤後啟動，正在直接取得富邦整市場收盤價快照…", include_traceback=False)
-                        all_infos = loader.load_market_snapshots(
-                            markets=crit.markets, quote_type="COMMONSTOCK")
-                        push_log("INFO", f"收盤價快照載入 {len(all_infos)} 支個股資料", include_traceback=False)
 
-                    if not all_infos:
-                        push_log("INFO", "正在從富邦 API 取得全市場股票清單（1900+ 支）…", include_traceback=False)
-
-                        # 步驟 1：取全市場代碼
+                    # 統一策略：先嘗試 snapshot.quotes(market=...)
+                    # 每個市場僅 1 次 REST 就能拿到全市場昨收/昨量/特殊股旗標，
+                    # 大幅優於先 fetch_all_codes() 再逐支 intraday.ticker(code) 的舊路徑。
+                    push_log("INFO",
+                        f"正在透過 snapshot 取得市場 {list(crit.markets)} 全市場個股快照…",
+                        include_traceback=False)
+                    all_infos = loader.load_market_snapshots(
+                        markets=crit.markets, quote_type="COMMONSTOCK")
+                    if all_infos:
+                        push_log("INFO",
+                            f"snapshot 載入 {len(all_infos)} 支個股資料",
+                            include_traceback=False)
+                    else:
+                        # 備援：snapshot 失敗時才退回舊路徑（會打 1900+ 次 ticker）
+                        push_log("WARN",
+                            "snapshot 未取得資料，退回逐支 ticker 模式（較慢）…",
+                            include_traceback=False)
                         all_codes = loader.fetch_all_codes(markets=list(cfg.get_markets()))
                         push_log("INFO", f"全市場取得 {len(all_codes)} 支股票代碼", include_traceback=False)
 
                         if all_codes:
-                            # 步驟 2：批次取 SymbolInfo
                             push_log("INFO", "正在批次取得個股基本資料（昨收/漲停/特殊股）…", include_traceback=False)
                             all_infos = loader.load(all_codes)
                             push_log("INFO", f"成功載入 {len(all_infos)} 支個股資料", include_traceback=False)
@@ -2339,7 +2353,7 @@ class App(QMainWindow):
                             push_log("WARN", "無法取得全市場代碼，請確認已登入且行情權限正常", include_traceback=False)
 
                     if all_infos:
-                        # 步驟 3：依設定條件篩選候選股
+                        # 步驟 2：依設定條件篩選候選股
                         candidates = scan_daily(all_infos.values(), crit)
                         symbol_infos = {si.code: si for si in candidates}
                         push_log("INFO",
