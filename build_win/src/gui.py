@@ -2342,6 +2342,7 @@ class App(QMainWindow):
 
         cfg = self._collect_config()
         self.cfg = cfg
+        broker = self.broker
         if not cfg.get_markets():
             QMessageBox.warning(self, "市場未選擇", "請至少選擇上市或上櫃！")
             self._toggles["strategy_enabled"].set(False)
@@ -2349,10 +2350,25 @@ class App(QMainWindow):
             self._set_strategy_status("已停止", C["subtext"])
             return
 
+        if self._is_after_market_close():
+            self._toggles["strategy_enabled"].set(False)
+            self._set_badge_active(False)
+            self._set_strategy_status("收盤預覽", C["blue_l"])
+            push_log(
+                "INFO",
+                "目前已收盤，不啟動策略引擎與即時行情訂閱；改為更新明日候選 / 排除預覽。",
+                include_traceback=False,
+            )
+            if broker is not None:
+                self._dashboard_preview_summary = []
+                self._dashboard_preview_broker_key = ""
+                self._render_monitor([])
+                self._preload_dashboard_preview_async(broker)
+            return
+
         self._strategy_starting = True
         self._strategy_start_token += 1
         token = self._strategy_start_token
-        broker = self.broker
 
         self._realized_pnl = 0.0
         self._trade_count = 0

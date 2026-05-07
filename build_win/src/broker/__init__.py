@@ -25,6 +25,7 @@ from .adapter import BrokerAdapter, FubonAdapter, MockAdapter
 from .realtime import (
     BookCallback,
     FubonRealtimeFeed,
+    FUBON_REALTIME_SYMBOL_LIMIT,
     MockRealtimeFeed,
     RealtimeFeed,
     SymbolMeta,
@@ -100,6 +101,7 @@ __all__ = [
     "RealtimeFeed",
     "MockRealtimeFeed",
     "FubonRealtimeFeed",
+    "FUBON_REALTIME_SYMBOL_LIMIT",
     "SymbolMeta",
     "TickCallback",
     "BookCallback",

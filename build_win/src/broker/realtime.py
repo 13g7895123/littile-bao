@@ -25,6 +25,8 @@ from .models import BookEvent, BookLevel, TickEvent
 TickCallback = Callable[[TickEvent], None]
 BookCallback = Callable[[BookEvent], None]
 
+FUBON_REALTIME_SYMBOL_LIMIT = 200
+
 
 # ─────────────────────────────────────────────────────────
 #  抽象介面
@@ -232,8 +234,15 @@ class FubonRealtimeFeed(RealtimeFeed):
         self._lock = threading.Lock()
 
     def subscribe(self, codes: List[str], meta: Dict[str, SymbolMeta]) -> None:
+        unique_codes = list(dict.fromkeys(codes))
+        if len(unique_codes) > FUBON_REALTIME_SYMBOL_LIMIT:
+            print(
+                f"[FubonFeed] realtime symbols capped at {FUBON_REALTIME_SYMBOL_LIMIT}; "
+                f"requested={len(unique_codes)}"
+            )
+            unique_codes = unique_codes[:FUBON_REALTIME_SYMBOL_LIMIT]
         with self._lock:
-            self._subscribed = list(dict.fromkeys(codes))
+            self._subscribed = unique_codes
         if self._started:
             self._do_subscribe()
 

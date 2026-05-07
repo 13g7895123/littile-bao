@@ -376,6 +376,27 @@ class TestGuiTabLayout(unittest.TestCase):
         self.assertFalse(self.win._strategy_starting)
         self.assertFalse(self.win._running)
 
+    def test_after_close_strategy_toggle_only_refreshes_preview(self):
+        class FakeBroker:
+            def create_realtime_feed(self):
+                raise AssertionError("after close should not create realtime feed")
+
+        self.win.broker = FakeBroker()
+        self.win._is_after_market_close = lambda: True
+        self.win._checks["market_twse"].setChecked(True)
+        self.win._checks["market_tpex"].setChecked(False)
+        self.win._preload_called = False
+        self.win._preload_dashboard_preview_async = lambda broker=None: setattr(
+            self.win, "_preload_called", True)
+
+        self.win._start_trading()
+
+        self.assertFalse(self.win._running)
+        self.assertFalse(self.win._strategy_starting)
+        self.assertFalse(self.win._toggles["strategy_enabled"].value)
+        self.assertTrue(self.win._preload_called)
+        self.assertIn("收盤預覽", self.win.strategy_status_lbl.text())
+
     def test_after_close_strategy_start_uses_market_snapshot(self):
         class FakeSnapshot:
             def __init__(self):

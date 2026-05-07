@@ -7,6 +7,7 @@ import threading
 import time
 import unittest
 from decimal import Decimal
+from types import SimpleNamespace
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -17,7 +18,7 @@ from broker import (  # noqa: E402
     SymbolMeta,
     TickEvent,
 )
-from broker.realtime import FubonRealtimeFeed  # noqa: E402
+from broker.realtime import FUBON_REALTIME_SYMBOL_LIMIT, FubonRealtimeFeed  # noqa: E402
 from broker.errors import FubonNotLoggedInError  # noqa: E402
 
 
@@ -87,6 +88,16 @@ class TestEngineWithMockFeed(unittest.TestCase):
 
 
 class TestFubonRealtimeFeedSkeleton(unittest.TestCase):
+    def test_subscribe_caps_symbols_to_single_connection_limit(self):
+        feed = FubonRealtimeFeed(SimpleNamespace())
+        codes = [f"{i:04d}" for i in range(FUBON_REALTIME_SYMBOL_LIMIT + 25)]
+
+        feed.subscribe(codes, {})
+
+        self.assertEqual(len(feed._subscribed), FUBON_REALTIME_SYMBOL_LIMIT)
+        self.assertEqual(feed._subscribed[0], "0000")
+        self.assertEqual(feed._subscribed[-1], f"{FUBON_REALTIME_SYMBOL_LIMIT - 1:04d}")
+
     def test_start_without_login_raises(self):
         from broker import FubonAdapter
         adapter = FubonAdapter(
