@@ -97,10 +97,22 @@ if __name__ == "__main__":
         print("\n========== ERROR ==========")
         print(tb)
         print("===========================")
+        # 即使 logging 沒初始化或 console=False，也把錯誤寫到固定檔案
+        try:
+            crash_path = os.path.join(_log_dir(), "startup_crash.log")
+            with open(crash_path, "a", encoding="utf-8") as fp:
+                fp.write("\n========== STARTUP CRASH ==========\n")
+                fp.write(tb)
+                fp.write("===================================\n")
+        except Exception:
+            pass
         log_path = get_runtime_log_path()
         if log_path:
             print("[StockTrader] Error log written to:", log_path)
         else:
             print("[StockTrader] File logging is disabled; no error log was written.")
-        input("\nPress Enter to exit...")
+        try:
+            input("\nPress Enter to exit...")
+        except Exception:
+            pass
         sys.exit(1)
