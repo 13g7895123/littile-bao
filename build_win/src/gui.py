@@ -1629,7 +1629,12 @@ class App(QMainWindow):
             return []
 
         from broker import ScanCriteria
-        from broker.universe import FubonSymbolInfoLoader, resolve_preview_price, scan_preview_candidates
+        from broker.universe import (
+            FubonSymbolInfoLoader,
+            MarketSnapshotCache,
+            resolve_preview_price,
+            scan_preview_candidates,
+        )
 
         # 若市場選項全未勾選，則預設兩個市場都納入（避免回傳 0 支）
         markets = tuple(cfg.get_markets()) or ("TSE", "OTC")
@@ -1643,11 +1648,14 @@ class App(QMainWindow):
             markets=markets,
             min_prev_volume=(cfg.daily_volume_min if cfg.f8_enabled else 0),
             max_candidates=200,
+            max_prior_limit_up_streak=(cfg.candle_limit - 1)
+                if cfg.f7_enabled and cfg.candle_limit > 0 else None,
         )
 
         is_fubon = hasattr(broker, "_sdk") or type(broker).__name__ == "FubonAdapter"
         if is_fubon:
             loader = FubonSymbolInfoLoader(broker)
+            snapshot_cache = MarketSnapshotCache()
             symbol_infos = {}
 
             # 收盤後使用零波動的快照條件（不限昨量），盤中沿用原始 crit
@@ -1662,14 +1670,22 @@ class App(QMainWindow):
                     markets=crit.markets,
                     min_prev_volume=0,
                     max_candidates=crit.max_candidates,
+                    max_prior_limit_up_streak=crit.max_prior_limit_up_streak,
                 )
 
             # 統一走 snapshot.quotes(market=...)：每個市場僅 1 次 REST 即可拿到
             # 昨收/昨量/特殊股旗標，避免逐支呼叫 intraday/ticker/{code}。
             all_infos = loader.load_market_snapshots(
-                markets=markets, quote_type="COMMONSTOCK")
+                markets=markets,
+                quote_type="COMMONSTOCK",
+                snapshot_cache=snapshot_cache,
+                cache_snapshots=self._is_after_market_close(),
+            )
 
             if all_infos:
+                if cfg.f7_enabled and cfg.candle_limit > 0:
+                    snapshot_cache.apply_prior_limit_up_streaks(
+                        all_infos.values(), max_days=cfg.candle_limit)
                 candidates = scan_preview_candidates(all_infos.values(), preview_crit)
                 symbol_infos = {si.code: si for si in candidates}
             else:
@@ -2305,7 +2321,12 @@ class App(QMainWindow):
         if broker:
             try:
                 from broker import ScanCriteria, scan_daily
-                from broker.universe import FubonSymbolInfoLoader
+                from broker.universe import FubonSymbolInfoLoader, MarketSnapshotCache
+
+                max_prior_streak = (
+                    cfg.candle_limit - 1
+                    if cfg.f7_enabled and cfg.candle_limit > 0 else None
+                )
 
                 crit = ScanCriteria(
                     price_min=Decimal(str(cfg.price_min)) if cfg.f9_enabled else Decimal("0"),
@@ -2316,6 +2337,7 @@ class App(QMainWindow):
                     markets=tuple(cfg.get_markets()),
                     min_prev_volume=(cfg.daily_volume_min if cfg.f8_enabled else 0),
                     max_candidates=200,
+                    max_prior_limit_up_streak=max_prior_streak,
                 )
 
                 # 判斷是否為真實券商（FubonAdapter）
@@ -2323,6 +2345,7 @@ class App(QMainWindow):
 
                 if is_fubon:
                     loader = FubonSymbolInfoLoader(broker)
+                    snapshot_cache = MarketSnapshotCache()
                     all_infos = {}
 
                     # 統一策略：先嘗試 snapshot.quotes(market=...)
@@ -2332,11 +2355,22 @@ class App(QMainWindow):
                         f"正在透過 snapshot 取得市場 {list(crit.markets)} 全市場個股快照…",
                         include_traceback=False)
                     all_infos = loader.load_market_snapshots(
-                        markets=crit.markets, quote_type="COMMONSTOCK")
+                        markets=crit.markets,
+                        quote_type="COMMONSTOCK",
+                        snapshot_cache=snapshot_cache,
+                        cache_snapshots=self._is_after_market_close(),
+                    )
                     if all_infos:
                         push_log("INFO",
                             f"snapshot 載入 {len(all_infos)} 支個股資料",
                             include_traceback=False)
+                        if cfg.f7_enabled and cfg.candle_limit > 0:
+                            updated = snapshot_cache.apply_prior_limit_up_streaks(
+                                all_infos.values(), max_days=cfg.candle_limit)
+                            if updated:
+                                push_log("INFO",
+                                    f"已用本地收盤快照標註 {updated} 支連續漲停天數",
+                                    include_traceback=False)
                     else:
                         # 備援：snapshot 失敗時才退回舊路徑（會打 1900+ 次 ticker）
                         push_log("WARN",
@@ -2355,11 +2389,30 @@ class App(QMainWindow):
                     if all_infos:
                         # 步驟 2：依設定條件篩選候選股
                         candidates = scan_daily(all_infos.values(), crit)
+                        if cfg.f7_enabled and cfg.candle_limit > 0:
+                            missing = [
+                                si for si in candidates
+                                if si.prior_limit_up_streak is None
+                            ]
+                            if missing:
+                                updated = loader.enrich_prior_limit_up_streaks_from_history(
+                                    missing, max_days=cfg.candle_limit, max_symbols=50)
+                                if updated:
+                                    push_log("INFO",
+                                        f"快取不足，已補查 {updated} 支候選股日 K 漲停序列",
+                                        include_traceback=False)
+                                    candidates = scan_daily(all_infos.values(), crit)
+                                elif len(missing) > 0:
+                                    push_log("WARN",
+                                        "部分候選股缺少昨日起漲停序列資料，已保守保留；"
+                                        "建議收盤後更新一次全市場快照快取",
+                                        include_traceback=False)
                         symbol_infos = {si.code: si for si in candidates}
                         push_log("INFO",
                             f"篩選後候選 {len(symbol_infos)} 支"
                             f"（價格 {crit.price_min}~{crit.price_max} 元"
-                            f"，昨量 ≥ {crit.min_prev_volume} 張）",
+                            f"，昨量 ≥ {crit.min_prev_volume} 張"
+                            f"，日漲停序列 ≤ {max_prior_streak + 1 if max_prior_streak is not None else '不限'} 根）",
                             include_traceback=False)
 
                 else:
@@ -2374,6 +2427,7 @@ class App(QMainWindow):
                         markets=crit.markets,
                         min_prev_volume=0,
                         max_candidates=crit.max_candidates,
+                        max_prior_limit_up_streak=crit.max_prior_limit_up_streak,
                     )
                     candidates = scan_daily(DEFAULT_MOCK_INFOS, mock_crit)
                     default_codes = [i.code for i in candidates]

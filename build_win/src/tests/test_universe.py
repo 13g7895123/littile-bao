@@ -3,6 +3,7 @@ broker.universe 單元測試。
 """
 import os
 import sys
+import tempfile
 import unittest
 from decimal import Decimal
 from types import SimpleNamespace
@@ -12,11 +13,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from broker.universe import (  # noqa: E402
     DEFAULT_MOCK_INFOS,
     FubonSymbolInfoLoader,
+    MarketSnapshotCache,
     ScanCriteria,
     StaticSymbolInfoLoader,
     build_symbol_info,
     calc_limit_down,
     calc_limit_up,
+    is_limit_up_close,
     resolve_preview_price,
     scan_daily,
     scan_preview_candidates,
@@ -61,6 +64,10 @@ class TestLimitPriceCalc(unittest.TestCase):
         # 1000 × 1.1 = 1100，tick=5
         result = calc_limit_up(Decimal("1000"))
         self.assertEqual(result % Decimal("5"), Decimal("0"))
+
+    def test_is_limit_up_close(self):
+        self.assertTrue(is_limit_up_close(Decimal("110"), Decimal("100")))
+        self.assertFalse(is_limit_up_close(Decimal("109.5"), Decimal("100")))
 
 
 class TestBuildSymbolInfo(unittest.TestCase):
@@ -165,6 +172,65 @@ class TestPreviewPriceFiltering(unittest.TestCase):
         self.assertEqual(info.prev_volume, 4567)
 
 
+class TestPriorLimitUpStreak(unittest.TestCase):
+    def test_cache_computes_two_day_limit_up_streak(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache = MarketSnapshotCache(os.path.join(tmpdir, "snapshots.json"))
+            cache.store_snapshot([
+                build_symbol_info(
+                    "1111", "甲", "TSE", 100,
+                    quote_price=Decimal("110"), prev_volume=5000,
+                )
+            ], "2026-05-05")
+            cache.store_snapshot([
+                build_symbol_info(
+                    "1111", "甲", "TSE", 110,
+                    quote_price=Decimal("121"), prev_volume=6000,
+                )
+            ], "2026-05-06")
+
+            today = build_symbol_info(
+                "1111", "甲", "TSE", 121, prev_volume=7000)
+            updated = cache.apply_prior_limit_up_streaks([today], max_days=2)
+
+        self.assertEqual(updated, 1)
+        self.assertEqual(today.prior_limit_up_streak, 2)
+
+    def test_scan_daily_excludes_over_prior_limit_up_streak(self):
+        info = build_symbol_info(
+            "1111", "甲", "TSE", 121,
+            prev_volume=7000,
+            prior_limit_up_streak=1,
+        )
+        crit = ScanCriteria(
+            min_prev_volume=0,
+            exclude_disposal=False,
+            exclude_attention=False,
+            exclude_day_trade_restricted=False,
+            markets=("TSE",),
+            max_candidates=10,
+            max_prior_limit_up_streak=0,
+        )
+
+        self.assertEqual(scan_daily([info], crit), [])
+
+        crit.max_prior_limit_up_streak = 1
+        self.assertEqual([item.code for item in scan_daily([info], crit)], ["1111"])
+
+    def test_unknown_prior_streak_is_kept_conservatively(self):
+        info = build_symbol_info("1111", "甲", "TSE", 100, prev_volume=7000)
+        crit = ScanCriteria(
+            min_prev_volume=0,
+            exclude_disposal=False,
+            exclude_attention=False,
+            exclude_day_trade_restricted=False,
+            markets=("TSE",),
+            max_prior_limit_up_streak=0,
+        )
+
+        self.assertEqual([item.code for item in scan_daily([info], crit)], ["1111"])
+
+
 class TestFubonMarketSnapshots(unittest.TestCase):
     def test_load_market_snapshots_uses_close_price_and_market_fallback(self):
         class FakeSnapshot:
@@ -216,6 +282,38 @@ class TestFubonMarketSnapshots(unittest.TestCase):
         self.assertEqual(infos["2330"].prev_close, Decimal("90.0"))
         self.assertEqual(infos["2330"].prev_volume, 12345)
         self.assertEqual(infos["4919"].market, "OTC")
+
+    def test_load_market_snapshots_can_store_close_cache(self):
+        class FakeSnapshot:
+            def quotes(self, **kwargs):
+                return {"date": "2026-05-06", "data": [{
+                    "symbol": "1111",
+                    "name": "甲",
+                    "previousClose": "110",
+                    "closePrice": "121",
+                    "tradeVolume": "5000",
+                }]}
+
+        class FakeSdk:
+            def __init__(self):
+                self.marketdata = SimpleNamespace(
+                    rest_client=SimpleNamespace(
+                        stock=SimpleNamespace(snapshot=FakeSnapshot())
+                    )
+                )
+
+            def init_realtime(self):
+                return None
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache = MarketSnapshotCache(os.path.join(tmpdir, "snapshots.json"))
+            loader = FubonSymbolInfoLoader(SimpleNamespace(sdk=FakeSdk()))
+            loader.load_market_snapshots(
+                ["TSE"], snapshot_cache=cache, cache_snapshots=True)
+            today = build_symbol_info("1111", "甲", "TSE", 121, prev_volume=1)
+            cache.apply_prior_limit_up_streaks([today], max_days=1)
+
+        self.assertEqual(today.prior_limit_up_streak, 1)
 
     def test_market_snapshot_infos_filter_by_preview_price(self):
         infos = [

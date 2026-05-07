@@ -6,9 +6,12 @@ Milestone 6：scan_daily() 全市場掃描（待實作）
 """
 from __future__ import annotations
 
+import json
+import os
 from dataclasses import dataclass
+from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional, Sequence
 
 
 # ─────────────────────────────────────────────────────────
@@ -30,6 +33,7 @@ class SymbolInfo:
     is_attention: bool = False
     is_day_trade_restricted: bool = False
     open_limit_up: bool = False  # 開盤後首筆 tick 才能確認，預設 False
+    prior_limit_up_streak: Optional[int] = None  # 昨日起往前連續收漲停天數；None=資料不足
 
 
 # ─────────────────────────────────────────────────────────
@@ -88,6 +92,184 @@ def calc_limit_down(prev_close: Decimal) -> Decimal:
     return q if q == raw else q + t
 
 
+def is_limit_up_close(close: Decimal, prev_close: Decimal) -> bool:
+    """判斷某日收盤是否為以前一交易日收盤推算出的漲停價。"""
+    try:
+        close_dec = Decimal(str(close))
+        prev_dec = Decimal(str(prev_close))
+    except Exception:
+        return False
+    if close_dec <= 0 or prev_dec <= 0:
+        return False
+    return close_dec == calc_limit_up(prev_dec)
+
+
+def _default_snapshot_cache_path() -> str:
+    if getattr(__import__("sys"), "frozen", False):
+        base = os.path.dirname(__import__("sys").executable)
+    else:
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, "cache", "market_snapshots.json")
+
+
+class MarketSnapshotCache:
+    """本地全市場收盤快照快取，用於開盤前判斷昨日是否已收漲停。"""
+
+    def __init__(self, path: str = "") -> None:
+        self.path = path or _default_snapshot_cache_path()
+        self._snapshots: Dict[str, Dict[str, dict]] = {}
+        self._load()
+
+    def _load(self) -> None:
+        if not os.path.exists(self.path):
+            return
+        try:
+            with open(self.path, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+            snapshots = raw.get("snapshots", {}) if isinstance(raw, dict) else {}
+            if isinstance(snapshots, dict):
+                self._snapshots = {
+                    str(day): records
+                    for day, records in snapshots.items()
+                    if isinstance(records, dict)
+                }
+        except Exception:
+            self._snapshots = {}
+
+    def save(self, *, keep_days: int = 20) -> None:
+        dates = self._ordered_dates()
+        if keep_days > 0 and len(dates) > keep_days:
+            keep = set(dates[-keep_days:])
+            self._snapshots = {
+                day: records for day, records in self._snapshots.items()
+                if day in keep
+            }
+        os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        payload = {"version": 1, "snapshots": self._snapshots}
+        with open(self.path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2, sort_keys=True)
+
+    def store_snapshot(
+        self,
+        infos: Iterable[SymbolInfo],
+        snapshot_date: str,
+        *,
+        keep_days: int = 20,
+    ) -> int:
+        day = self._normalize_date(snapshot_date)
+        if not day:
+            return 0
+        records: Dict[str, dict] = {}
+        for info in infos:
+            close_price = info.quote_price
+            if close_price is None or close_price <= 0:
+                continue
+            records[info.code] = {
+                "code": info.code,
+                "name": info.name,
+                "market": info.market,
+                "prev_close": str(info.prev_close),
+                "close": str(close_price),
+                "prev_volume": int(info.prev_volume or 0),
+                "is_disposal": bool(info.is_disposal),
+                "is_attention": bool(info.is_attention),
+                "is_day_trade_restricted": bool(info.is_day_trade_restricted),
+            }
+        if not records:
+            return 0
+        self._snapshots[day] = records
+        self.save(keep_days=keep_days)
+        return len(records)
+
+    def apply_prior_limit_up_streaks(
+        self,
+        infos: Iterable[SymbolInfo],
+        *,
+        max_days: int = 2,
+    ) -> int:
+        updated = 0
+        for info in infos:
+            streak = self.compute_prior_limit_up_streak(info, max_days=max_days)
+            if streak is not None:
+                info.prior_limit_up_streak = streak
+                updated += 1
+        return updated
+
+    def compute_prior_limit_up_streak(
+        self,
+        info: SymbolInfo,
+        *,
+        max_days: int = 2,
+    ) -> Optional[int]:
+        if max_days <= 0:
+            return 0
+        dates = self._ordered_dates()
+        if not dates:
+            return None
+
+        start_idx = self._find_previous_trading_index(info, dates)
+        if start_idx is None:
+            return None
+
+        streak = 0
+        idx = start_idx
+        while idx >= 0 and streak < max_days:
+            record = self._snapshots.get(dates[idx], {}).get(info.code)
+            if not record:
+                break
+            close_price = self._record_decimal(record, "close")
+            prev_close = self._record_decimal(record, "prev_close")
+            if close_price is None or prev_close is None:
+                break
+            if not is_limit_up_close(close_price, prev_close):
+                break
+            streak += 1
+            idx -= 1
+        return streak
+
+    def _find_previous_trading_index(
+        self,
+        info: SymbolInfo,
+        dates: Sequence[str],
+    ) -> Optional[int]:
+        for idx in range(len(dates) - 1, -1, -1):
+            record = self._snapshots.get(dates[idx], {}).get(info.code)
+            if not record:
+                continue
+            close_price = self._record_decimal(record, "close")
+            if close_price is not None and close_price == info.prev_close:
+                return idx
+        return None
+
+    def _ordered_dates(self) -> List[str]:
+        return sorted(self._snapshots.keys())
+
+    @staticmethod
+    def _record_decimal(record: dict, key: str) -> Optional[Decimal]:
+        raw = record.get(key)
+        if raw in (None, "", "-"):
+            return None
+        try:
+            value = Decimal(str(raw))
+        except Exception:
+            return None
+        return value if value > 0 else None
+
+    @classmethod
+    def _normalize_date(cls, value) -> str:
+        if value in (None, "", "-"):
+            return ""
+        text = str(value).strip().replace("/", "-")
+        if len(text) >= 10:
+            text = text[:10]
+        if len(text) == 8 and text.isdigit():
+            text = f"{text[:4]}-{text[4:6]}-{text[6:8]}"
+        try:
+            return date.fromisoformat(text).isoformat()
+        except Exception:
+            return ""
+
+
 # ─────────────────────────────────────────────────────────
 #  載入器
 # ─────────────────────────────────────────────────────────
@@ -103,6 +285,7 @@ def build_symbol_info(
     is_disposal: bool = False,
     is_attention: bool = False,
     is_day_trade_restricted: bool = False,
+    prior_limit_up_streak: Optional[int] = None,
 ) -> SymbolInfo:
     """以昨收價自動算出漲跌停。"""
     pc = Decimal(str(prev_close))
@@ -126,6 +309,7 @@ def build_symbol_info(
         is_disposal=is_disposal,
         is_attention=is_attention,
         is_day_trade_restricted=is_day_trade_restricted,
+        prior_limit_up_streak=prior_limit_up_streak,
     )
 
 
@@ -241,6 +425,8 @@ class FubonSymbolInfoLoader(SymbolInfoLoader):
         markets: Iterable[str] = ("TSE", "OTC"),
         *,
         quote_type: str = "COMMONSTOCK",
+        snapshot_cache: Optional[MarketSnapshotCache] = None,
+        cache_snapshots: bool = False,
     ) -> Dict[str, SymbolInfo]:
         """用 snapshot.quotes(market=...) 一次載入整個市場快照。"""
         markets = list(markets) or ["TSE", "OTC"]
@@ -256,13 +442,56 @@ class FubonSymbolInfoLoader(SymbolInfoLoader):
 
         out: Dict[str, SymbolInfo] = {}
         for market in markets:
-            items = self._fetch_market_snapshot_items(
+            items, snapshot_date = self._fetch_market_snapshot(
                 rest, market, quote_type=quote_type)
+            market_infos: List[SymbolInfo] = []
             for item in items:
                 si = self._parse_item(item, fallback_market=market)
                 if si:
                     out[si.code] = si
+                    market_infos.append(si)
+            if cache_snapshots and snapshot_cache is not None and snapshot_date:
+                snapshot_cache.store_snapshot(market_infos, snapshot_date)
         return out
+
+    def enrich_prior_limit_up_streaks_from_history(
+        self,
+        infos: Iterable[SymbolInfo],
+        *,
+        max_days: int,
+        max_symbols: int = 50,
+    ) -> int:
+        """快取不足時，僅針對少量候選股補抓日 K 判斷昨日起連續漲停。"""
+        if max_days <= 0 or max_symbols <= 0:
+            return 0
+        try:
+            sdk = self._adapter.sdk
+        except Exception:
+            return 0
+        self._ensure_marketdata_ready(sdk)
+        rest = self._resolve_rest_stock(sdk)
+        if rest is None:
+            return 0
+
+        historical = getattr(rest, "historical", None)
+        candles_fn = getattr(historical, "candles", None) if historical else None
+        if not callable(candles_fn):
+            return 0
+
+        updated = 0
+        to_date = date.today().isoformat()
+        from_date = (date.today() - timedelta(days=max(14, max_days * 7))).isoformat()
+        for info in list(infos)[:max_symbols]:
+            if info.prior_limit_up_streak is not None:
+                continue
+            data = self._fetch_daily_candles(
+                candles_fn, info.code, from_date=from_date, to_date=to_date)
+            streak = self._compute_streak_from_candles(
+                data, info.prev_close, max_days=max_days)
+            if streak is not None:
+                info.prior_limit_up_streak = streak
+                updated += 1
+        return updated
 
     # ── 批次取得個股 SymbolInfo ──────────────────────────────
 
@@ -404,6 +633,35 @@ class FubonSymbolInfoLoader(SymbolInfoLoader):
             ),
         )
 
+    @classmethod
+    def _compute_streak_from_candles(
+        cls,
+        candles: List[tuple[str, Decimal]],
+        current_prev_close: Decimal,
+        *,
+        max_days: int,
+    ) -> Optional[int]:
+        if not candles or max_days <= 0:
+            return None
+        candles = sorted(candles, key=lambda item: item[0])
+        start_idx: Optional[int] = None
+        for idx in range(len(candles) - 1, -1, -1):
+            if candles[idx][1] == current_prev_close:
+                start_idx = idx
+                break
+        if start_idx is None or start_idx <= 0:
+            return None
+        streak = 0
+        idx = start_idx
+        while idx > 0 and streak < max_days:
+            close_price = candles[idx][1]
+            prev_close = candles[idx - 1][1]
+            if not is_limit_up_close(close_price, prev_close):
+                break
+            streak += 1
+            idx -= 1
+        return streak
+
     @staticmethod
     def _decimal_from_fields(getter, *names: str,
                              positive_only: bool = True) -> Optional[Decimal]:
@@ -454,10 +712,17 @@ class FubonSymbolInfoLoader(SymbolInfoLoader):
     @classmethod
     def _fetch_market_snapshot_items(cls, rest, market: str,
                                      *, quote_type: str = "") -> list:
+        items, _snapshot_date = cls._fetch_market_snapshot(
+            rest, market, quote_type=quote_type)
+        return items
+
+    @classmethod
+    def _fetch_market_snapshot(cls, rest, market: str,
+                               *, quote_type: str = "") -> tuple[list, str]:
         snapshot = getattr(rest, "snapshot", None)
         quotes_fn = getattr(snapshot, "quotes", None) if snapshot else None
         if not callable(quotes_fn):
-            return []
+            return [], ""
 
         attempts = []
         if quote_type:
@@ -473,15 +738,70 @@ class FubonSymbolInfoLoader(SymbolInfoLoader):
 
         for attempt in attempts:
             try:
-                items = cls._extract_items(attempt())
+                res = attempt()
+                items = cls._extract_items(res)
                 if items:
-                    return items
+                    return items, cls._extract_snapshot_date(res, items)
             except TypeError:
                 continue
             except Exception as exc:
                 print(f"[Universe] snapshot market={market} 失敗：{exc}")
-                return []
-        return []
+                return [], ""
+        return [], ""
+
+    @staticmethod
+    def _extract_snapshot_date(res, items: list) -> str:
+        raw = None
+        if isinstance(res, dict):
+            raw = (res.get("date") or res.get("snapshotDate")
+                   or res.get("tradeDate"))
+        elif hasattr(res, "date"):
+            raw = getattr(res, "date", None)
+        if not raw and items:
+            first = items[0]
+            if isinstance(first, dict):
+                raw = first.get("date") or first.get("tradeDate")
+            else:
+                raw = getattr(first, "date", None) or getattr(first, "tradeDate", None)
+        return MarketSnapshotCache._normalize_date(raw)
+
+    @staticmethod
+    def _fetch_daily_candles(candles_fn, code: str,
+                             *, from_date: str, to_date: str) -> List[tuple[str, Decimal]]:
+        params = {
+            "symbol": code,
+            "from": from_date,
+            "to": to_date,
+            "timeframe": "D",
+            "fields": "close",
+            "sort": "asc",
+        }
+        try:
+            res = candles_fn(**params)
+        except TypeError:
+            try:
+                res = candles_fn(params)
+            except TypeError:
+                res = candles_fn(code)
+        items = FubonSymbolInfoLoader._extract_items(res)
+        out: List[tuple[str, Decimal]] = []
+        for item in items:
+            if isinstance(item, dict):
+                raw_date = item.get("date") or item.get("tradeDate")
+                raw_close = item.get("close") or item.get("closePrice")
+            else:
+                raw_date = getattr(item, "date", None) or getattr(item, "tradeDate", None)
+                raw_close = getattr(item, "close", None) or getattr(item, "closePrice", None)
+            day = MarketSnapshotCache._normalize_date(raw_date)
+            if not day or raw_close in (None, "", "-"):
+                continue
+            try:
+                close_price = Decimal(str(raw_close))
+            except Exception:
+                continue
+            if close_price > 0:
+                out.append((day, close_price))
+        return out
 
     @staticmethod
     def _fetch_ticker(rest, code: str) -> Optional[dict]:
@@ -537,6 +857,7 @@ class ScanCriteria:
     exclude_day_trade_restricted: bool = True  # 排除限當沖
     markets: Iterable[str] = ("TSE", "OTC")
     max_candidates: int = 100
+    max_prior_limit_up_streak: Optional[int] = None  # 0=只追第一根日漲停；1=第二根以內
 
 
 def scan_daily(
@@ -559,6 +880,10 @@ def scan_daily(
         if crit.exclude_attention and si.is_attention:
             continue
         if crit.exclude_day_trade_restricted and si.is_day_trade_restricted:
+            continue
+        if (crit.max_prior_limit_up_streak is not None
+                and si.prior_limit_up_streak is not None
+                and si.prior_limit_up_streak > crit.max_prior_limit_up_streak):
             continue
         out.append(si)
     # 依昨日量由大到小排序，截斷上限
@@ -596,6 +921,10 @@ def scan_preview_candidates(
         if crit.exclude_attention and si.is_attention:
             continue
         if crit.exclude_day_trade_restricted and si.is_day_trade_restricted:
+            continue
+        if (crit.max_prior_limit_up_streak is not None
+                and si.prior_limit_up_streak is not None
+                and si.prior_limit_up_streak > crit.max_prior_limit_up_streak):
             continue
         out.append(si)
     out.sort(key=lambda x: x.prev_volume, reverse=True)
