@@ -1655,6 +1655,7 @@ class App(QMainWindow):
         )
 
         is_fubon = hasattr(broker, "_sdk") or type(broker).__name__ == "FubonAdapter"
+        after_close_preview = self._is_after_market_close()
         next_day_exclusions = []
         if is_fubon:
             loader = FubonSymbolInfoLoader(broker)
@@ -1663,7 +1664,7 @@ class App(QMainWindow):
 
             # 收盤後使用零波動的快照條件（不限昨量），盤中沿用原始 crit
             preview_crit = crit
-            if self._is_after_market_close():
+            if after_close_preview:
                 preview_crit = ScanCriteria(
                     price_min=crit.price_min,
                     price_max=crit.price_max,
@@ -1682,7 +1683,7 @@ class App(QMainWindow):
                 markets=markets,
                 quote_type="COMMONSTOCK",
                 snapshot_cache=snapshot_cache,
-                cache_snapshots=self._is_after_market_close(),
+                cache_snapshots=after_close_preview,
             )
 
             if all_infos:
@@ -1690,7 +1691,7 @@ class App(QMainWindow):
                     snapshot_cache.apply_prior_limit_up_streaks(
                         all_infos.values(), max_days=cfg.candle_limit)
                 candidates = scan_preview_candidates(all_infos.values(), preview_crit)
-                if self._is_after_market_close():
+                if after_close_preview:
                     next_day_exclusions = self._build_next_day_exclusion_rows(
                         all_infos.values(), crit)
                     excluded_codes = {item["code"] for item in next_day_exclusions}
@@ -1747,6 +1748,7 @@ class App(QMainWindow):
                 "change_pct": change_pct,
                 "ask_qty": 0,
                 "is_at_limit_up": False,
+                "after_close_preview": after_close_preview,
             })
         summary.sort(key=lambda item: item["code"])
         if next_day_exclusions:
@@ -1804,6 +1806,7 @@ class App(QMainWindow):
                 "change_pct": 0.0,
                 "ask_qty": 0,
                 "is_at_limit_up": False,
+                "after_close_preview": True,
                 "next_day_excluded": True,
                 "prior_limit_up_streak": info.prior_limit_up_streak,
             })
@@ -2995,6 +2998,7 @@ class App(QMainWindow):
             "已完成":   C["subtext"],
             "委託中":   C["yellow_l"],
             "等待":     C["subtext"],
+            "明日候選": C["blue_l"],
             "明日排除": C["red_l"],
         }
         STATUS_BG = {
@@ -3006,16 +3010,23 @@ class App(QMainWindow):
             "已完成":   C["badge_dim"],
             "委託中":   C["badge_order"],
             "等待":     C["badge_dim"],
+            "明日候選": C["badge_ready"],
             "明日排除": C["badge_cancel"],
         }
 
         threshold = self.cfg.volume_spike_sell_threshold
         pos_cnt = 0
         next_excluded_cnt = sum(1 for s in summary if s.get("next_day_excluded"))
+        after_close_cnt = sum(
+            1 for s in summary
+            if s.get("after_close_preview") and not s.get("next_day_excluded")
+        )
         if hasattr(self, "monitor_count_lbl"):
             if next_excluded_cnt:
                 self.monitor_count_lbl.setText(
-                    f"候選 {len(summary) - next_excluded_cnt} / 明日排除 {next_excluded_cnt} 檔")
+                    f"明日候選 {len(summary) - next_excluded_cnt} / 明日排除 {next_excluded_cnt} 檔")
+            elif after_close_cnt:
+                self.monitor_count_lbl.setText(f"明日候選 {after_close_cnt} 檔")
             else:
                 self.monitor_count_lbl.setText(f"共 {len(summary)} 檔")
         self.monitor_table.setRowCount(0)
@@ -3024,6 +3035,8 @@ class App(QMainWindow):
         for s in summary:
             if s.get("next_day_excluded"):
                 status = "明日排除"
+            elif s.get("after_close_preview"):
+                status = "明日候選"
             elif s["blocked"]:
                 status = "已完成"
             elif s["qty"] > 0:
@@ -3038,6 +3051,8 @@ class App(QMainWindow):
 
             if s.get("next_day_excluded"):
                 candle_txt = f"連{s.get('prior_limit_up_streak') or 0}根"
+            elif s.get("after_close_preview"):
+                candle_txt = "明日"
             else:
                 candle_txt = f"第{s['candle']}根" if s["candle"] > 0 else "—"
             fg = QColor(STATUS_COLOR.get(status, C["text"]))
@@ -3106,6 +3121,8 @@ class App(QMainWindow):
     def _monitor_action_text(self, summary_item: dict, status: str) -> tuple[str, str]:
         if status == "明日排除":
             return "隔日不追", C["red_l"]
+        if status == "明日候選":
+            return "隔日觀察", C["blue_l"]
         if status == "已完成":
             return "已封鎖", C["subtext"]
         if status == "已進場":

@@ -313,12 +313,19 @@ class TestGuiTabLayout(unittest.TestCase):
         rows = {item["code"]: item for item in summary}
         self.assertTrue(rows["1111"]["next_day_excluded"])
         self.assertFalse(rows["2222"].get("next_day_excluded", False))
-        self.assertEqual(self.win.monitor_count_lbl.text(), "候選 1 / 明日排除 1 檔")
+        self.assertEqual(self.win.monitor_count_lbl.text(), "明日候選 1 / 明日排除 1 檔")
         status_by_code = {
             self.win.monitor_table.item(row, 0).text(): self.win.monitor_table.item(row, 8).text()
             for row in range(self.win.monitor_table.rowCount())
         }
+        action_by_code = {
+            self.win.monitor_table.item(row, 0).text(): self.win.monitor_table.item(row, 9).text()
+            for row in range(self.win.monitor_table.rowCount())
+        }
         self.assertEqual(status_by_code["1111"], "明日排除")
+        self.assertEqual(action_by_code["1111"], "隔日不追")
+        self.assertEqual(status_by_code["2222"], "明日候選")
+        self.assertEqual(action_by_code["2222"], "隔日觀察")
 
     def test_fubon_strategy_start_loads_in_background_and_can_cancel(self):
         class BlockingSnapshot:
