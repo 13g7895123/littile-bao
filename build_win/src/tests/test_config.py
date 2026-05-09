@@ -21,6 +21,12 @@ class TestTradingConfigJsonIO(unittest.TestCase):
                     {
                         "entry_before_time": "09:30",
                         "per_stock_amount": 250000,
+                        "f4_open_ticks_to_sell": 3,
+                        "f4_require_today_limitup": False,
+                        "f_open_limitup_entry_enabled": False,
+                        "f_consume_enabled": True,
+                        "consume_qty_threshold": 300,
+                        "consume_mutex_with_f1": False,
                         "file_logging_enabled": False,
                         "unknown_field": "ignored",
                     },
@@ -33,6 +39,12 @@ class TestTradingConfigJsonIO(unittest.TestCase):
 
             self.assertEqual(cfg.entry_before_time, "09:30")
             self.assertEqual(cfg.per_stock_amount, 250000)
+            self.assertEqual(cfg.f4_open_ticks_to_sell, 3)
+            self.assertFalse(cfg.f4_require_today_limitup)
+            self.assertFalse(cfg.f_open_limitup_entry_enabled)
+            self.assertTrue(cfg.f_consume_enabled)
+            self.assertEqual(cfg.consume_qty_threshold, 300)
+            self.assertFalse(cfg.consume_mutex_with_f1)
             self.assertFalse(cfg.file_logging_enabled)
 
     def test_load_strict_invalid_json_raises(self):

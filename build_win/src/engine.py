@@ -20,13 +20,13 @@ from config import TradingConfig
 try:
     from broker import (
         BookEvent, FillEvent, OrderEvent, OrderSide, RealtimeFeed, SymbolMeta, TickEvent,
-        realized_pnl,
+        realized_pnl, tick_size,
     )
     from broker.orders import OrderRequest
 except ImportError:  # 套件初始化失敗時退回為 None，避免阻擋既有測試
     BookEvent = SymbolMeta = TickEvent = RealtimeFeed = FillEvent = None  # type: ignore
     OrderEvent = OrderSide = OrderRequest = None  # type: ignore
-    realized_pnl = None  # type: ignore
+    realized_pnl = tick_size = None  # type: ignore
 
 
 # ─────────────────────────────────────────────────────────────
@@ -70,6 +70,8 @@ class StockState:
         self.bid0_volume: int = 0
         self.ask_qty_at_limit: int = 0    # 漲停價委賣張數（不為漲停時 = 0）
         self.is_at_limit_up: bool = False
+        self.touched_limit_up_today: bool = False
+        self.limit_up_consumed_qty: int = 0
         # ── Milestone 4：損益追蹤 ────────────────────
         self.entry_price: Optional[Decimal] = None  # 進場成交均價
 
@@ -100,6 +102,7 @@ class TradingEngine:
         on_log: Callable[[str, str], None],   # (level, msg)
         on_trade: Callable[[dict], None],
         on_status: Callable[[List[dict]], None],
+        on_strategy_event: Optional[Callable[[dict], None]] = None,
         feed: Optional["RealtimeFeed"] = None,
         symbol_infos: Optional[Dict[str, "object"]] = None,
         broker: Optional[object] = None,
@@ -108,6 +111,7 @@ class TradingEngine:
         self.on_log = on_log
         self.on_trade = on_trade
         self.on_status = on_status
+        self.on_strategy_event = on_strategy_event
         self.feed = feed
         self.broker = broker
 
@@ -208,6 +212,7 @@ class TradingEngine:
             "⑥": cfg.f6_enabled,  "⑦": cfg.f7_enabled,  "⑧": cfg.f8_enabled,
             "⑨": cfg.f9_enabled,  "⑩": cfg.f10_enabled,
             "⑪": cfg.f11_enabled, "⑫": cfg.f12_enabled, "⑬": cfg.f13_enabled,
+            "消化量": getattr(cfg, "f_consume_enabled", False),
         }
         return " ".join(k for k, v in flags.items() if v) or "（無）"
 
@@ -232,6 +237,8 @@ class TradingEngine:
             # 漲停判斷：成交價 == 漲停價
             limit_up = Decimal(str(state.info.limit_up))
             if ev.price >= limit_up:
+                state.touched_limit_up_today = True
+                state.limit_up_consumed_qty += int(ev.volume)
                 if state.limit_up_since is None and not state.entry_blocked:
                     cfg = self.config
                     if state.candle_index < (cfg.candle_limit if cfg.f7_enabled else 99):
@@ -267,6 +274,7 @@ class TradingEngine:
             if state.ask0_price is not None and state.ask0_price == limit_up:
                 state.ask_qty_at_limit = state.ask0_volume
                 state.is_at_limit_up = True
+                state.touched_limit_up_today = True
             else:
                 state.ask_qty_at_limit = 0
                 # 漲停板被打開：ask[0] 不再是漲停價
@@ -297,6 +305,8 @@ class TradingEngine:
             st.sold_today = False
             st.candle_index = 0
             st.limit_up_since = None
+            st.touched_limit_up_today = False
+            st.limit_up_consumed_qty = 0
             # 注意：position_qty 不清空，避免影響真實持倉同步
         self._daily_trade_count = 0
         self._today_realized_pnl = Decimal("0")
@@ -324,6 +334,13 @@ class TradingEngine:
         # ── 取消委託邏輯（功能 6）────────────────────────────────
         if state.pending and cfg.f6_enabled:
             if state.last_1s_vol > cfg.volume_spike_cancel_threshold:
+                self._log_strategy_trigger(
+                    "CANCEL", state, "F6",
+                    {
+                        "last_1s_vol": state.last_1s_vol,
+                        "threshold": cfg.volume_spike_cancel_threshold,
+                    },
+                )
                 self.on_log("WARN",
                     f"[{info.code}] 委託中！1秒量 {state.last_1s_vol} 張"
                     f" > {cfg.volume_spike_cancel_threshold} 張，取消委託")
@@ -337,16 +354,37 @@ class TradingEngine:
 
             # 功能 4：板被打開（曾為漲停 → 目前 ask[0] 不再是漲停價）
             # 必須當日曾達漲停（candle_index > 0）才生效，避免隔日庫存誤賣
-            has_been_at_limit_today = state.candle_index > 0
-            if (cfg.f4_enabled and has_been_at_limit_today
-                    and not state.is_at_limit_up and state.last_price is not None):
-                reason = "委買漲停，市場打開，市價出場"
+            has_been_at_limit_today = state.touched_limit_up_today or state.candle_index > 0
+            require_today_limit = getattr(cfg, "f4_require_today_limitup", True)
+            open_ticks = self._open_ticks_from_limit(state)
+            open_tick_threshold = max(1, int(getattr(cfg, "f4_open_ticks_to_sell", 1) or 1))
+            if (cfg.f4_enabled
+                    and (has_been_at_limit_today or not require_today_limit)
+                    and open_ticks >= open_tick_threshold
+                    and state.last_price is not None):
+                reason = f"漲停板打開 {open_ticks} 檔，達出場門檻 {open_tick_threshold} 檔"
+                self._log_strategy_trigger(
+                    "SELL", state, "F4",
+                    {
+                        "open_ticks": open_ticks,
+                        "threshold": open_tick_threshold,
+                        "ask0_price": state.ask0_price,
+                        "limit_up": info.limit_up,
+                    },
+                )
 
             # 功能 5：1秒爆量
             if cfg.f5_enabled and reason is None:
                 if state.last_1s_vol > cfg.volume_spike_sell_threshold:
                     reason = (f"1秒量 {state.last_1s_vol} 張 > "
                               f"{cfg.volume_spike_sell_threshold} 張，爆量出場")
+                    self._log_strategy_trigger(
+                        "SELL", state, "F5",
+                        {
+                            "last_1s_vol": state.last_1s_vol,
+                            "threshold": cfg.volume_spike_sell_threshold,
+                        },
+                    )
 
             if reason:
                 self.on_log("WARN", f"[{info.code}] 出場觸發：{reason}")
@@ -363,23 +401,41 @@ class TradingEngine:
         if cfg.f12_enabled and info.open_limit_up and state.sold_today:
             return
 
+        # 開盤即漲停獨立開關：不論有無賣過，都可選擇不追
+        if not getattr(cfg, "f_open_limitup_entry_enabled", True) and info.open_limit_up:
+            return
+
         # 功能 13：當天成交檔數上限
         if cfg.f13_enabled and self._daily_trade_count >= cfg.daily_max_trades:
             return
 
         # 功能 1：時間 + 委賣篩選（漲停價委賣張數）
         ask_qty = state.ask_qty_at_limit
-        if cfg.f1_enabled:
+        entry_strategy_ids: List[str] = []
+        consume_enabled = bool(getattr(cfg, "f_consume_enabled", False))
+        if consume_enabled:
+            consume_threshold = int(getattr(cfg, "consume_qty_threshold", 0) or 0)
+            if state.limit_up_consumed_qty < consume_threshold:
+                return
+            entry_strategy_ids.append("消化量")
+
+        apply_f1 = cfg.f1_enabled and not (
+            consume_enabled and bool(getattr(cfg, "consume_mutex_with_f1", True))
+        )
+        if apply_f1:
             now_time = datetime.now().time()
             cutoff = dtime(*map(int, cfg.entry_before_time.split(":")))
             if now_time >= cutoff:
                 return
             if ask_qty >= cfg.ask_queue_threshold:
                 return
+            entry_strategy_ids.append("F1")
 
         # 功能 7：只買第N根以內
         if cfg.f7_enabled and state.candle_index > cfg.candle_limit:
             return
+        if cfg.f7_enabled:
+            entry_strategy_ids.append("F7")
 
         # 功能 10：委賣價 + 即時量
         if cfg.f10_enabled:
@@ -390,13 +446,31 @@ class TradingEngine:
                 return
             if state.last_1s_vol < cfg.entry_volume_confirm:
                 return
+            entry_strategy_ids.append("F10")
 
         qty = max(1, int(cfg.per_stock_amount / (info.limit_up * 1000)))
         state.pending = True
+        self._log_strategy_trigger(
+            "BUY", state, "+".join(entry_strategy_ids) or "BASE",
+            {
+                "qty": qty,
+                "limit_up": info.limit_up,
+                "ask_qty": ask_qty,
+                "last_1s_vol": state.last_1s_vol,
+                "consume_qty": state.limit_up_consumed_qty,
+                "candle": state.candle_index,
+            },
+        )
+        if apply_f1:
+            entry_note = f"委賣 {ask_qty} 張 < {cfg.ask_queue_threshold} 張"
+        elif consume_enabled:
+            entry_note = (f"漲停消化量 {state.limit_up_consumed_qty} 張 >= "
+                          f"{getattr(cfg, 'consume_qty_threshold', 0)} 張")
+        else:
+            entry_note = "基礎條件符合"
         self.on_log("TRADE",
             f"[{info.code}] 進場委託 {qty} 張 @ "
-            f"{info.limit_up:,.0f}（委賣 {ask_qty} 張 < {cfg.ask_queue_threshold} 張，"
-            f"第 {state.candle_index} 根）")
+            f"{info.limit_up:,.0f}（{entry_note}，第 {state.candle_index} 根）")
 
         # ── Milestone 5：透過 broker 下單；無 broker 時退回模擬 ──
         if self.broker is not None and OrderRequest is not None:
@@ -488,6 +562,79 @@ class TradingEngine:
             "realized_total": float(self._today_realized_pnl),
             "note": note,
         })
+
+    def sell_all_strategy_positions(self, reason: str = "manual_sell_all") -> int:
+        """手動賣出所有目前由策略引擎記錄的持倉。"""
+        sold = 0
+        with self._lock:
+            for state in list(self._states.values()):
+                if state.position_qty <= 0 or state.pending:
+                    continue
+                self._log_strategy_trigger(
+                    "SELL", state, "MANUAL_ALL",
+                    {
+                        "qty": state.position_qty,
+                        "last_price": state.last_price,
+                        "reason": reason,
+                    },
+                )
+                self._do_sell(state, state.info, "手動全部策略持股賣出")
+                sold += 1
+        return sold
+
+    def _open_ticks_from_limit(self, state: StockState) -> int:
+        if state.ask0_price is None:
+            return 0
+        limit_up = Decimal(str(state.info.limit_up))
+        if state.ask0_price >= limit_up:
+            return 0
+        tick = self._tick_size(limit_up)
+        if tick <= 0:
+            return 0
+        return max(1, int((limit_up - state.ask0_price) / tick))
+
+    @staticmethod
+    def _tick_size(price: Decimal) -> Decimal:
+        if tick_size is not None:
+            return tick_size(price)
+        if price < Decimal("10"):
+            return Decimal("0.01")
+        if price < Decimal("50"):
+            return Decimal("0.05")
+        if price < Decimal("100"):
+            return Decimal("0.1")
+        if price < Decimal("500"):
+            return Decimal("0.5")
+        if price < Decimal("1000"):
+            return Decimal("1")
+        return Decimal("5")
+
+    def _log_strategy_trigger(self, side: str, state: StockState,
+                              strategy: str, details: dict) -> None:
+        def _fmt(value) -> str:
+            if isinstance(value, Decimal):
+                return str(value)
+            return str(value)
+
+        detail_txt = "，".join(
+            f"{key}={_fmt(value)}" for key, value in details.items()
+            if value is not None
+        )
+        if self.on_strategy_event is not None:
+            self.on_strategy_event({
+                "time": datetime.now().strftime("%H:%M:%S"),
+                "side": side,
+                "code": state.info.code,
+                "name": state.info.name,
+                "strategy": strategy,
+                "details": {key: _fmt(value) for key, value in details.items()
+                            if value is not None},
+            })
+        self.on_log(
+            "TRADE",
+            f"[策略觸發][{side}][{state.info.code} {state.info.name}] "
+            f"策略={strategy}；{detail_txt}",
+        )
 
     # ─────────────────────────────────────────
     #  券商回報處理（Milestone 5）

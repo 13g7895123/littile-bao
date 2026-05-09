@@ -305,6 +305,7 @@ class App(QMainWindow):
         self._sell_count = 0
         self._realized_pnl = 0.0   # M4：今日已實現損益累計
         self._log_lines = 0
+        self._strategy_trigger_count = 0
         self._syncing_order_mode_control = False
 
         self._fields: Dict[str, QLineEdit] = {}
@@ -637,7 +638,8 @@ class App(QMainWindow):
         form.addSpacing(4)
         form.addWidget(_divider())
 
-        # ── 時間設定
+        # ── 買入策略
+        form.addWidget(_section_title("買入策略"))
         form.addWidget(_section_title("時間設定"))
         self._sf(form, "開始時間", "start_time", w=72)
         self._sf(form, "結束時間", "entry_before_time", w=72)
@@ -694,6 +696,22 @@ class App(QMainWindow):
         pr_row.addStretch()
         form.addLayout(pr_row)
         form.addSpacing(6)
+
+        self._checks["consume_enabled"] = _checkbox("消化量進場")
+        form.addWidget(self._checks["consume_enabled"])
+        form.addSpacing(4)
+        consume_row = QHBoxLayout()
+        consume_row.addWidget(_label("漲停成交量 >=", C["subtext"], 9))
+        consume_row.addStretch()
+        self._fields["consume_qty_threshold"] = _entry(55)
+        consume_row.addWidget(self._fields["consume_qty_threshold"])
+        consume_row.addSpacing(4)
+        consume_row.addWidget(_label("張", C["subtext"], 9))
+        form.addLayout(consume_row)
+        form.addSpacing(4)
+        self._checks["consume_mutex_with_f1"] = _checkbox("啟用消化量時略過時間/委賣策略")
+        form.addWidget(self._checks["consume_mutex_with_f1"])
+        form.addSpacing(6)
         form.addWidget(_divider())
 
         # ── 排除條件
@@ -713,20 +731,33 @@ class App(QMainWindow):
         self._checks["excl_open_limit"] = _checkbox("開盤漲停股票不追")
         form.addWidget(self._checks["excl_open_limit"])
         form.addSpacing(4)
-        self._checks["excl_sealed"] = _checkbox("當天封板後不再進場")
+        self._checks["excl_sealed"] = _checkbox("開盤漲停且已賣過不再進場")
         form.addWidget(self._checks["excl_sealed"])
         form.addSpacing(6)
         form.addWidget(_divider())
 
-        # ── 出場條件
-        form.addWidget(_section_title("出場條件"))
+        # ── 賣出策略
+        form.addWidget(_section_title("賣出策略"))
 
         ex_row1 = QHBoxLayout()
-        ex_row1.addWidget(_label("委賣價變漲停價", C["subtext"], 9))
+        ex_row1.addWidget(_label("漲停打開時", C["subtext"], 9))
         ex_row1.addStretch()
         self._combos["exit_method1"] = _combo(["市價賣出", "限價賣出"], 88)
         ex_row1.addWidget(self._combos["exit_method1"])
         form.addLayout(ex_row1)
+        form.addSpacing(6)
+
+        open_tick_row = QHBoxLayout()
+        open_tick_row.addWidget(_label("打開檔位 >=", C["subtext"], 9))
+        open_tick_row.addStretch()
+        self._fields["f4_open_ticks_to_sell"] = _entry(45)
+        open_tick_row.addWidget(self._fields["f4_open_ticks_to_sell"])
+        open_tick_row.addSpacing(4)
+        open_tick_row.addWidget(_label("檔", C["subtext"], 9))
+        form.addLayout(open_tick_row)
+        form.addSpacing(4)
+        self._checks["f4_require_today_limitup"] = _checkbox("僅當日曾觸及漲停才賣")
+        form.addWidget(self._checks["f4_require_today_limitup"])
         form.addSpacing(6)
 
         sp_row = QHBoxLayout()
@@ -745,6 +776,23 @@ class App(QMainWindow):
         self._combos["exit_method3"] = _combo(["取消委託", "保留委託"], 88)
         ex_row3.addWidget(self._combos["exit_method3"])
         form.addLayout(ex_row3)
+        form.addSpacing(8)
+
+        self.sell_all_strategy_btn = QPushButton("全部策略持股賣出")
+        self.sell_all_strategy_btn.setFont(_font(9, bold=True))
+        self.sell_all_strategy_btn.setFixedHeight(30)
+        self.sell_all_strategy_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.sell_all_strategy_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {C['red']};
+                color: #ffffff;
+                border: none;
+                border-radius: 4px;
+            }}
+            QPushButton:hover {{ background-color: {C['red_l']}; }}
+        """)
+        self.sell_all_strategy_btn.clicked.connect(self._sell_all_strategy_positions)
+        form.addWidget(self.sell_all_strategy_btn)
 
         form.addStretch()
         scroll.setWidget(content)
@@ -1238,6 +1286,31 @@ class App(QMainWindow):
         lay = QVBoxLayout(parent)
         lay.setContentsMargins(10, 10, 10, 10)
         lay.setSpacing(8)
+
+        trigger_f = _panel_frame()
+        tl = QVBoxLayout(trigger_f)
+        tl.setContentsMargins(10, 8, 10, 8)
+        tl.setSpacing(6)
+        th = QHBoxLayout()
+        th.addWidget(_label("策略觸發紀錄", C["text"], 10, bold=True))
+        th.addStretch()
+        self.strategy_trigger_summary_lbl = _label("共 0 筆", C["subtext"], 9)
+        th.addWidget(self.strategy_trigger_summary_lbl)
+        tl.addLayout(th)
+        trigger_cols = ["時間", "代碼", "名稱", "買/賣", "策略", "明細"]
+        self.strategy_trigger_table = QTableWidget(0, len(trigger_cols))
+        self.strategy_trigger_table.setHorizontalHeaderLabels(trigger_cols)
+        self.strategy_trigger_table.setStyleSheet(_table_style())
+        self.strategy_trigger_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.strategy_trigger_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.strategy_trigger_table.verticalHeader().setVisible(False)
+        self.strategy_trigger_table.setShowGrid(True)
+        self.strategy_trigger_table.horizontalHeader().setStretchLastSection(True)
+        self.strategy_trigger_table.verticalHeader().setDefaultSectionSize(28)
+        for i, w in enumerate([72, 60, 80, 58, 110, 360]):
+            self.strategy_trigger_table.setColumnWidth(i, w)
+        tl.addWidget(self.strategy_trigger_table, 1)
+        lay.addWidget(trigger_f, 1)
 
         ev_f = _panel_frame()
         el = QVBoxLayout(ev_f)
@@ -2033,6 +2106,8 @@ class App(QMainWindow):
         f["daily_volume_min"].setText(str(cfg.daily_volume_min))
         f["price_min"].setText(str(int(cfg.price_min)))
         f["price_max"].setText(str(int(cfg.price_max)))
+        f["consume_qty_threshold"].setText(str(cfg.consume_qty_threshold))
+        f["f4_open_ticks_to_sell"].setText(str(cfg.f4_open_ticks_to_sell))
         f["volume_spike_sell_threshold"].setText(str(cfg.volume_spike_sell_threshold))
 
         c = self._checks
@@ -2043,8 +2118,11 @@ class App(QMainWindow):
         c["excl_disposal"].setChecked(cfg.f11_enabled)
         c["excl_attention"].setChecked(cfg.f11_enabled)
         c["excl_daytrade"].setChecked(cfg.f11_enabled)
-        c["excl_open_limit"].setChecked(cfg.f12_enabled)
-        c["excl_sealed"].setChecked(True)
+        c["consume_enabled"].setChecked(cfg.f_consume_enabled)
+        c["consume_mutex_with_f1"].setChecked(cfg.consume_mutex_with_f1)
+        c["excl_open_limit"].setChecked(not cfg.f_open_limitup_entry_enabled)
+        c["excl_sealed"].setChecked(cfg.f12_enabled)
+        c["f4_require_today_limitup"].setChecked(cfg.f4_require_today_limitup)
         if "dry_run_mode" in c:
             self._syncing_order_mode_control = True
             c["dry_run_mode"].setChecked(cfg.order_dry_run)
@@ -2089,6 +2167,8 @@ class App(QMainWindow):
             market_tpex                   = c["market_tpex"].isChecked(),
             per_stock_amount              = ni("per_stock_amount"),
             f4_enabled                    = True,
+            f4_open_ticks_to_sell         = max(1, ni("f4_open_ticks_to_sell")),
+            f4_require_today_limitup      = c["f4_require_today_limitup"].isChecked(),
             f5_enabled                    = True,
             volume_spike_sell_threshold   = ni("volume_spike_sell_threshold"),
             f6_enabled                    = True,
@@ -2104,9 +2184,13 @@ class App(QMainWindow):
             ask_price_ratio               = self.cfg.ask_price_ratio,
             entry_volume_confirm          = self.cfg.entry_volume_confirm,
             f11_enabled                   = f11,
-            f12_enabled                   = c["excl_open_limit"].isChecked(),
+            f12_enabled                   = c["excl_sealed"].isChecked(),
+            f_open_limitup_entry_enabled  = not c["excl_open_limit"].isChecked(),
             f13_enabled                   = True,
             daily_max_trades              = ni("daily_max_trades"),
+            f_consume_enabled             = c["consume_enabled"].isChecked(),
+            consume_qty_threshold         = max(0, ni("consume_qty_threshold")),
+            consume_mutex_with_f1         = c["consume_mutex_with_f1"].isChecked(),
             order_dry_run                 = c["dry_run_mode"].isChecked(),
             file_logging_enabled          = c["file_logging_enabled"].isChecked(),
         )
@@ -2140,6 +2224,31 @@ class App(QMainWindow):
         except Exception as e:
             push_log("ERROR", f"儲存設定失敗：{e}")
             QMessageBox.critical(self, "儲存失敗", str(e))
+
+    def _sell_all_strategy_positions(self):
+        if self.engine is None or not self._running:
+            QMessageBox.information(self, "策略未啟動", "目前沒有執行中的策略持倉可賣出。")
+            return
+        summary = [s for s in self.engine.get_summary() if int(s.get("qty") or 0) > 0]
+        if not summary:
+            QMessageBox.information(self, "沒有持倉", "目前沒有策略持倉。")
+            return
+
+        preview = "、".join(f"{s['code']}({s['qty']}張)" for s in summary[:8])
+        if len(summary) > 8:
+            preview += f" 等 {len(summary)} 檔"
+        answer = QMessageBox.question(
+            self,
+            "確認全部賣出",
+            f"將賣出所有策略持倉：{preview}\n是否繼續？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        sold = self.engine.sell_all_strategy_positions("GUI 手動全部賣出")
+        push_log("WARN", f"GUI 手動全部策略持股賣出：已送出 {sold} 檔")
 
     def _export_settings_json(self):
         from PyQt6.QtWidgets import QFileDialog
@@ -2395,6 +2504,7 @@ class App(QMainWindow):
                 on_log=push_log,
                 on_trade=self._on_trade,
                 on_status=lambda _s: None,
+                on_strategy_event=self._on_strategy_event,
                 feed=feed,
                 symbol_infos=symbol_infos,
                 broker=broker,
@@ -2758,6 +2868,51 @@ class App(QMainWindow):
     def _on_order_event(self, ev) -> None:
         """從 broker 執行緒接收 OrderEvent，丟回 GUI 主執行緒繪製。"""
         self._dispatch_ui(lambda: self._append_order(ev))
+
+    def _on_strategy_event(self, ev: dict) -> None:
+        """從策略引擎接收結構化觸發紀錄，丟回 GUI 主執行緒繪製。"""
+        self._dispatch_ui(lambda ev=ev: self._append_strategy_event(ev))
+
+    def _append_strategy_event(self, ev: dict) -> None:
+        if not hasattr(self, "strategy_trigger_table"):
+            return
+        self._strategy_trigger_count += 1
+        side = str(ev.get("side") or "")
+        side_text = {
+            "BUY": "買入",
+            "SELL": "賣出",
+            "CANCEL": "取消",
+        }.get(side, side or "—")
+        color = {
+            "BUY": C["green"],
+            "SELL": C["red"],
+            "CANCEL": C["yellow_l"],
+        }.get(side, C["text"])
+        details = ev.get("details") or {}
+        if isinstance(details, dict):
+            detail_txt = "；".join(f"{k}={v}" for k, v in details.items())
+        else:
+            detail_txt = str(details)
+        cells = [
+            (str(ev.get("time") or ""), color),
+            (str(ev.get("code") or ""), color),
+            (str(ev.get("name") or ""), color),
+            (side_text, color),
+            (str(ev.get("strategy") or ""), color),
+            (detail_txt, C["subtext"]),
+        ]
+        self.strategy_trigger_table.insertRow(0)
+        for col, (val, fg) in enumerate(cells):
+            item = QTableWidgetItem(val)
+            item.setTextAlignment(
+                Qt.AlignmentFlag.AlignCenter
+                if col < 5 else Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft
+            )
+            item.setForeground(QColor(fg))
+            self.strategy_trigger_table.setItem(0, col, item)
+        if self.strategy_trigger_table.rowCount() > 300:
+            self.strategy_trigger_table.removeRow(self.strategy_trigger_table.rowCount() - 1)
+        self.strategy_trigger_summary_lbl.setText(f"共 {self._strategy_trigger_count} 筆")
 
     def _append_order(self, ev) -> None:
         # 依 order_id 找既有列；若有則更新狀態欄，否則插入新列

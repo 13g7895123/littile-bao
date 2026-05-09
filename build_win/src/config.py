@@ -43,6 +43,8 @@ class TradingConfig:
 
     # ── 功能 4：買到後，委買漲停就市價賣出 ─────────────────────────────────
     f4_enabled: bool = True
+    f4_open_ticks_to_sell: int = 1       # 漲停板打開幾檔才賣；1=打開1檔就賣
+    f4_require_today_limitup: bool = True  # F4 須當日曾觸及漲停才生效
 
     # ── 功能 5：持倉中，1秒成交量超過N張就賣 ──────────────────────────────
     f5_enabled: bool = True
@@ -75,10 +77,16 @@ class TradingConfig:
 
     # ── 功能 12：開盤即漲停 + 當天已賣過就封鎖 ──────────────────────────────
     f12_enabled: bool = True
+    f_open_limitup_entry_enabled: bool = True  # 是否允許追開盤即漲停
 
     # ── 功能 13：限制每天最大成交檔數 ───────────────────────────────────────
     f13_enabled: bool = True
     daily_max_trades: int = 5   # 當天最多成交幾檔
+
+    # ── 消化量進場：漲停價成交量達 N 張即進場（與功能 1 可互斥）──────────────
+    f_consume_enabled: bool = False
+    consume_qty_threshold: int = 499
+    consume_mutex_with_f1: bool = True
 
     # ── 下單模式 ────────────────────────────────────────────────────────────
     order_dry_run: bool = True   # True = 模擬下單，不送出真實委託

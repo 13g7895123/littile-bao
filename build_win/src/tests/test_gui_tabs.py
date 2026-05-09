@@ -104,10 +104,54 @@ class TestGuiTabLayout(unittest.TestCase):
         self.assertTrue(
             self._is_descendant(self.win.events_full_log, self.win._pages["events"])
         )
+        self.assertTrue(
+            self._is_descendant(self.win.strategy_trigger_table, self.win._pages["events"])
+        )
         self.assertIsNot(self.win.orders_table, self.win.orders_full_table)
         self.assertIsNot(self.win.trades_table, self.win.trades_full_table)
         self.assertIsNot(self.win.positions_table, self.win.positions_full_table)
         self.assertIsNot(self.win.event_log, self.win.events_full_log)
+
+    def test_strategy_settings_collect_new_buy_sell_groups(self):
+        self.assertIn("consume_qty_threshold", self.win._fields)
+        self.assertIn("f4_open_ticks_to_sell", self.win._fields)
+        self.assertIn("consume_enabled", self.win._checks)
+        self.assertIn("f4_require_today_limitup", self.win._checks)
+        self.assertTrue(hasattr(self.win, "sell_all_strategy_btn"))
+
+        self.win._fields["consume_qty_threshold"].setText("321")
+        self.win._fields["f4_open_ticks_to_sell"].setText("2")
+        self.win._checks["consume_enabled"].setChecked(True)
+        self.win._checks["consume_mutex_with_f1"].setChecked(False)
+        self.win._checks["f4_require_today_limitup"].setChecked(False)
+        self.win._checks["excl_open_limit"].setChecked(True)
+        self.win._checks["excl_sealed"].setChecked(False)
+
+        cfg = self.win._collect_config()
+
+        self.assertTrue(cfg.f_consume_enabled)
+        self.assertEqual(cfg.consume_qty_threshold, 321)
+        self.assertFalse(cfg.consume_mutex_with_f1)
+        self.assertEqual(cfg.f4_open_ticks_to_sell, 2)
+        self.assertFalse(cfg.f4_require_today_limitup)
+        self.assertFalse(cfg.f_open_limitup_entry_enabled)
+        self.assertFalse(cfg.f12_enabled)
+
+    def test_strategy_trigger_events_render_to_events_page(self):
+        self.win._append_strategy_event({
+            "time": "09:01:02",
+            "side": "BUY",
+            "code": "2330",
+            "name": "台積電",
+            "strategy": "F1+F7+F10",
+            "details": {"ask_qty": "20", "candle": "1"},
+        })
+
+        self.assertEqual(self.win.strategy_trigger_table.rowCount(), 1)
+        self.assertEqual(self.win.strategy_trigger_table.item(0, 1).text(), "2330")
+        self.assertEqual(self.win.strategy_trigger_table.item(0, 3).text(), "買入")
+        self.assertIn("ask_qty=20", self.win.strategy_trigger_table.item(0, 5).text())
+        self.assertEqual(self.win.strategy_trigger_summary_lbl.text(), "共 1 筆")
 
     def test_tables_and_log_update_their_own_tabs(self):
         order = SimpleNamespace(
