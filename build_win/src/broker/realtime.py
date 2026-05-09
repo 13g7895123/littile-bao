@@ -17,7 +17,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .errors import FubonNetworkError, FubonNotLoggedInError
 from .models import BookEvent, BookLevel, TickEvent
@@ -25,7 +25,14 @@ from .models import BookEvent, BookLevel, TickEvent
 TickCallback = Callable[[TickEvent], None]
 BookCallback = Callable[[BookEvent], None]
 
-FUBON_REALTIME_SYMBOL_LIMIT = 200
+FUBON_REALTIME_SUBSCRIPTION_LIMIT_PER_CONNECTION = 200
+FUBON_REALTIME_MAX_CONNECTIONS = 5
+FUBON_REALTIME_CHANNELS: Tuple[str, ...] = ("trades", "books")
+FUBON_REALTIME_SYMBOL_LIMIT = (
+    FUBON_REALTIME_SUBSCRIPTION_LIMIT_PER_CONNECTION
+    * FUBON_REALTIME_MAX_CONNECTIONS
+    // len(FUBON_REALTIME_CHANNELS)
+)
 
 
 # ─────────────────────────────────────────────────────────
@@ -224,23 +231,36 @@ class FubonRealtimeFeed(RealtimeFeed):
     待真實環境連線後再驗證並補完訊息解析。
     """
 
-    def __init__(self, adapter, mode: str = "speed") -> None:
+    def __init__(self, adapter, mode: str = "speed",
+                 channels: Optional[List[str]] = None,
+                 ws_client_factory: Optional[Callable[[object, str, int], object]] = None) -> None:
         super().__init__()
         self._adapter = adapter
         self._mode = mode
+        self._channels: Tuple[str, ...] = tuple(channels or FUBON_REALTIME_CHANNELS)
+        if not self._channels:
+            raise ValueError("至少需要一個行情 channel")
         self._ws = None
+        self._ws_clients: List[Any] = []
+        self._ws_client_factory = ws_client_factory
         self._subscribed: List[str] = []
+        self._sdk_token: Optional[str] = None
         self._started = False
         self._lock = threading.Lock()
 
+    @property
+    def max_symbols(self) -> int:
+        return self._symbols_per_connection() * FUBON_REALTIME_MAX_CONNECTIONS
+
     def subscribe(self, codes: List[str], meta: Dict[str, SymbolMeta]) -> None:
         unique_codes = list(dict.fromkeys(codes))
-        if len(unique_codes) > FUBON_REALTIME_SYMBOL_LIMIT:
+        max_symbols = self.max_symbols
+        if len(unique_codes) > max_symbols:
             print(
-                f"[FubonFeed] realtime symbols capped at {FUBON_REALTIME_SYMBOL_LIMIT}; "
+                f"[FubonFeed] realtime symbols capped at {max_symbols}; "
                 f"requested={len(unique_codes)}"
             )
-            unique_codes = unique_codes[:FUBON_REALTIME_SYMBOL_LIMIT]
+            unique_codes = unique_codes[:max_symbols]
         with self._lock:
             self._subscribed = unique_codes
         if self._started:
@@ -254,75 +274,160 @@ class FubonRealtimeFeed(RealtimeFeed):
         except FubonNotLoggedInError:
             raise
         try:
-            # SDK 介面在不同版本可能略異；以下是常見路徑：
-            #   sdk.init_realtime(Mode.Speed)
-            #   ws = sdk.marketdata.websocket_client.stock
             init_rt = getattr(sdk, "init_realtime", None)
             if callable(init_rt):
                 try:
-                    from fubon_neo.constant import Mode  # type: ignore
-                    init_rt(Mode.Speed if self._mode == "speed" else Mode.Normal)
+                    init_rt(self._resolve_mode())
                 except ImportError:
                     init_rt()
-            md = getattr(sdk, "marketdata", None)
-            ws_client = getattr(md, "websocket_client", None) if md else None
-            self._ws = getattr(ws_client, "stock", None) if ws_client else None
-            if self._ws is None:
-                raise FubonNetworkError("無法取得 WebSocket client（SDK 介面異常）")
 
-            connect = getattr(self._ws, "connect", None)
-            on_msg = getattr(self._ws, "on", None)
-            if callable(on_msg):
-                # 多個事件全部註冊，方便除錯與訂閱失敗時及早察覺
-                on_msg("message", self._on_raw_message)
-                on_msg("connect", lambda *a, **k: print("[FubonFeed] websocket connected"))
-                on_msg("disconnect",
-                       lambda *a, **k: print(f"[FubonFeed] websocket disconnected args={a} kwargs={k}"))
-                on_msg("error",
-                       lambda *a, **k: print(f"[FubonFeed] websocket error args={a} kwargs={k}"))
-            if callable(connect):
-                connect()
-
+            self._ensure_ws_clients(sdk, self._required_connection_count())
             self._started = True
             if self._subscribed:
                 self._do_subscribe()
         except FubonNetworkError:
+            self.stop()
             raise
         except Exception as e:  # noqa: BLE001
+            self.stop()
             raise FubonNetworkError(f"啟動 Fubon WebSocket 失敗：{e}") from e
 
     def stop(self) -> None:
-        if self._ws is None:
+        if not self._ws_clients and self._ws is None:
             return
         try:
-            disconnect = getattr(self._ws, "disconnect", None)
-            if callable(disconnect):
-                disconnect()
+            clients = list(self._ws_clients) or ([self._ws] if self._ws is not None else [])
+            for ws in clients:
+                disconnect = getattr(ws, "disconnect", None)
+                if callable(disconnect):
+                    disconnect()
         finally:
+            self._ws_clients = []
             self._ws = None
+            self._sdk_token = None
             self._started = False
 
     # ── 內部 ────────────────────────────────
 
     def _do_subscribe(self) -> None:
-        if self._ws is None:
+        if not self._ws_clients:
             return
-        sub = getattr(self._ws, "subscribe", None)
-        if not callable(sub):
-            print("[FubonFeed] websocket has no subscribe()")
+        try:
+            self._ensure_ws_clients(self._adapter.sdk, self._required_connection_count())
+        except Exception as e:  # noqa: BLE001
+            print(f"[FubonFeed] websocket client expand failed: {e}")
             return
-        # 分片 200 / connection
-        total = len(self._subscribed)
+
+        chunks = self._symbol_chunks()
         ok_chunks = 0
-        for i in range(0, total, 200):
-            chunk = self._subscribed[i:i + 200]
+        for index, chunk in enumerate(chunks):
+            ws = self._ws_clients[index]
+            sub = getattr(ws, "subscribe", None)
+            if not callable(sub):
+                print(f"[FubonFeed] websocket #{index + 1} has no subscribe()")
+                continue
             try:
-                sub({"channel": "trades", "symbols": chunk})
-                sub({"channel": "books", "symbols": chunk})
+                for channel in self._channels:
+                    sub({"channel": channel, "symbols": chunk})
                 ok_chunks += 1
             except Exception as e:  # noqa: BLE001
-                print(f"[FubonFeed] subscribe error chunk={chunk[:3]}…: {e}")
-        print(f"[FubonFeed] subscribed: {total} symbols in {ok_chunks} chunk(s)")
+                print(f"[FubonFeed] subscribe error ws=#{index + 1} chunk={chunk[:3]}…: {e}")
+        print(
+            f"[FubonFeed] subscribed: {len(self._subscribed)} symbols "
+            f"across {ok_chunks} connection(s), channels={','.join(self._channels)}"
+        )
+
+    def _symbols_per_connection(self) -> int:
+        return FUBON_REALTIME_SUBSCRIPTION_LIMIT_PER_CONNECTION // len(self._channels)
+
+    def _symbol_chunks(self) -> List[List[str]]:
+        per_connection = self._symbols_per_connection()
+        return [
+            self._subscribed[index:index + per_connection]
+            for index in range(0, len(self._subscribed), per_connection)
+        ]
+
+    def _required_connection_count(self) -> int:
+        chunks = len(self._symbol_chunks())
+        return max(1, min(FUBON_REALTIME_MAX_CONNECTIONS, chunks))
+
+    def _ensure_ws_clients(self, sdk, required_count: int) -> None:
+        while len(self._ws_clients) < required_count:
+            index = len(self._ws_clients)
+            ws = self._create_stock_ws_client(sdk, index)
+            if ws is None:
+                raise FubonNetworkError("無法取得 WebSocket client（SDK 介面異常）")
+            self._register_ws_handlers(ws, index)
+            connect = getattr(ws, "connect", None)
+            if callable(connect):
+                connect()
+            self._ws_clients.append(ws)
+            if self._ws is None:
+                self._ws = ws
+
+    def _create_stock_ws_client(self, sdk, index: int):
+        if self._ws_client_factory is not None:
+            return self._ws_client_factory(self._adapter, self._mode, index)
+        if index == 0:
+            existing = self._existing_stock_ws_client(sdk)
+            if existing is not None:
+                return existing
+        built = self._build_stock_ws_client(sdk)
+        if built is not None:
+            return built
+        if index > 0:
+            raise FubonNetworkError(
+                "SDK 未提供 build_websocket_client / realtime token，無法建立多條行情連線"
+            )
+        return None
+
+    @staticmethod
+    def _existing_stock_ws_client(sdk):
+        md = getattr(sdk, "marketdata", None)
+        ws_client = getattr(md, "websocket_client", None) if md else None
+        return getattr(ws_client, "stock", None) if ws_client else None
+
+    def _build_stock_ws_client(self, sdk):
+        try:
+            from fubon_neo.adapter import build_websocket_client  # type: ignore
+        except ImportError:
+            return None
+        token = self._realtime_token(sdk)
+        wrapper = build_websocket_client(self._resolve_mode(), token)
+        return getattr(wrapper, "stock", None)
+
+    def _realtime_token(self, sdk) -> str:
+        if self._sdk_token:
+            return self._sdk_token
+        exchange = getattr(sdk, "exchange_realtime_token", None)
+        if callable(exchange):
+            self._sdk_token = str(exchange())
+            return self._sdk_token
+        for attr in ("sdk_token", "_sdk_token", "token", "access_token"):
+            value = getattr(sdk, attr, None)
+            if value:
+                self._sdk_token = str(value)
+                return self._sdk_token
+        raise FubonNetworkError("無法取得 realtime token，無法建立額外 WebSocket 連線")
+
+    def _resolve_mode(self):
+        try:
+            from fubon_neo.constant import Mode  # type: ignore
+        except ImportError:
+            from fubon_neo.adapter import Mode  # type: ignore
+        return Mode.Speed if self._mode == "speed" else Mode.Normal
+
+    def _register_ws_handlers(self, ws, index: int) -> None:
+        on_msg = getattr(ws, "on", None)
+        if not callable(on_msg):
+            return
+        on_msg("message", self._on_raw_message)
+        on_msg("connect", lambda *args, _index=index, **kwargs:
+               print(f"[FubonFeed] websocket #{_index + 1} connected"))
+        on_msg("disconnect", lambda *args, _index=index, **kwargs:
+               print(f"[FubonFeed] websocket #{_index + 1} disconnected args={args} kwargs={kwargs}"))
+        on_msg("error", lambda *args, _index=index, **kwargs:
+               print(f"[FubonFeed] websocket #{_index + 1} error args={args} kwargs={kwargs}"))
 
     def _on_raw_message(self, msg) -> None:
         """SDK 推送的訊息（多半是 JSON 字串），依 channel 分派到 tick / book callback。

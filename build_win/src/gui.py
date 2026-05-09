@@ -1628,7 +1628,7 @@ class App(QMainWindow):
         if broker is None:
             return []
 
-        from broker import ScanCriteria
+        from broker import FUBON_REALTIME_SYMBOL_LIMIT, ScanCriteria
         from broker.universe import (
             build_next_session_symbol_info,
             FubonSymbolInfoLoader,
@@ -1649,7 +1649,7 @@ class App(QMainWindow):
             exclude_day_trade_restricted=cfg.f11_enabled,
             markets=markets,
             min_prev_volume=(cfg.daily_volume_min if cfg.f8_enabled else 0),
-            max_candidates=200,
+            max_candidates=FUBON_REALTIME_SYMBOL_LIMIT,
             max_prior_limit_up_streak=(cfg.candle_limit - 1)
                 if cfg.f7_enabled and cfg.candle_limit > 0 else None,
         )
@@ -2424,7 +2424,7 @@ class App(QMainWindow):
         feed = None
         if broker:
             try:
-                from broker import ScanCriteria, scan_daily
+                from broker import FUBON_REALTIME_SYMBOL_LIMIT, ScanCriteria, scan_daily
                 from broker.universe import FubonSymbolInfoLoader, MarketSnapshotCache
 
                 max_prior_streak = (
@@ -2440,7 +2440,7 @@ class App(QMainWindow):
                     exclude_day_trade_restricted=cfg.f11_enabled,
                     markets=tuple(cfg.get_markets()),
                     min_prev_volume=(cfg.daily_volume_min if cfg.f8_enabled else 0),
-                    max_candidates=200,
+                    max_candidates=FUBON_REALTIME_SYMBOL_LIMIT,
                     max_prior_limit_up_streak=max_prior_streak,
                 )
 

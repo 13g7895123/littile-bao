@@ -18,8 +18,33 @@ from broker import (  # noqa: E402
     SymbolMeta,
     TickEvent,
 )
-from broker.realtime import FUBON_REALTIME_SYMBOL_LIMIT, FubonRealtimeFeed  # noqa: E402
+from broker.realtime import (  # noqa: E402
+    FUBON_REALTIME_MAX_CONNECTIONS,
+    FUBON_REALTIME_SUBSCRIPTION_LIMIT_PER_CONNECTION,
+    FUBON_REALTIME_SYMBOL_LIMIT,
+    FubonRealtimeFeed,
+)
 from broker.errors import FubonNotLoggedInError  # noqa: E402
+
+
+class _FakeStockWebSocket:
+    def __init__(self) -> None:
+        self.handlers: dict = {}
+        self.subscribe_calls: list = []
+        self.connected = False
+        self.disconnected = False
+
+    def on(self, event, callback) -> None:
+        self.handlers[event] = callback
+
+    def connect(self) -> None:
+        self.connected = True
+
+    def disconnect(self) -> None:
+        self.disconnected = True
+
+    def subscribe(self, payload) -> None:
+        self.subscribe_calls.append(payload)
 
 
 class TestMockRealtimeFeed(unittest.TestCase):
@@ -88,7 +113,7 @@ class TestEngineWithMockFeed(unittest.TestCase):
 
 
 class TestFubonRealtimeFeedSkeleton(unittest.TestCase):
-    def test_subscribe_caps_symbols_to_single_connection_limit(self):
+    def test_subscribe_caps_symbols_to_five_connection_limit(self):
         feed = FubonRealtimeFeed(SimpleNamespace())
         codes = [f"{i:04d}" for i in range(FUBON_REALTIME_SYMBOL_LIMIT + 25)]
 
@@ -97,6 +122,56 @@ class TestFubonRealtimeFeedSkeleton(unittest.TestCase):
         self.assertEqual(len(feed._subscribed), FUBON_REALTIME_SYMBOL_LIMIT)
         self.assertEqual(feed._subscribed[0], "0000")
         self.assertEqual(feed._subscribed[-1], f"{FUBON_REALTIME_SYMBOL_LIMIT - 1:04d}")
+
+    def test_101_symbols_use_two_connections_for_trades_and_books(self):
+        clients: list[_FakeStockWebSocket] = []
+
+        def factory(_adapter, _mode, _index):
+            client = _FakeStockWebSocket()
+            clients.append(client)
+            return client
+
+        feed = FubonRealtimeFeed(SimpleNamespace(sdk=SimpleNamespace()), ws_client_factory=factory)
+        feed.subscribe([f"{i:04d}" for i in range(101)], {})
+
+        feed.start()
+        try:
+            self.assertEqual(len(clients), 2)
+            self.assertEqual(len(clients[0].subscribe_calls[0]["symbols"]), 100)
+            self.assertEqual(len(clients[1].subscribe_calls[0]["symbols"]), 1)
+            for client in clients:
+                self.assertTrue(client.connected)
+                self.assertEqual([c["channel"] for c in client.subscribe_calls], ["trades", "books"])
+        finally:
+            feed.stop()
+        self.assertTrue(all(client.disconnected for client in clients))
+
+    def test_500_symbols_use_five_connections_without_exceeding_quota(self):
+        clients: list[_FakeStockWebSocket] = []
+
+        def factory(_adapter, _mode, _index):
+            client = _FakeStockWebSocket()
+            clients.append(client)
+            return client
+
+        feed = FubonRealtimeFeed(SimpleNamespace(sdk=SimpleNamespace()), ws_client_factory=factory)
+        feed.subscribe([f"{i:04d}" for i in range(FUBON_REALTIME_SYMBOL_LIMIT)], {})
+
+        feed.start()
+        try:
+            self.assertEqual(len(clients), FUBON_REALTIME_MAX_CONNECTIONS)
+            for client in clients:
+                self.assertTrue(client.connected)
+                self.assertEqual([c["channel"] for c in client.subscribe_calls], ["trades", "books"])
+                subscription_count = sum(len(c["symbols"]) for c in client.subscribe_calls)
+                self.assertLessEqual(
+                    subscription_count,
+                    FUBON_REALTIME_SUBSCRIPTION_LIMIT_PER_CONNECTION,
+                )
+            self.assertEqual(len(clients[0].subscribe_calls[0]["symbols"]), 100)
+            self.assertEqual(clients[-1].subscribe_calls[-1]["symbols"][-1], "0499")
+        finally:
+            feed.stop()
 
     def test_start_without_login_raises(self):
         from broker import FubonAdapter
