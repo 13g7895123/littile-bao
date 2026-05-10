@@ -305,6 +305,9 @@ class App(QMainWindow):
         self._sell_count = 0
         self._realized_pnl = 0.0   # M4：今日已實現損益累計
         self._log_lines = 0
+        self._log_entries = []
+        self._log_filter = "all"
+        self._log_filter_buttons = {"all": [], "strategy": []}
         self._strategy_trigger_count = 0
         self._syncing_order_mode_control = False
 
@@ -1028,6 +1031,8 @@ class App(QMainWindow):
         eh = QHBoxLayout()
         eh.addWidget(_label("事件日誌", C["text"], 10, bold=True))
         eh.addStretch()
+        self._add_log_filter_buttons(eh)
+        eh.addSpacing(6)
         clr_btn = QPushButton("清除")
         clr_btn.setFont(_font(9))
         clr_btn.setFixedSize(46, 22)
@@ -1319,6 +1324,8 @@ class App(QMainWindow):
         eh = QHBoxLayout()
         eh.addWidget(_label("事件日誌", C["text"], 10, bold=True))
         eh.addStretch()
+        self._add_log_filter_buttons(eh)
+        eh.addSpacing(6)
         clr_btn = QPushButton("清除")
         clr_btn.setFont(_font(9))
         clr_btn.setFixedSize(46, 22)
@@ -1706,6 +1713,7 @@ class App(QMainWindow):
             FubonSymbolInfoLoader,
             MarketSnapshotCache,
             PreviousTradingDaysApiClient,
+            is_limit_up_close,
             resolve_preview_price,
             scan_daily,
             scan_preview_candidates,
@@ -1827,11 +1835,20 @@ class App(QMainWindow):
 
         summary = []
         for code, info in symbol_infos.items():
-            prev_close = float(info.prev_close)
             preview_price_dec = resolve_preview_price(info)
+            display_prev_close_dec = getattr(info, "display_prev_close", None)
+            change_base_dec = (
+                display_prev_close_dec
+                if after_close_preview and display_prev_close_dec is not None
+                else info.prev_close
+            )
+            prev_close = float(change_base_dec)
             preview_price = float(preview_price_dec)
             change = preview_price - prev_close
             change_pct = (change / prev_close * 100.0) if prev_close > 0 else 0.0
+            closed_at_limit_up = bool(getattr(info, "closed_at_limit_up", False))
+            if after_close_preview and not closed_at_limit_up:
+                closed_at_limit_up = is_limit_up_close(preview_price_dec, change_base_dec)
             summary.append({
                 "code": code,
                 "name": info.name,
@@ -1849,6 +1866,7 @@ class App(QMainWindow):
                 "ask_qty": 0,
                 "is_at_limit_up": False,
                 "after_close_preview": after_close_preview,
+                "closed_at_limit_up": closed_at_limit_up,
             })
         summary.sort(key=lambda item: item["code"])
         if next_day_exclusions:
@@ -1911,6 +1929,7 @@ class App(QMainWindow):
                 "is_at_limit_up": False,
                 "after_close_preview": True,
                 "next_day_excluded": True,
+                "closed_at_limit_up": True,
                 "prior_limit_up_streak": info.prior_limit_up_streak,
             })
         rows.sort(key=lambda item: (item.get("prior_limit_up_streak") or 0, item["code"]), reverse=True)
@@ -2495,7 +2514,7 @@ class App(QMainWindow):
             self._set_strategy_status("收盤預覽", C["blue_l"])
             push_log(
                 "INFO",
-                "目前已收盤，不啟動策略引擎與即時行情訂閱；改為更新明日候選 / 排除預覽。",
+                    "目前已收盤，不啟動策略引擎與即時行情訂閱；改為更新收盤檢視 / 明日排除預覽。",
                 include_traceback=False,
             )
             if broker is not None:
@@ -3077,6 +3096,76 @@ class App(QMainWindow):
     #  輪詢更新
     # ══════════════════════════════════════════
 
+    def _add_log_filter_buttons(self, layout: QHBoxLayout) -> None:
+        for mode, text in (("all", "全部"), ("strategy", "策略")):
+            btn = QPushButton(text)
+            btn.setFont(_font(9))
+            btn.setFixedSize(44, 22)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.clicked.connect(lambda _checked=False, m=mode: self._set_log_filter(m))
+            self._log_filter_buttons.setdefault(mode, []).append(btn)
+            layout.addWidget(btn)
+        self._sync_log_filter_buttons()
+
+    def _set_log_filter(self, mode: str) -> None:
+        if mode not in ("all", "strategy"):
+            return
+        if self._log_filter == mode:
+            return
+        self._log_filter = mode
+        self._sync_log_filter_buttons()
+        self._render_log_views()
+
+    def _sync_log_filter_buttons(self) -> None:
+        for mode, buttons in self._log_filter_buttons.items():
+            active = mode == self._log_filter
+            for btn in buttons:
+                btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background-color: {C['blue'] if active else C['surface']};
+                        color: {'#ffffff' if active else C['subtext']};
+                        border: 1px solid {C['blue'] if active else C['border']};
+                        border-radius: 3px;
+                    }}
+                    QPushButton:hover {{
+                        background-color: {C['blue_l'] if active else C['border']};
+                        color: #ffffff;
+                    }}
+                """)
+
+    @staticmethod
+    def _is_strategy_log(level: str, msg: str) -> bool:
+        if level == "TRADE":
+            return True
+        text = str(msg)
+        keywords = (
+            "策略", "候選", "篩選", "進場", "出場", "漲停",
+            "封板", "委賣", "下單", "成交",
+        )
+        return any(keyword in text for keyword in keywords)
+
+    def _log_entry_visible(self, entry: dict) -> bool:
+        return self._log_filter == "all" or bool(entry.get("strategy"))
+
+    def _append_log_html_to_views(self, html_text: str) -> None:
+        self.event_log.append(html_text)
+        sb = self.event_log.verticalScrollBar()
+        sb.setValue(sb.maximum())
+        if (hasattr(self, "events_full_log")
+            and self.events_full_log is not self.event_log):
+            self.events_full_log.append(html_text)
+            sb2 = self.events_full_log.verticalScrollBar()
+            sb2.setValue(sb2.maximum())
+
+    def _render_log_views(self) -> None:
+        self.event_log.clear()
+        if (hasattr(self, "events_full_log")
+                and self.events_full_log is not self.event_log):
+            self.events_full_log.clear()
+        for entry in self._log_entries:
+            if self._log_entry_visible(entry):
+                self._append_log_html_to_views(entry["html"])
+
     def _start_polling(self):
         self._log_timer = QTimer()
         self._log_timer.timeout.connect(self._poll_log)
@@ -3094,24 +3183,10 @@ class App(QMainWindow):
                 self._append_log(lvl, msg)
         except queue.Empty:
             pass
-        if self._log_lines > MAX_LINES:
-            from PyQt6.QtGui import QTextCursor
-            mirror_logs = (
-                hasattr(self, "events_full_log")
-                and self.events_full_log is not self.event_log
-            )
-            cursor = self.event_log.textCursor()
-            cursor.movePosition(QTextCursor.MoveOperation.Start)
-            cursor.movePosition(QTextCursor.MoveOperation.Down,
-                                QTextCursor.MoveMode.KeepAnchor, 100)
-            cursor.removeSelectedText()
-            if mirror_logs:
-                cursor2 = self.events_full_log.textCursor()
-                cursor2.movePosition(QTextCursor.MoveOperation.Start)
-                cursor2.movePosition(QTextCursor.MoveOperation.Down,
-                                     QTextCursor.MoveMode.KeepAnchor, 100)
-                cursor2.removeSelectedText()
-            self._log_lines = max(0, self._log_lines - 100)
+        if len(self._log_entries) > MAX_LINES:
+            self._log_entries = self._log_entries[-MAX_LINES:]
+            self._log_lines = len(self._log_entries)
+            self._render_log_views()
 
     def _poll_monitor(self):
         if self._running and self.engine:
@@ -3119,6 +3194,7 @@ class App(QMainWindow):
             self._render_monitor(summary)
 
     def _clear_log(self):
+        self._log_entries.clear()
         self.event_log.clear()
         if (hasattr(self, "events_full_log")
                 and self.events_full_log is not self.event_log):
@@ -3133,16 +3209,14 @@ class App(QMainWindow):
         tag_c = "</b>" if bold else ""
         safe_msg = html.escape(msg).replace("\n", "<br>")
         html_text = f'{tag_o}<span style="color:{color};">{ts} {safe_msg}</span>{tag_c}'
-        self.event_log.append(html_text)
-        sb = self.event_log.verticalScrollBar()
-        sb.setValue(sb.maximum())
-        # 同步至「事件日誌」全頁面
-        if (hasattr(self, "events_full_log")
-            and self.events_full_log is not self.event_log):
-            self.events_full_log.append(html_text)
-            sb2 = self.events_full_log.verticalScrollBar()
-            sb2.setValue(sb2.maximum())
-        self._log_lines += 1
+        entry = {
+            "html": html_text,
+            "strategy": self._is_strategy_log(level, msg),
+        }
+        self._log_entries.append(entry)
+        self._log_lines = len(self._log_entries)
+        if self._log_entry_visible(entry):
+            self._append_log_html_to_views(html_text)
 
     def _append_trade(self, d: dict):
         self._trade_count += 1
@@ -3222,6 +3296,8 @@ class App(QMainWindow):
             "已完成":   C["subtext"],
             "委託中":   C["yellow_l"],
             "等待":     C["subtext"],
+            "收盤漲停": C["red_l"],
+            "收盤觀察": C["blue_l"],
             "明日候選": C["blue_l"],
             "明日排除": C["red_l"],
         }
@@ -3234,6 +3310,8 @@ class App(QMainWindow):
             "已完成":   C["badge_dim"],
             "委託中":   C["badge_order"],
             "等待":     C["badge_dim"],
+            "收盤漲停": C["badge_cancel"],
+            "收盤觀察": C["badge_ready"],
             "明日候選": C["badge_ready"],
             "明日排除": C["badge_cancel"],
         }
@@ -3243,14 +3321,14 @@ class App(QMainWindow):
         next_excluded_cnt = sum(1 for s in summary if s.get("next_day_excluded"))
         after_close_cnt = sum(
             1 for s in summary
-            if s.get("after_close_preview") and not s.get("next_day_excluded")
+            if self._is_after_close_monitor_item(s) and not s.get("next_day_excluded")
         )
         if hasattr(self, "monitor_count_lbl"):
             if next_excluded_cnt:
                 self.monitor_count_lbl.setText(
-                    f"明日候選 {len(summary) - next_excluded_cnt} / 明日排除 {next_excluded_cnt} 檔")
+                    f"收盤檢視 {len(summary) - next_excluded_cnt} / 明日排除 {next_excluded_cnt} 檔")
             elif after_close_cnt:
-                self.monitor_count_lbl.setText(f"明日候選 {after_close_cnt} 檔")
+                self.monitor_count_lbl.setText(f"收盤檢視 {after_close_cnt} 檔")
             else:
                 self.monitor_count_lbl.setText(f"共 {len(summary)} 檔")
         self.monitor_table.setRowCount(0)
@@ -3259,8 +3337,8 @@ class App(QMainWindow):
         for s in summary:
             if s.get("next_day_excluded"):
                 status = "明日排除"
-            elif s.get("after_close_preview"):
-                status = "明日候選"
+            elif self._is_after_close_monitor_item(s):
+                status = "收盤漲停" if s.get("closed_at_limit_up") else "收盤觀察"
             elif s["blocked"]:
                 status = "已完成"
             elif s["qty"] > 0:
@@ -3275,8 +3353,8 @@ class App(QMainWindow):
 
             if s.get("next_day_excluded"):
                 candle_txt = f"連{s.get('prior_limit_up_streak') or 0}根"
-            elif s.get("after_close_preview"):
-                candle_txt = "明日"
+            elif self._is_after_close_monitor_item(s):
+                candle_txt = "收盤"
             else:
                 candle_txt = f"第{s['candle']}根" if s["candle"] > 0 else "—"
             fg = QColor(STATUS_COLOR.get(status, C["text"]))
@@ -3345,8 +3423,10 @@ class App(QMainWindow):
     def _monitor_action_text(self, summary_item: dict, status: str) -> tuple[str, str]:
         if status == "明日排除":
             return "隔日不追", C["red_l"]
-        if status == "明日候選":
-            return "隔日觀察", C["blue_l"]
+        if status == "收盤漲停":
+            return "明日觀察", C["red_l"]
+        if status in ("收盤觀察", "明日候選"):
+            return "明日觀察", C["blue_l"]
         if status == "已完成":
             return "已封鎖", C["subtext"]
         if status == "已進場":
@@ -3361,6 +3441,9 @@ class App(QMainWindow):
         if summary_item.get("candle", 0) > 0:
             return "等待封板", C["yellow_l"]
         return "等待漲停", C["subtext"]
+
+    def _is_after_close_monitor_item(self, summary_item: dict) -> bool:
+        return bool(summary_item.get("after_close_preview"))
 
     def _autosize_monitor_columns(self) -> None:
         if not hasattr(self, "monitor_table"):

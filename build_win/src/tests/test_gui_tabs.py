@@ -200,6 +200,27 @@ class TestGuiTabLayout(unittest.TestCase):
             self._is_descendant(self.win.events_full_log, self.win._pages["events"])
         )
 
+    def test_event_log_can_filter_strategy_related_entries(self):
+        self.win._append_log("INFO", "系統一般訊息")
+        self.win._append_log("TRADE", "[策略觸發][BUY][2330 台積電] 策略=F1")
+
+        self.assertIn("系統一般訊息", self.win.event_log.toPlainText())
+        self.assertIn("策略=F1", self.win.events_full_log.toPlainText())
+
+        self.win._set_log_filter("strategy")
+
+        self.assertNotIn("系統一般訊息", self.win.event_log.toPlainText())
+        self.assertIn("策略=F1", self.win.event_log.toPlainText())
+        self.assertIn("策略=F1", self.win.events_full_log.toPlainText())
+
+        self.win._append_log("INFO", "策略啟動準備中")
+        self.assertIn("策略啟動準備中", self.win.event_log.toPlainText())
+
+        self.win._set_log_filter("all")
+
+        self.assertIn("系統一般訊息", self.win.event_log.toPlainText())
+        self.assertIn("策略啟動準備中", self.win.events_full_log.toPlainText())
+
     def test_monitor_count_action_text_and_column_autosize(self):
         summary = [
             {
@@ -244,6 +265,32 @@ class TestGuiTabLayout(unittest.TestCase):
         self.assertEqual(self.win.monitor_table.item(0, 9).text(), "檢查進場")
         self.assertEqual(self.win.monitor_table.item(1, 9).text(), "監控出場")
         self.assertGreater(self.win.monitor_table.columnWidth(1), 70)
+
+    def test_after_close_monitor_shows_close_status(self):
+        self.win._is_after_market_close = lambda: True
+        self.win._render_monitor([{
+            "code": "1111",
+            "name": "甲",
+            "market": "TSE",
+            "candle": 0,
+            "qty": 0,
+            "pending": False,
+            "vol_1s": 0,
+            "blocked": False,
+            "price": 110.0,
+            "limit_up": 121.0,
+            "prev_close": 100.0,
+            "change": 10.0,
+            "change_pct": 10.0,
+            "ask_qty": 0,
+            "is_at_limit_up": False,
+            "after_close_preview": True,
+            "closed_at_limit_up": True,
+        }])
+
+        self.assertEqual(self.win.monitor_count_lbl.text(), "收盤檢視 1 檔")
+        self.assertEqual(self.win.monitor_table.item(0, 8).text(), "收盤漲停")
+        self.assertEqual(self.win.monitor_table.item(0, 9).text(), "明日觀察")
 
     def test_after_close_fubon_preview_uses_close_price_range(self):
         class FakeSnapshot:
@@ -360,7 +407,7 @@ class TestGuiTabLayout(unittest.TestCase):
         rows = {item["code"]: item for item in summary}
         self.assertTrue(rows["1111"]["next_day_excluded"])
         self.assertFalse(rows["2222"].get("next_day_excluded", False))
-        self.assertEqual(self.win.monitor_count_lbl.text(), "明日候選 1 / 明日排除 1 檔")
+        self.assertEqual(self.win.monitor_count_lbl.text(), "收盤檢視 1 / 明日排除 1 檔")
         status_by_code = {
             self.win.monitor_table.item(row, 0).text(): self.win.monitor_table.item(row, 8).text()
             for row in range(self.win.monitor_table.rowCount())
@@ -371,8 +418,8 @@ class TestGuiTabLayout(unittest.TestCase):
         }
         self.assertEqual(status_by_code["1111"], "明日排除")
         self.assertEqual(action_by_code["1111"], "隔日不追")
-        self.assertEqual(status_by_code["2222"], "明日候選")
-        self.assertEqual(action_by_code["2222"], "隔日觀察")
+        self.assertEqual(status_by_code["2222"], "收盤觀察")
+        self.assertEqual(action_by_code["2222"], "明日觀察")
 
     def test_fubon_strategy_start_loads_in_background_and_can_cancel(self):
         class BlockingSnapshot:

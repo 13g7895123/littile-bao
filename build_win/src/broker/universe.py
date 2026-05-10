@@ -36,6 +36,8 @@ class SymbolInfo:
     is_day_trade_restricted: bool = False
     open_limit_up: bool = False  # 開盤後首筆 tick 才能確認，預設 False
     prior_limit_up_streak: Optional[int] = None  # 昨日起往前連續收漲停天數；None=資料不足
+    display_prev_close: Optional[Decimal] = None  # UI 漲跌比較基準；不影響策略昨收
+    closed_at_limit_up: Optional[bool] = None
 
 
 # ─────────────────────────────────────────────────────────
@@ -493,6 +495,8 @@ class PreviousTradingDaysApiClient:
             quote_price=latest[1],
             prev_volume=latest[2],
             prior_limit_up_streak=prior_streak,
+            display_prev_close=prior[1] if prior is not None else None,
+            closed_at_limit_up=(prior_streak == 1) if prior is not None else None,
         )
 
     @classmethod
@@ -548,6 +552,8 @@ def build_symbol_info(
     is_attention: bool = False,
     is_day_trade_restricted: bool = False,
     prior_limit_up_streak: Optional[int] = None,
+    display_prev_close: Optional[Decimal] = None,
+    closed_at_limit_up: Optional[bool] = None,
 ) -> SymbolInfo:
     """以昨收價自動算出漲跌停。"""
     pc = Decimal(str(prev_close))
@@ -572,6 +578,8 @@ def build_symbol_info(
         is_attention=is_attention,
         is_day_trade_restricted=is_day_trade_restricted,
         prior_limit_up_streak=prior_limit_up_streak,
+        display_prev_close=display_prev_close,
+        closed_at_limit_up=closed_at_limit_up,
     )
 
 

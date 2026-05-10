@@ -403,6 +403,8 @@ class TestPreviousTradingDaysApi(unittest.TestCase):
             self.assertEqual(infos["1111"].quote_price, Decimal("110"))
             self.assertEqual(infos["1111"].prev_volume, 2000)
             self.assertEqual(infos["1111"].prior_limit_up_streak, 1)
+            self.assertEqual(infos["1111"].display_prev_close, Decimal("100"))
+            self.assertTrue(infos["1111"].closed_at_limit_up)
 
             cached_client = FakeClient(
                 "http://example.test/api/prices/previous-trading-days",
