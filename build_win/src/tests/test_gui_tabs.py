@@ -7,6 +7,7 @@ import threading
 import unittest
 from decimal import Decimal
 from types import SimpleNamespace
+from unittest import mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -302,8 +303,9 @@ class TestGuiTabLayout(unittest.TestCase):
         self.win._checks["market_tpex"].setChecked(True)
         self.win._is_after_market_close = lambda: True
 
-        summary = self.win._load_dashboard_preview_summary(
-            broker, self.win._collect_config())
+        with mock.patch("broker.universe.PreviousTradingDaysApiClient", side_effect=RuntimeError("api off")):
+            summary = self.win._load_dashboard_preview_summary(
+                broker, self.win._collect_config())
 
         self.assertEqual([item["code"] for item in summary], ["2330"])
         self.assertEqual(summary[0]["price"], 88.5)
@@ -350,8 +352,9 @@ class TestGuiTabLayout(unittest.TestCase):
         self.win._fields["price_max"].setText("500")
         self.win._fields["daily_volume_min"].setText("1")
 
-        summary = self.win._load_dashboard_preview_summary(
-            broker, self.win._collect_config())
+        with mock.patch("broker.universe.PreviousTradingDaysApiClient", side_effect=RuntimeError("api off")):
+            summary = self.win._load_dashboard_preview_summary(
+                broker, self.win._collect_config())
         self.win._render_monitor(summary)
 
         rows = {item["code"]: item for item in summary}
@@ -408,9 +411,10 @@ class TestGuiTabLayout(unittest.TestCase):
         self.win._checks["market_twse"].setChecked(True)
         self.win._checks["market_tpex"].setChecked(False)
 
-        self.win._start_trading()
+        with mock.patch("broker.universe.PreviousTradingDaysApiClient", side_effect=RuntimeError("api off")):
+            self.win._start_trading()
 
-        self.assertTrue(snapshot.entered.wait(1.0))
+            self.assertTrue(snapshot.entered.wait(1.0))
         self.assertTrue(self.win._strategy_starting)
         self.assertFalse(self.win._running)
         self.assertIn("載入中", self.win.strategy_status_lbl.text())
@@ -487,11 +491,69 @@ class TestGuiTabLayout(unittest.TestCase):
         self.win._checks["market_tpex"].setChecked(False)
         self.win._fields["daily_volume_min"].setText("1")
 
-        symbol_infos, feed = self.win._load_trading_runtime(
-            self.win.broker, self.win._collect_config())
+        with mock.patch("broker.universe.PreviousTradingDaysApiClient", side_effect=RuntimeError("api off")):
+            symbol_infos, feed = self.win._load_trading_runtime(
+                self.win.broker, self.win._collect_config())
 
         self.assertIsNone(feed)
         self.assertEqual(snapshot.calls[0], {"market": "TSE", "type": "COMMONSTOCK"})
+        self.assertEqual(list(symbol_infos.keys()), ["2330"])
+
+    def test_strategy_start_prefers_previous_trading_days_api(self):
+        from broker.universe import build_symbol_info
+
+        class FakeSnapshot:
+            def quotes(self, **_kwargs):
+                raise AssertionError("snapshot should not be called when previous-days API succeeds")
+
+        class FakeSdk:
+            def __init__(self):
+                self.marketdata = SimpleNamespace(
+                    rest_client=SimpleNamespace(
+                        stock=SimpleNamespace(snapshot=FakeSnapshot())
+                    )
+                )
+
+            def init_realtime(self):
+                return None
+
+        class FakeBroker:
+            def __init__(self):
+                self._sdk = FakeSdk()
+                self.sdk = self._sdk
+
+            def create_realtime_feed(self):
+                return None
+
+        class FakePreviousDaysClient:
+            instances = []
+
+            def __init__(self):
+                self.last_from_cache = True
+                self.last_as_of = "2026-05-10"
+                self.markets = None
+                FakePreviousDaysClient.instances.append(self)
+
+            def load_symbol_infos(self, markets):
+                self.markets = tuple(markets)
+                return {
+                    "2330": build_symbol_info(
+                        "2330", "台積電", "TSE", Decimal("100"),
+                        quote_price=Decimal("100"), prev_volume=2000,
+                        prior_limit_up_streak=0,
+                    )
+                }
+
+        self.win._checks["market_twse"].setChecked(True)
+        self.win._checks["market_tpex"].setChecked(False)
+        self.win._fields["daily_volume_min"].setText("1")
+
+        with mock.patch("broker.universe.PreviousTradingDaysApiClient", FakePreviousDaysClient):
+            symbol_infos, feed = self.win._load_trading_runtime(
+                FakeBroker(), self.win._collect_config())
+
+        self.assertIsNone(feed)
+        self.assertEqual(FakePreviousDaysClient.instances[0].markets, ("TSE",))
         self.assertEqual(list(symbol_infos.keys()), ["2330"])
 
 

@@ -1703,9 +1703,9 @@ class App(QMainWindow):
 
         from broker import FUBON_REALTIME_SYMBOL_LIMIT, ScanCriteria
         from broker.universe import (
-            build_next_session_symbol_info,
             FubonSymbolInfoLoader,
             MarketSnapshotCache,
+            PreviousTradingDaysApiClient,
             resolve_preview_price,
             scan_daily,
             scan_preview_candidates,
@@ -1734,6 +1734,8 @@ class App(QMainWindow):
             loader = FubonSymbolInfoLoader(broker)
             snapshot_cache = MarketSnapshotCache()
             symbol_infos = {}
+            all_infos = {}
+            api_loaded = False
 
             # 收盤後使用零波動的快照條件（不限昨量），盤中沿用原始 crit
             preview_crit = crit
@@ -1750,23 +1752,25 @@ class App(QMainWindow):
                     max_prior_limit_up_streak=crit.max_prior_limit_up_streak,
                 )
 
-            # 統一走 snapshot.quotes(market=...)：每個市場僅 1 次 REST 即可拿到
-            # 昨收/昨量/特殊股旗標，避免逐支呼叫 intraday/ticker/{code}。
-            all_infos = loader.load_market_snapshots(
-                markets=markets,
-                quote_type="COMMONSTOCK",
-                snapshot_cache=snapshot_cache,
-                cache_snapshots=after_close_preview,
-            )
+            try:
+                price_client = PreviousTradingDaysApiClient()
+                all_infos = price_client.load_symbol_infos(markets=markets)
+                api_loaded = True
+                source = "快取" if price_client.last_from_cache else "API"
+                push_log("INFO",
+                    f"前兩個交易日價量已由{source}載入 {len(all_infos)} 支"
+                    f"（as_of={price_client.last_as_of}）",
+                    include_traceback=False)
+            except Exception as e:
+                push_log("WARN",
+                    f"前兩個交易日價量 API 不可用，退回富邦 snapshot：{e}",
+                    include_traceback=False)
 
-            if all_infos:
-                if cfg.f7_enabled and cfg.candle_limit > 0:
-                    snapshot_cache.apply_prior_limit_up_streaks(
-                        all_infos.values(), max_days=cfg.candle_limit)
+            if api_loaded:
                 candidates = scan_preview_candidates(all_infos.values(), preview_crit)
                 if after_close_preview:
                     next_day_exclusions = self._build_next_day_exclusion_rows(
-                        all_infos.values(), crit)
+                        all_infos.values(), crit, already_next_session=True)
                     excluded_codes = {item["code"] for item in next_day_exclusions}
                     if excluded_codes:
                         candidates = [
@@ -1775,13 +1779,36 @@ class App(QMainWindow):
                         ]
                 symbol_infos = {si.code: si for si in candidates}
             else:
-                # 備援：snapshot 不可用時才退回舊的「列代碼 → 逐支查 ticker」流程
-                all_codes = loader.fetch_all_codes(markets=markets)
-                if not all_codes:
-                    return []
-                all_infos = loader.load(all_codes)
-                candidates = scan_preview_candidates(all_infos.values(), crit)
-                symbol_infos = {si.code: si for si in candidates}
+                # API 連線失敗時才退回富邦 snapshot；snapshot 失敗再用舊逐支 ticker 流程。
+                all_infos = loader.load_market_snapshots(
+                    markets=markets,
+                    quote_type="COMMONSTOCK",
+                    snapshot_cache=snapshot_cache,
+                    cache_snapshots=after_close_preview,
+                )
+
+                if all_infos:
+                    if cfg.f7_enabled and cfg.candle_limit > 0:
+                        snapshot_cache.apply_prior_limit_up_streaks(
+                            all_infos.values(), max_days=cfg.candle_limit)
+                    candidates = scan_preview_candidates(all_infos.values(), preview_crit)
+                    if after_close_preview:
+                        next_day_exclusions = self._build_next_day_exclusion_rows(
+                            all_infos.values(), crit)
+                        excluded_codes = {item["code"] for item in next_day_exclusions}
+                        if excluded_codes:
+                            candidates = [
+                                si for si in candidates
+                                if si.code not in excluded_codes
+                            ]
+                    symbol_infos = {si.code: si for si in candidates}
+                else:
+                    all_codes = loader.fetch_all_codes(markets=markets)
+                    if not all_codes:
+                        return []
+                    all_infos = loader.load(all_codes)
+                    candidates = scan_preview_candidates(all_infos.values(), crit)
+                    symbol_infos = {si.code: si for si in candidates}
         else:
             from broker import DEFAULT_MOCK_INFOS
             mock_crit = ScanCriteria(
@@ -1829,18 +1856,21 @@ class App(QMainWindow):
             self._log_next_day_exclusions(next_day_exclusions)
         return summary
 
-    def _build_next_day_exclusion_rows(self, infos, crit) -> list:
+    def _build_next_day_exclusion_rows(self, infos, crit, *, already_next_session: bool = False) -> list:
         if crit.max_prior_limit_up_streak is None:
             return []
 
         from broker import ScanCriteria, scan_daily
-        from broker.universe import build_next_session_symbol_info
 
         next_infos = []
-        for info in infos:
-            next_info = build_next_session_symbol_info(info)
-            if next_info is not None:
-                next_infos.append(next_info)
+        if already_next_session:
+            next_infos = list(infos)
+        else:
+            from broker.universe import build_next_session_symbol_info
+            for info in infos:
+                next_info = build_next_session_symbol_info(info)
+                if next_info is not None:
+                    next_infos.append(next_info)
 
         base_crit = ScanCriteria(
             price_min=crit.price_min,
@@ -2535,7 +2565,11 @@ class App(QMainWindow):
         if broker:
             try:
                 from broker import FUBON_REALTIME_SYMBOL_LIMIT, ScanCriteria, scan_daily
-                from broker.universe import FubonSymbolInfoLoader, MarketSnapshotCache
+                from broker.universe import (
+                    FubonSymbolInfoLoader,
+                    MarketSnapshotCache,
+                    PreviousTradingDaysApiClient,
+                )
 
                 max_prior_streak = (
                     cfg.candle_limit - 1
@@ -2561,49 +2595,65 @@ class App(QMainWindow):
                     loader = FubonSymbolInfoLoader(broker)
                     snapshot_cache = MarketSnapshotCache()
                     all_infos = {}
+                    api_loaded = False
 
-                    # 統一策略：先嘗試 snapshot.quotes(market=...)
-                    # 每個市場僅 1 次 REST 就能拿到全市場昨收/昨量/特殊股旗標，
-                    # 大幅優於先 fetch_all_codes() 再逐支 intraday.ticker(code) 的舊路徑。
                     push_log("INFO",
-                        f"正在透過 snapshot 取得市場 {list(crit.markets)} 全市場個股快照…",
+                        f"正在透過前兩個交易日價量 API 取得市場 {list(crit.markets)} 全市場資料…",
                         include_traceback=False)
-                    all_infos = loader.load_market_snapshots(
-                        markets=crit.markets,
-                        quote_type="COMMONSTOCK",
-                        snapshot_cache=snapshot_cache,
-                        cache_snapshots=self._is_after_market_close(),
-                    )
-                    if all_infos:
+                    try:
+                        price_client = PreviousTradingDaysApiClient()
+                        all_infos = price_client.load_symbol_infos(markets=crit.markets)
+                        api_loaded = True
+                        source = "本地快取" if price_client.last_from_cache else "API"
                         push_log("INFO",
-                            f"snapshot 載入 {len(all_infos)} 支個股資料",
+                            f"前兩個交易日價量已由{source}載入 {len(all_infos)} 支"
+                            f"（as_of={price_client.last_as_of}）",
                             include_traceback=False)
-                        if cfg.f7_enabled and cfg.candle_limit > 0:
-                            updated = snapshot_cache.apply_prior_limit_up_streaks(
-                                all_infos.values(), max_days=cfg.candle_limit)
-                            if updated:
-                                push_log("INFO",
-                                    f"已用本地收盤快照標註 {updated} 支連續漲停天數",
-                                    include_traceback=False)
-                    else:
-                        # 備援：snapshot 失敗時才退回舊路徑（會打 1900+ 次 ticker）
+                    except Exception as e:
                         push_log("WARN",
-                            "snapshot 未取得資料，退回逐支 ticker 模式（較慢）…",
+                            f"前兩個交易日價量 API 不可用，退回富邦 snapshot：{e}",
                             include_traceback=False)
-                        all_codes = loader.fetch_all_codes(markets=list(cfg.get_markets()))
-                        push_log("INFO", f"全市場取得 {len(all_codes)} 支股票代碼", include_traceback=False)
 
-                        if all_codes:
-                            push_log("INFO", "正在批次取得個股基本資料（昨收/漲停/特殊股）…", include_traceback=False)
-                            all_infos = loader.load(all_codes)
-                            push_log("INFO", f"成功載入 {len(all_infos)} 支個股資料", include_traceback=False)
+                    if not api_loaded:
+                        push_log("INFO",
+                            f"正在透過 snapshot 取得市場 {list(crit.markets)} 全市場個股快照…",
+                            include_traceback=False)
+                        all_infos = loader.load_market_snapshots(
+                            markets=crit.markets,
+                            quote_type="COMMONSTOCK",
+                            snapshot_cache=snapshot_cache,
+                            cache_snapshots=self._is_after_market_close(),
+                        )
+                        if all_infos:
+                            push_log("INFO",
+                                f"snapshot 載入 {len(all_infos)} 支個股資料",
+                                include_traceback=False)
+                            if cfg.f7_enabled and cfg.candle_limit > 0:
+                                updated = snapshot_cache.apply_prior_limit_up_streaks(
+                                    all_infos.values(), max_days=cfg.candle_limit)
+                                if updated:
+                                    push_log("INFO",
+                                        f"已用本地收盤快照標註 {updated} 支連續漲停天數",
+                                        include_traceback=False)
                         else:
-                            push_log("WARN", "無法取得全市場代碼，請確認已登入且行情權限正常", include_traceback=False)
+                            # 備援：snapshot 失敗時才退回舊路徑（會打 1900+ 次 ticker）
+                            push_log("WARN",
+                                "snapshot 未取得資料，退回逐支 ticker 模式（較慢）…",
+                                include_traceback=False)
+                            all_codes = loader.fetch_all_codes(markets=list(cfg.get_markets()))
+                            push_log("INFO", f"全市場取得 {len(all_codes)} 支股票代碼", include_traceback=False)
+
+                            if all_codes:
+                                push_log("INFO", "正在批次取得個股基本資料（昨收/漲停/特殊股）…", include_traceback=False)
+                                all_infos = loader.load(all_codes)
+                                push_log("INFO", f"成功載入 {len(all_infos)} 支個股資料", include_traceback=False)
+                            else:
+                                push_log("WARN", "無法取得全市場代碼，請確認已登入且行情權限正常", include_traceback=False)
 
                     if all_infos:
                         # 步驟 2：依設定條件篩選候選股
                         candidates = scan_daily(all_infos.values(), crit)
-                        if cfg.f7_enabled and cfg.candle_limit > 0:
+                        if not api_loaded and cfg.f7_enabled and cfg.candle_limit > 0:
                             missing = [
                                 si for si in candidates
                                 if si.prior_limit_up_streak is None
@@ -2628,6 +2678,9 @@ class App(QMainWindow):
                             f"，昨量 ≥ {crit.min_prev_volume} 張"
                             f"，日漲停序列 ≤ {max_prior_streak + 1 if max_prior_streak is not None else '不限'} 根）",
                             include_traceback=False)
+                    elif api_loaded:
+                        symbol_infos = {}
+                        push_log("WARN", "前兩個交易日價量 API 未回傳可用個股資料", include_traceback=False)
 
                 else:
                     # MockAdapter：使用 DEFAULT_MOCK_INFOS

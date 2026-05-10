@@ -126,7 +126,7 @@ class TradingEngine:
         # ── 篩選市場 ─────────────────────────────────────────
         markets = config.get_markets()
 
-        if symbol_infos:
+        if symbol_infos is not None:
             # Milestone 3：使用 broker.load_symbol_info() 提供的真實基本資料
             for code, si in symbol_infos.items():
                 if si.market not in markets:

@@ -14,6 +14,8 @@ from broker.universe import (  # noqa: E402
     DEFAULT_MOCK_INFOS,
     FubonSymbolInfoLoader,
     MarketSnapshotCache,
+    PreviousTradingDaysApiClient,
+    PreviousTradingDaysCache,
     ScanCriteria,
     StaticSymbolInfoLoader,
     build_symbol_info,
@@ -335,6 +337,82 @@ class TestFubonMarketSnapshots(unittest.TestCase):
             [info.code for info in scan_preview_candidates(infos, crit)],
             ["1111"],
         )
+
+
+class TestPreviousTradingDaysApi(unittest.TestCase):
+    def test_default_api_url_is_production_endpoint(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            client = PreviousTradingDaysApiClient(
+                cache=PreviousTradingDaysCache(os.path.join(tmpdir, "previous.json")),
+            )
+
+        self.assertEqual(
+            client.base_url,
+            "https://stock.try-8verything.com/api/prices/previous-trading-days",
+        )
+
+    def test_load_symbol_infos_fetches_once_and_reuses_daily_cache(self):
+        payload = {
+            "as_of": "2026-05-10",
+            "count": 2,
+            "data": [
+                {
+                    "symbol": "1111",
+                    "name": "甲",
+                    "market": "TWSE",
+                    "data": [
+                        {"date": "2026-05-08", "close": "110", "volume": "2000"},
+                        {"date": "2026-05-07", "close": "100", "volume": "1500"},
+                    ],
+                },
+                {
+                    "symbol": "2222",
+                    "name": "乙",
+                    "market": "TPEX",
+                    "data": [
+                        {"date": "2026-05-08", "close": "80", "volume": "900"},
+                        {"date": "2026-05-07", "close": "82", "volume": "800"},
+                    ],
+                },
+            ],
+        }
+
+        class FakeClient(PreviousTradingDaysApiClient):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.calls = []
+
+            def _fetch_json(self, url: str) -> dict:
+                self.calls.append(url)
+                return payload
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache_path = os.path.join(tmpdir, "previous.json")
+            client = FakeClient(
+                "http://example.test/api/prices/previous-trading-days",
+                cache=PreviousTradingDaysCache(cache_path),
+            )
+
+            infos = client.load_symbol_infos(["TSE"], as_of="2026-05-10")
+
+            self.assertFalse(client.last_from_cache)
+            self.assertEqual(len(client.calls), 1)
+            self.assertIn("as_of=2026-05-10", client.calls[0])
+            self.assertEqual(list(infos.keys()), ["1111"])
+            self.assertEqual(infos["1111"].prev_close, Decimal("110"))
+            self.assertEqual(infos["1111"].quote_price, Decimal("110"))
+            self.assertEqual(infos["1111"].prev_volume, 2000)
+            self.assertEqual(infos["1111"].prior_limit_up_streak, 1)
+
+            cached_client = FakeClient(
+                "http://example.test/api/prices/previous-trading-days",
+                cache=PreviousTradingDaysCache(cache_path),
+            )
+            cached_infos = cached_client.load_symbol_infos(["TSE", "OTC"], as_of="2026-05-10")
+
+            self.assertTrue(cached_client.last_from_cache)
+            self.assertEqual(cached_client.calls, [])
+            self.assertEqual(set(cached_infos.keys()), {"1111", "2222"})
 
 
 if __name__ == "__main__":

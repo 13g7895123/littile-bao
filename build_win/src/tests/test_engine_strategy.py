@@ -132,6 +132,18 @@ class TestTradingEngineStrategyRules(unittest.TestCase):
         self.assertTrue(any("策略=MANUAL_ALL" in msg for _level, msg in logs))
         self.assertEqual(strategy_events[-1]["strategy"], "MANUAL_ALL")
 
+    def test_empty_symbol_infos_does_not_fallback_to_mock_stocks(self):
+        cfg = TradingConfig()
+        engine = TradingEngine(
+            cfg,
+            on_log=lambda _level, _msg: None,
+            on_trade=lambda _trade: None,
+            on_status=lambda _summary: None,
+            symbol_infos={},
+        )
+
+        self.assertEqual(engine._states, {})
+
 
 if __name__ == "__main__":
     unittest.main()

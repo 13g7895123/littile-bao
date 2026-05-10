@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import json
 import os
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Dict, Iterable, List, Optional, Sequence
 
@@ -137,6 +139,31 @@ def _default_snapshot_cache_path() -> str:
     else:
         base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     return os.path.join(base, "cache", "market_snapshots.json")
+
+
+def _default_previous_trading_days_cache_path() -> str:
+    if getattr(__import__("sys"), "frozen", False):
+        base = os.path.dirname(__import__("sys").executable)
+    else:
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, "cache", "previous_trading_days.json")
+
+
+_TAIPEI_TZ = timezone(timedelta(hours=8))
+PREVIOUS_TRADING_DAYS_API_URL = "https://stock.try-8verything.com/api/prices/previous-trading-days"
+
+
+def _today_taipei_iso() -> str:
+    return datetime.now(_TAIPEI_TZ).date().isoformat()
+
+
+def _normalize_market(raw: object, *, fallback: str = "TSE") -> str:
+    text = str(raw or fallback or "TSE").strip()
+    upper = text.upper()
+    lower = text.lower()
+    if "OTC" in upper or "TPEX" in upper or "tpex" in lower:
+        return "OTC"
+    return "TSE"
 
 
 class MarketSnapshotCache:
@@ -295,6 +322,214 @@ class MarketSnapshotCache:
             return date.fromisoformat(text).isoformat()
         except Exception:
             return ""
+
+
+class PreviousTradingDaysCache:
+    """全市場前兩個交易日價量 API 的每日查詢快取。"""
+
+    def __init__(self, path: str = "") -> None:
+        self.path = path or _default_previous_trading_days_cache_path()
+        self._queries: Dict[str, dict] = {}
+        self._load()
+
+    def _load(self) -> None:
+        if not os.path.exists(self.path):
+            return
+        try:
+            with open(self.path, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+            queries = raw.get("queries", {}) if isinstance(raw, dict) else {}
+            if isinstance(queries, dict):
+                self._queries = {
+                    str(as_of): entry
+                    for as_of, entry in queries.items()
+                    if isinstance(entry, dict)
+                }
+        except Exception:
+            self._queries = {}
+
+    def get_payload(self, as_of: str) -> Optional[dict]:
+        day = MarketSnapshotCache._normalize_date(as_of)
+        if not day:
+            return None
+        entry = self._queries.get(day)
+        if not isinstance(entry, dict):
+            return None
+        if entry.get("queried_on") != _today_taipei_iso():
+            return None
+        payload = entry.get("payload")
+        return payload if isinstance(payload, dict) else None
+
+    def store_payload(self, as_of: str, payload: dict, *, keep_days: int = 20) -> None:
+        day = MarketSnapshotCache._normalize_date(as_of)
+        if not day or not isinstance(payload, dict):
+            return
+        self._queries[day] = {
+            "queried_on": _today_taipei_iso(),
+            "fetched_at": datetime.now(_TAIPEI_TZ).isoformat(timespec="seconds"),
+            "payload": payload,
+        }
+        self.save(keep_days=keep_days)
+
+    def save(self, *, keep_days: int = 20) -> None:
+        dates = sorted(self._queries.keys())
+        if keep_days > 0 and len(dates) > keep_days:
+            keep = set(dates[-keep_days:])
+            self._queries = {
+                day: entry for day, entry in self._queries.items()
+                if day in keep
+            }
+        os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        payload = {"version": 1, "queries": self._queries}
+        with open(self.path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2, sort_keys=True)
+
+
+class PreviousTradingDaysApiClient:
+    """呼叫全市場前兩個交易日價量 API，並轉為 SymbolInfo。"""
+
+    def __init__(
+        self,
+        base_url: str = "",
+        *,
+        cache: Optional[PreviousTradingDaysCache] = None,
+        timeout_sec: float = 10.0,
+    ) -> None:
+        self.base_url = (base_url or PREVIOUS_TRADING_DAYS_API_URL).strip()
+        self.timeout_sec = timeout_sec
+        self.cache = cache or PreviousTradingDaysCache()
+        self.last_from_cache = False
+        self.last_as_of = ""
+        self.last_count = 0
+
+    def load_symbol_infos(
+        self,
+        markets: Iterable[str] = ("TSE", "OTC"),
+        *,
+        as_of: str = "",
+    ) -> Dict[str, SymbolInfo]:
+        query_day = MarketSnapshotCache._normalize_date(as_of) or _today_taipei_iso()
+        self.last_as_of = query_day
+        self.last_from_cache = False
+
+        payload = self.cache.get_payload(query_day)
+        if payload is not None:
+            self.last_from_cache = True
+        else:
+            payload = self._fetch_json(self._build_url(query_day))
+            self.cache.store_payload(query_day, payload)
+
+        infos = self.parse_payload(payload, markets=markets)
+        self.last_count = len(infos)
+        return infos
+
+    def _build_url(self, as_of: str) -> str:
+        params = urllib.parse.urlencode({"as_of": as_of})
+        separator = "&" if "?" in self.base_url else "?"
+        return f"{self.base_url}{separator}{params}"
+
+    def _fetch_json(self, url: str) -> dict:
+        request = urllib.request.Request(url, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(request, timeout=self.timeout_sec) as response:
+            raw = response.read().decode("utf-8")
+        payload = json.loads(raw)
+        if not isinstance(payload, dict):
+            raise ValueError("previous trading days API response must be an object")
+        if payload.get("error"):
+            raise ValueError(str(payload.get("error")))
+        return payload
+
+    @classmethod
+    def parse_payload(
+        cls,
+        payload: dict,
+        *,
+        markets: Iterable[str] = ("TSE", "OTC"),
+    ) -> Dict[str, SymbolInfo]:
+        allowed_markets = {_normalize_market(m) for m in (list(markets) or ["TSE", "OTC"])}
+        items = payload.get("data") if isinstance(payload, dict) else []
+        if not isinstance(items, list):
+            return {}
+
+        out: Dict[str, SymbolInfo] = {}
+        for item in items:
+            info = cls._parse_symbol_item(item, allowed_markets)
+            if info is not None:
+                out[info.code] = info
+        return out
+
+    @classmethod
+    def _parse_symbol_item(
+        cls,
+        item: object,
+        allowed_markets: set,
+    ) -> Optional[SymbolInfo]:
+        if not isinstance(item, dict):
+            return None
+
+        code = str(item.get("symbol") or item.get("code") or "").strip()
+        if not code:
+            return None
+
+        market = _normalize_market(item.get("market"), fallback="TSE")
+        if market not in allowed_markets:
+            return None
+
+        rows = cls._parse_price_rows(item.get("data"))
+        if not rows:
+            return None
+
+        latest = rows[0]
+        prior = rows[1] if len(rows) > 1 else None
+        prior_streak: Optional[int] = None
+        if prior is not None:
+            prior_streak = 1 if is_limit_up_close(latest[1], prior[1]) else 0
+
+        return build_symbol_info(
+            code=code,
+            name=str(item.get("name") or code),
+            market=market,
+            prev_close=latest[1],
+            quote_price=latest[1],
+            prev_volume=latest[2],
+            prior_limit_up_streak=prior_streak,
+        )
+
+    @classmethod
+    def _parse_price_rows(cls, raw_rows: object) -> List[tuple[str, Decimal, int]]:
+        if not isinstance(raw_rows, list):
+            return []
+        rows: List[tuple[str, Decimal, int]] = []
+        for row in raw_rows:
+            if not isinstance(row, dict):
+                continue
+            day = MarketSnapshotCache._normalize_date(
+                row.get("date") or row.get("tradeDate"))
+            close_price = cls._decimal_value(row.get("close") or row.get("closePrice"))
+            if not day or close_price is None:
+                continue
+            rows.append((day, close_price, cls._int_value(row.get("volume"))))
+        rows.sort(key=lambda record: record[0], reverse=True)
+        return rows
+
+    @staticmethod
+    def _decimal_value(raw: object) -> Optional[Decimal]:
+        if raw in (None, "", "-"):
+            return None
+        try:
+            value = Decimal(str(raw))
+        except Exception:
+            return None
+        return value if value > 0 else None
+
+    @staticmethod
+    def _int_value(raw: object) -> int:
+        if raw in (None, "", "-"):
+            return 0
+        try:
+            return int(Decimal(str(raw)))
+        except Exception:
+            return 0
 
 
 # ─────────────────────────────────────────────────────────
