@@ -430,8 +430,19 @@ class PreviousTradingDaysApiClient:
         separator = "&" if "?" in self.base_url else "?"
         return f"{self.base_url}{separator}{params}"
 
+    @staticmethod
+    def _request_headers() -> dict:
+        return {
+            "Accept": "application/json",
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0 Safari/537.36"
+            ),
+        }
+
     def _fetch_json(self, url: str) -> dict:
-        request = urllib.request.Request(url, headers={"Accept": "application/json"})
+        request = urllib.request.Request(url, headers=self._request_headers())
         with urllib.request.urlopen(request, timeout=self.timeout_sec) as response:
             raw = response.read().decode("utf-8")
         payload = json.loads(raw)

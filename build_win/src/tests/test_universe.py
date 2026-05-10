@@ -351,6 +351,12 @@ class TestPreviousTradingDaysApi(unittest.TestCase):
             "https://stock.try-8verything.com/api/prices/previous-trading-days",
         )
 
+    def test_api_request_uses_browser_user_agent(self):
+        headers = PreviousTradingDaysApiClient._request_headers()
+
+        self.assertEqual(headers["Accept"], "application/json")
+        self.assertIn("Mozilla/5.0", headers["User-Agent"])
+
     def test_load_symbol_infos_fetches_once_and_reuses_daily_cache(self):
         payload = {
             "as_of": "2026-05-10",
