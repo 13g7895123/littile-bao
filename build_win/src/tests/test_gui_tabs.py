@@ -292,6 +292,15 @@ class TestGuiTabLayout(unittest.TestCase):
         self.assertEqual(self.win.monitor_table.item(0, 8).text(), "收盤漲停")
         self.assertEqual(self.win.monitor_table.item(0, 9).text(), "明日觀察")
 
+    def test_weekend_is_treated_as_after_market_close(self):
+        sunday_morning = gui.datetime(2026, 5, 10, 9, 57)
+        monday_morning = gui.datetime(2026, 5, 11, 9, 57)
+        monday_close = gui.datetime(2026, 5, 11, 13, 30)
+
+        self.assertTrue(self.win._is_after_market_close(sunday_morning))
+        self.assertFalse(self.win._is_after_market_close(monday_morning))
+        self.assertTrue(self.win._is_after_market_close(monday_close))
+
     def test_after_close_fubon_preview_uses_close_price_range(self):
         class FakeSnapshot:
             def __init__(self):

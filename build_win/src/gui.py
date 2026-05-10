@@ -1951,6 +1951,8 @@ class App(QMainWindow):
 
     def _is_after_market_close(self, now: Optional[datetime] = None) -> bool:
         current = now or datetime.now()
+        if current.weekday() >= 5:
+            return True
         return current.time() >= dtime(13, 30)
 
     def _dashboard_broker_key(self, broker) -> str:
