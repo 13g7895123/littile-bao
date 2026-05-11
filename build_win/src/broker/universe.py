@@ -1145,14 +1145,24 @@ def scan_daily(
     infos: Iterable[SymbolInfo],
     criteria: Optional[ScanCriteria] = None,
 ) -> List[SymbolInfo]:
-    """從 infos（通常為全市場 SymbolInfo）篩出符合條件的候選清單。"""
+    """從 infos（通常為全市場 SymbolInfo）篩出符合條件的候選清單。
+
+    價格區間以「昨收 ± 10%」放寬判斷，涵蓋所有「即時價有機會落在 [price_min, price_max]」的標的；
+    實際的即時價過濾由 engine.get_summary() / GUI 顯示層用 last_price 動態執行。
+    """
     crit = criteria or ScanCriteria()
     markets = set(crit.markets)
+    # 區間放寬係數：股票單日最多漲跌停 ±10%，所以昨收 *0.9 ~ *1.1 即可涵蓋所有可能進區間的標的
+    EXPAND = Decimal("0.1")
+    relaxed_min = crit.price_min * (Decimal("1") - EXPAND)
+    relaxed_max = crit.price_max * (Decimal("1") + EXPAND)
     out: List[SymbolInfo] = []
     for si in infos:
         if si.market not in markets:
             continue
-        if not (crit.price_min <= si.limit_up_price <= crit.price_max):
+        # 用昨收（prev_close）判斷，而非漲停價
+        ref_price = si.prev_close if si.prev_close and si.prev_close > 0 else si.limit_up_price
+        if not (relaxed_min <= ref_price <= relaxed_max):
             continue
         if si.prev_volume < crit.min_prev_volume:
             continue

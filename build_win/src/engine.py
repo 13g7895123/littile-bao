@@ -249,6 +249,23 @@ class TradingEngine:
             elif n % 1000 == 0:
                 self.on_log("DEBUG",
                     f"[Engine] tick 累計 {n} 筆，最新={ev.code} {ev.price}")
+
+            # ── 防呆：忽略 price <= 0 或 vol <= 0 的無效 tick（盤前試撮 / 欄位缺漏）──
+            try:
+                price_zero = ev.price is None or Decimal(str(ev.price)) <= 0
+            except Exception:
+                price_zero = True
+            if price_zero:
+                # 不更新 last_price、不放進 1 秒量視窗，但仍記錄以利除錯
+                self._tick_invalid_count = getattr(self, "_tick_invalid_count", 0) + 1
+                if self._tick_invalid_count <= 3 or self._tick_invalid_count % 500 == 0:
+                    self.on_log(
+                        "WARN",
+                        f"[Engine._on_tick] 忽略無效 tick：code={ev.code} price={ev.price} "
+                        f"vol={ev.volume}（共 {self._tick_invalid_count} 筆）"
+                    )
+                return
+
             now = time.time()
             # 1 秒滑動視窗
             state.tick_vols.append((now, int(ev.volume)))
@@ -731,16 +748,33 @@ class TradingEngine:
     def get_summary(self) -> List[dict]:
         with self._lock:
             result = []
+            cfg = self.config
+            # f9（價格區間）相關設定
+            f9_on = bool(getattr(cfg, "f9_enabled", False))
+            pmin = float(getattr(cfg, "price_min", 0) or 0)
+            pmax = float(getattr(cfg, "price_max", 0) or 0)
             for code, s in self._states.items():
                 # 價格與漲跌計算
                 price = float(s.last_price) if s.last_price is not None else None
+                # 防呆：price <= 0 視為無價（盤前 / 試撮 / 欄位異常）
+                if price is not None and price <= 0:
+                    price = None
                 prev_close = s.info.prev_close  # float
+                # ── 規則：price 永遠保留最後一次有效 socket 價 ──
+                # 尚未收到有效 tick → price=None（UI 顯示「—」），不 fallback 到昨收
                 if price is not None and prev_close:
                     change = round(price - prev_close, 2)
                     change_pct = round(change / prev_close * 100, 2)
                 else:
                     change = None
                     change_pct = None
+
+                # ── F9：盤中以「即時價」判斷是否在區間內；無即時價時以昨收參考 ──
+                out_of_range = False
+                if f9_on and pmax > 0:
+                    ref = price if price is not None else (prev_close or 0)
+                    if ref <= 0 or not (pmin <= ref <= pmax):
+                        out_of_range = True
 
                 result.append({
                     "code":       code,
@@ -759,5 +793,6 @@ class TradingEngine:
                     "change_pct": change_pct,     # 漲跌幅 %
                     "ask_qty":    s.ask_qty_at_limit,  # 漲停委賣張數
                     "is_at_limit_up": s.is_at_limit_up,
+                    "out_of_range": out_of_range,  # F9 即時價過濾旗標（True = 該檔被排除顯示）
                 })
             return result

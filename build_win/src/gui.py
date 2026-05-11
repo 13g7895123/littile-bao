@@ -2261,12 +2261,26 @@ class App(QMainWindow):
                     push_log("INFO", "實體 log 檔記錄已停用", include_traceback=False)
                 configure_runtime_logging(False)
                 log_path = None
+            # ── 熱套用：策略執行中時，直接更新 engine 內部設定（不需停用再啟用）──
+            applied_live = False
+            if self._running and self.engine is not None:
+                try:
+                    self.engine.config = new_cfg
+                    applied_live = True
+                    push_log("INFO",
+                        "設定已熱套用至執行中的策略（價格區間 / 各功能開關 / 數值閾值即時生效；"
+                        "訂閱範圍仍以本次啟動時的清單為準）",
+                        include_traceback=False)
+                except Exception as e:
+                    push_log("WARN", f"設定熱套用失敗：{e}")
             if self.broker is not None and not self._running:
                 self._dashboard_preview_summary = []
                 self._dashboard_preview_broker_key = ""
                 self._render_monitor([])
                 self._preload_dashboard_preview_async()
             message = "設定已儲存！"
+            if applied_live:
+                message += "\n（已即時套用至執行中的策略）"
             if log_path:
                 message += f"\nlog 檔案：{log_path}"
             QMessageBox.information(self, "儲存成功", message)
@@ -3317,6 +3331,17 @@ class App(QMainWindow):
             "明日候選": C["badge_ready"],
             "明日排除": C["badge_cancel"],
         }
+
+        # ── F9 即時價過濾：將不在 price_min ~ price_max 區間的標的剔除顯示 ──
+        # （訂閱階段已用昨收 ±10% 放寬，這裡用即時價收斂回真正區間）
+        # 注意：保留「次日排除 / 收盤檢視」這類資訊性項目，避免使用者誤以為遺失。
+        if summary:
+            summary = [
+                s for s in summary
+                if (not s.get("out_of_range"))
+                or s.get("next_day_excluded")
+                or self._is_after_close_monitor_item(s)
+            ]
 
         threshold = self.cfg.volume_spike_sell_threshold
         pos_cnt = 0

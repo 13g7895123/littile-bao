@@ -572,6 +572,14 @@ class FubonRealtimeFeed(RealtimeFeed):
         has_tick_fields = ("price" in data and ("size" in data or "volume" in data)) \
                           and not ("asks" in data or "bids" in data or "ask" in data or "bid" in data)
         if is_trade_event or is_trade_type or has_tick_fields:
+            # ── 首 3 筆 trade 原始資料 dump（除錯用，幫忙確認 SDK 欄位名稱）──
+            self._trade_dump_count = getattr(self, "_trade_dump_count", 0) + 1
+            if self._trade_dump_count <= 3:
+                self._log(
+                    "DEBUG",
+                    f"[FubonFeed] 第 {self._trade_dump_count} 筆 trade 原始 data "
+                    f"keys={list(data.keys())} sample={str(data)[:300]}"
+                )
             tick = self._to_tick(data)
             if not tick.code:
                 self._empty_code_count += 1
@@ -580,6 +588,15 @@ class FubonRealtimeFeed(RealtimeFeed):
                         "WARN",
                         f"[FubonFeed] tick code 解析為空（共 {self._empty_code_count} 次）"
                         f"，data keys={list(data.keys())} sample={str(data)[:200]}"
+                    )
+            elif tick.price is None or tick.price <= 0:
+                # 解析成功但價格為 0：常見於盤前試撮，仍 emit 讓 engine 自己過濾
+                self._tick_zero_price_count = getattr(self, "_tick_zero_price_count", 0) + 1
+                if self._tick_zero_price_count <= 3 or self._tick_zero_price_count % 200 == 0:
+                    self._log(
+                        "WARN",
+                        f"[FubonFeed] tick price=0 解析（共 {self._tick_zero_price_count} 筆）"
+                        f" code={tick.code} data keys={list(data.keys())} sample={str(data)[:200]}"
                     )
             else:
                 self._tick_emit_count += 1
