@@ -1,0 +1,10 @@
+﻿[StockTrader] Python version: 3.11.5 (tags/v3.11.5:cce6ba9, Aug 24 2023, 14:38:34) [MSC v.1936 64 bit (AMD64)]
+[StockTrader] sys.frozen: False
+[StockTrader] exe path: c:\Jarvis\15_bonus\01_littile-bao\build_win\src\main.py
+[StockTrader] File logging: c:\Jarvis\15_bonus\01_littile-bao\build_win\src\log\program.log.20260511
+[StockTrader] Importing modules...
+[StockTrader] config OK
+[StockTrader] engine OK
+[StockTrader] gui OK
+[StockTrader] 未備齊富邦券商設定 → 啟用 MockAdapter
+[StockTrader] Starting GUI...
