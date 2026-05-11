@@ -276,6 +276,7 @@ class FubonRealtimeFeed(RealtimeFeed):
         self._book_emit_count: int = 0      # 成功 emit 的 book 數
         self._unknown_msg_count: int = 0    # 無法識別的訊息數
         self._empty_code_count: int = 0     # code 解析為空字串的次數
+        self._event_name_stats: Dict[str, int] = {}  # event 名稱頻率統計
 
     @property
     def max_symbols(self) -> int:
@@ -486,6 +487,11 @@ class FubonRealtimeFeed(RealtimeFeed):
                 f"[FubonFeed] 累計收訊 {n} 筆 "
                 f"（tick_emit={self._tick_emit_count}, book_emit={self._book_emit_count}, "
                 f"unknown={self._unknown_msg_count}, empty_code={self._empty_code_count}）")
+            # 同時印出未識別 event 名稱的次數統計，協助找出真正的 trade event 名
+            if self._event_name_stats:
+                top = sorted(self._event_name_stats.items(), key=lambda kv: -kv[1])[:8]
+                self._log("DEBUG",
+                    f"[FubonFeed] event 統計 top8 = {top}")
 
         try:
             payload = self._extract_payload(msg)
@@ -494,7 +500,16 @@ class FubonRealtimeFeed(RealtimeFeed):
                     self._log("DEBUG", f"[FubonFeed] 第 {n} 筆訊息 _extract_payload 回傳空值，略過")
                 return
 
-            event = str(payload.get("event") or payload.get("channel") or "").lower()
+            # ── 抽取 event / channel 名稱（富邦：event='data', channel='trades' or 'books'）──
+            raw_event = str(payload.get("event") or "").lower()
+            raw_channel = str(payload.get("channel") or "").lower()
+            # 統計 event 名稱頻率
+            stat_key = f"{raw_event}|{raw_channel}" if raw_channel else raw_event
+            self._event_name_stats[stat_key] = self._event_name_stats.get(stat_key, 0) + 1
+
+            # 富邦標準格式：event='data' + channel='trades'|'books'，用 channel 取代 event 來判斷
+            event = raw_channel or raw_event
+
             data = payload.get("data")
             if isinstance(data, list):
                 for item in data:
@@ -544,6 +559,12 @@ class FubonRealtimeFeed(RealtimeFeed):
         if not isinstance(data, dict):
             return
         type_ = str(data.get("type") or "").lower()
+
+        # ── 控制 / metadata 訊息（不算 unknown） ─────────────
+        # 富邦初始會推 ticker (個股基本資料)、subscribed (訂閱確認)、authenticated、heartbeat、pong
+        if event in ("authenticated", "heartbeat", "pong", "subscribed",
+                     "unsubscribed", "ticker", "error", "info"):
+            return
 
         # ── 判斷是否為 tick（成交） ──
         is_trade_event = event in ("trades", "trade")
