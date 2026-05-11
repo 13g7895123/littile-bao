@@ -122,6 +122,10 @@ class TradingEngine:
         self._daily_trade_count: int = 0   # 功能 13：當天已成交檔數
         self._today_realized_pnl: Decimal = Decimal("0")  # M4：當日已實現損益
         self._trading_date: date = date.today()  # 跨日重置使用
+        # ── 診斷計數器 ─────────────────────────────────────
+        self._tick_recv_count: int = 0   # engine 收到的 tick 總數
+        self._book_recv_count: int = 0   # engine 收到的 book 總數
+        self._tick_miss_count: int = 0   # tick.code 不在 _states 的次數
 
         # ── 篩選市場 ─────────────────────────────────────────
         markets = config.get_markets()
@@ -172,6 +176,9 @@ class TradingEngine:
                     )
                     for code, s in self._states.items()
                 }
+                # 注入 log callback，讓 FubonRealtimeFeed 的診斷訊息進 GUI log
+                if hasattr(self.feed, "set_log_callback"):
+                    self.feed.set_log_callback(self.on_log)
                 self.feed.on_tick(self._on_tick)
                 self.feed.on_book(self._on_book)
                 self.feed.subscribe(list(self._states.keys()), meta)
@@ -222,10 +229,26 @@ class TradingEngine:
 
     def _on_tick(self, ev) -> None:
         """RealtimeFeed 每筆 tick 推送進來。"""
+        self._tick_recv_count += 1
+        n = self._tick_recv_count
         with self._lock:
             state = self._states.get(ev.code)
             if state is None:
+                self._tick_miss_count += 1
+                if self._tick_miss_count <= 3 or self._tick_miss_count % 100 == 0:
+                    known_sample = list(self._states.keys())[:5]
+                    self.on_log(
+                        "WARN",
+                        f"[Engine._on_tick] code={ev.code!r} 不在監控清單（共誤 {self._tick_miss_count} 次）"
+                        f"，監控清單前5支={known_sample}"
+                    )
                 return
+            if n == 1:
+                self.on_log("INFO",
+                    f"[Engine] 第 1 筆 tick 已進入引擎！code={ev.code} price={ev.price} vol={ev.volume}")
+            elif n % 1000 == 0:
+                self.on_log("DEBUG",
+                    f"[Engine] tick 累計 {n} 筆，最新={ev.code} {ev.price}")
             now = time.time()
             # 1 秒滑動視窗
             state.tick_vols.append((now, int(ev.volume)))

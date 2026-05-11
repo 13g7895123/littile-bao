@@ -593,7 +593,7 @@ class App(QMainWindow):
         row = QHBoxLayout()
         row.addWidget(_label("啟用策略", C["text"], 10))
         row.addStretch()
-        tog = ToggleButton(initial=True)
+        tog = ToggleButton(initial=False)
         tog.toggled.connect(self._on_strategy_toggle)
         self._toggles["strategy_enabled"] = tog
         row.addWidget(tog)

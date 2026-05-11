@@ -10,6 +10,7 @@ Engine 端只需註冊 callback，無需區分資料來源。
 from __future__ import annotations
 
 import json
+import logging
 import random
 import threading
 import time
@@ -21,6 +22,10 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .errors import FubonNetworkError, FubonNotLoggedInError
 from .models import BookEvent, BookLevel, TickEvent
+
+# ── 模組層級 logger（不干擾 GUI log，寫到 Python logging 體系）──────────
+_logger = logging.getLogger("broker.realtime")
+_logger.setLevel(logging.DEBUG)  # 確保 DEBUG 訊息不被過濾（root handler 可另行設定）
 
 TickCallback = Callable[[TickEvent], None]
 BookCallback = Callable[[BookEvent], None]
@@ -45,12 +50,30 @@ class RealtimeFeed(ABC):
     def __init__(self) -> None:
         self._tick_cb: Optional[TickCallback] = None
         self._book_cb: Optional[BookCallback] = None
+        self._log_cb: Optional[Callable[[str, str], None]] = None  # (level, msg)
 
     def on_tick(self, cb: TickCallback) -> None:
         self._tick_cb = cb
 
     def on_book(self, cb: BookCallback) -> None:
         self._book_cb = cb
+
+    def set_log_callback(self, cb: Callable[[str, str], None]) -> None:
+        """注入 log callback（level, msg），供 GUI push_log 使用。"""
+        self._log_cb = cb
+
+    def _log(self, level: str, msg: str) -> None:
+        """同時送往 Python logger 與注入的 GUI callback。"""
+        _logger.log(
+            {"DEBUG": logging.DEBUG, "INFO": logging.INFO,
+             "WARN": logging.WARNING, "ERROR": logging.ERROR}.get(level, logging.DEBUG),
+            msg,
+        )
+        if self._log_cb is not None:
+            try:
+                self._log_cb(level, msg)
+            except Exception:  # noqa: BLE001
+                pass
 
     @abstractmethod
     def start(self) -> None: ...
@@ -71,14 +94,14 @@ class RealtimeFeed(ABC):
             try:
                 self._tick_cb(ev)
             except Exception as e:  # noqa: BLE001
-                print(f"[Realtime] tick callback error: {e}")
+                self._log("ERROR", f"[Realtime] tick callback error: {e}")
 
     def _emit_book(self, ev: BookEvent) -> None:
         if self._book_cb is not None:
             try:
                 self._book_cb(ev)
             except Exception as e:  # noqa: BLE001
-                print(f"[Realtime] book callback error: {e}")
+                self._log("ERROR", f"[Realtime] book callback error: {e}")
 
 
 @dataclass
@@ -247,6 +270,12 @@ class FubonRealtimeFeed(RealtimeFeed):
         self._sdk_token: Optional[str] = None
         self._started = False
         self._lock = threading.Lock()
+        # ── 診斷計數器 ──────────────────────────────
+        self._raw_msg_count: int = 0        # 收到的原始訊息數
+        self._tick_emit_count: int = 0      # 成功 emit 的 tick 數
+        self._book_emit_count: int = 0      # 成功 emit 的 book 數
+        self._unknown_msg_count: int = 0    # 無法識別的訊息數
+        self._empty_code_count: int = 0     # code 解析為空字串的次數
 
     @property
     def max_symbols(self) -> int:
@@ -256,13 +285,15 @@ class FubonRealtimeFeed(RealtimeFeed):
         unique_codes = list(dict.fromkeys(codes))
         max_symbols = self.max_symbols
         if len(unique_codes) > max_symbols:
-            print(
+            self._log(
+                "WARN",
                 f"[FubonFeed] realtime symbols capped at {max_symbols}; "
                 f"requested={len(unique_codes)}"
             )
             unique_codes = unique_codes[:max_symbols]
         with self._lock:
             self._subscribed = unique_codes
+        self._log("INFO", f"[FubonFeed] subscribe() 登記 {len(unique_codes)} 支股票代碼")
         if self._started:
             self._do_subscribe()
 
@@ -274,15 +305,18 @@ class FubonRealtimeFeed(RealtimeFeed):
         except FubonNotLoggedInError:
             raise
         try:
+            self._log("INFO", f"[FubonFeed] 啟動中，模式={self._mode}，channels={self._channels}")
             init_rt = getattr(sdk, "init_realtime", None)
             if callable(init_rt):
                 try:
                     init_rt(self._resolve_mode())
                 except ImportError:
                     init_rt()
+                self._log("INFO", "[FubonFeed] init_realtime() 完成")
 
             self._ensure_ws_clients(sdk, self._required_connection_count())
             self._started = True
+            self._log("INFO", f"[FubonFeed] WebSocket clients 建立完成，共 {len(self._ws_clients)} 條連線")
             if self._subscribed:
                 self._do_subscribe()
         except FubonNetworkError:
@@ -311,11 +345,12 @@ class FubonRealtimeFeed(RealtimeFeed):
 
     def _do_subscribe(self) -> None:
         if not self._ws_clients:
+            self._log("WARN", "[FubonFeed] _do_subscribe() 但 _ws_clients 為空，略過")
             return
         try:
             self._ensure_ws_clients(self._adapter.sdk, self._required_connection_count())
         except Exception as e:  # noqa: BLE001
-            print(f"[FubonFeed] websocket client expand failed: {e}")
+            self._log("ERROR", f"[FubonFeed] websocket client expand failed: {e}")
             return
 
         chunks = self._symbol_chunks()
@@ -324,17 +359,23 @@ class FubonRealtimeFeed(RealtimeFeed):
             ws = self._ws_clients[index]
             sub = getattr(ws, "subscribe", None)
             if not callable(sub):
-                print(f"[FubonFeed] websocket #{index + 1} has no subscribe()")
+                self._log("WARN", f"[FubonFeed] websocket #{index + 1} has no subscribe()")
                 continue
             try:
                 for channel in self._channels:
                     sub({"channel": channel, "symbols": chunk})
                 ok_chunks += 1
+                self._log(
+                    "DEBUG",
+                    f"[FubonFeed] ws#{index+1} 訂閱 channels={self._channels} "
+                    f"前3支={chunk[:3]}… 共{len(chunk)}支",
+                )
             except Exception as e:  # noqa: BLE001
-                print(f"[FubonFeed] subscribe error ws=#{index + 1} chunk={chunk[:3]}…: {e}")
-        print(
-            f"[FubonFeed] subscribed: {len(self._subscribed)} symbols "
-            f"across {ok_chunks} connection(s), channels={','.join(self._channels)}"
+                self._log("ERROR", f"[FubonFeed] subscribe error ws=#{index + 1} chunk={chunk[:3]}…: {e}")
+        self._log(
+            "INFO",
+            f"[FubonFeed] 訂閱完成：{len(self._subscribed)} 支 × {len(self._channels)} channels"
+            f"，{ok_chunks}/{len(chunks)} 條連線成功"
         )
 
     def _symbols_per_connection(self) -> int:
@@ -361,6 +402,7 @@ class FubonRealtimeFeed(RealtimeFeed):
             connect = getattr(ws, "connect", None)
             if callable(connect):
                 connect()
+                self._log("INFO", f"[FubonFeed] ws#{index+1} connect() 已呼叫")
             self._ws_clients.append(ws)
             if self._ws is None:
                 self._ws = ws
@@ -420,43 +462,49 @@ class FubonRealtimeFeed(RealtimeFeed):
     def _register_ws_handlers(self, ws, index: int) -> None:
         on_msg = getattr(ws, "on", None)
         if not callable(on_msg):
+            self._log("WARN", f"[FubonFeed] ws#{index+1} 無 on() 方法，無法掛載事件處理器！")
             return
         on_msg("message", self._on_raw_message)
         on_msg("connect", lambda *args, _index=index, **kwargs:
-               print(f"[FubonFeed] websocket #{_index + 1} connected"))
+               self._log("INFO", f"[FubonFeed] websocket #{_index + 1} connected"))
         on_msg("disconnect", lambda *args, _index=index, **kwargs:
-               print(f"[FubonFeed] websocket #{_index + 1} disconnected args={args} kwargs={kwargs}"))
+               self._log("WARN", f"[FubonFeed] websocket #{_index + 1} disconnected args={args} kwargs={kwargs}"))
         on_msg("error", lambda *args, _index=index, **kwargs:
-               print(f"[FubonFeed] websocket #{_index + 1} error args={args} kwargs={kwargs}"))
+               self._log("ERROR", f"[FubonFeed] websocket #{_index + 1} error args={args} kwargs={kwargs}"))
+        self._log("INFO", f"[FubonFeed] ws#{index+1} 事件處理器已掛載（message/connect/disconnect/error）")
 
     def _on_raw_message(self, msg) -> None:
-        """SDK 推送的訊息（多半是 JSON 字串），依 channel 分派到 tick / book callback。
+        """SDK 推送的訊息（多半是 JSON 字串），依 channel 分派到 tick / book callback。"""
+        self._raw_msg_count += 1
+        n = self._raw_msg_count
 
-        實測 fubon_neo Stock WS 推送格式概略為：
-          {"event":"data",   "data":{"symbol":"2330","type":"trade","price":...,"size":...}}
-          {"event":"snapshot","data":{"symbol":"2330","asks":[...],"bids":[...]}}
-          {"event":"data",   "data":{"symbol":"2330","asks":[...],"bids":[...]}}
-        舊版亦可能直接以 channel="trades"/"books" 推送。
-        因此本函式對多種變體都做容錯解析。
-        """
+        # 前 3 筆：完整 log 原始內容
+        if n <= 3:
+            self._log("DEBUG", f"[FubonFeed] 收到第 {n} 筆原始訊息 type={type(msg).__name__} raw={str(msg)[:300]}")
+        elif n % 200 == 0:
+            self._log("DEBUG",
+                f"[FubonFeed] 累計收訊 {n} 筆 "
+                f"（tick_emit={self._tick_emit_count}, book_emit={self._book_emit_count}, "
+                f"unknown={self._unknown_msg_count}, empty_code={self._empty_code_count}）")
+
         try:
             payload = self._extract_payload(msg)
             if not payload:
+                if n <= 3:
+                    self._log("DEBUG", f"[FubonFeed] 第 {n} 筆訊息 _extract_payload 回傳空值，略過")
                 return
 
             event = str(payload.get("event") or payload.get("channel") or "").lower()
             data = payload.get("data")
             if isinstance(data, list):
-                # 有些訊息 data 是 list（多筆），逐筆派發
                 for item in data:
                     self._dispatch(event, item if isinstance(item, dict) else {})
                 return
             if not isinstance(data, dict):
-                # 沒包 data 欄位時，整個 payload 就是內容
                 data = payload
             self._dispatch(event, data)
         except Exception as e:  # noqa: BLE001
-            print(f"[FubonFeed] parse error: {e} | raw={str(msg)[:200]}")
+            self._log("ERROR", f"[FubonFeed] parse error: {e} | raw={str(msg)[:200]}")
 
     @staticmethod
     def _extract_payload(msg: Any) -> Optional[dict]:
@@ -503,16 +551,47 @@ class FubonRealtimeFeed(RealtimeFeed):
         has_tick_fields = ("price" in data and ("size" in data or "volume" in data)) \
                           and not ("asks" in data or "bids" in data or "ask" in data or "bid" in data)
         if is_trade_event or is_trade_type or has_tick_fields:
-            self._emit_tick(self._to_tick(data))
+            tick = self._to_tick(data)
+            if not tick.code:
+                self._empty_code_count += 1
+                if self._empty_code_count <= 3 or self._empty_code_count % 50 == 0:
+                    self._log(
+                        "WARN",
+                        f"[FubonFeed] tick code 解析為空（共 {self._empty_code_count} 次）"
+                        f"，data keys={list(data.keys())} sample={str(data)[:200]}"
+                    )
+            else:
+                self._tick_emit_count += 1
+                if self._tick_emit_count == 1:
+                    self._log("INFO",
+                        f"[FubonFeed] 第 1 筆 tick 成功 emit！"
+                        f" code={tick.code} price={tick.price} vol={tick.volume}")
+                elif self._tick_emit_count % 500 == 0:
+                    self._log("DEBUG",
+                        f"[FubonFeed] tick emit 累計 {self._tick_emit_count} 筆")
+            self._emit_tick(tick)
             return
 
         # ── 判斷是否為 book（五檔） ──
         has_book_fields = any(k in data for k in ("asks", "bids", "ask", "bid"))
         if event in ("books", "book", "snapshot") or has_book_fields:
-            self._emit_book(self._to_book(data))
+            book = self._to_book(data)
+            self._book_emit_count += 1
+            if self._book_emit_count == 1:
+                self._log("INFO",
+                    f"[FubonFeed] 第 1 筆 book 成功 emit！"
+                    f" code={book.code} ask_len={len(book.ask)} bid_len={len(book.bid)}")
+            self._emit_book(book)
             return
 
-        # event="data" 但沒有可辨識欄位 → 忽略（例如 heartbeat）
+        # 無法識別
+        self._unknown_msg_count += 1
+        if self._unknown_msg_count <= 5 or self._unknown_msg_count % 100 == 0:
+            self._log(
+                "WARN",
+                f"[FubonFeed] 無法識別訊息（共 {self._unknown_msg_count} 次）"
+                f" event={event!r} type={type_!r} keys={list(data.keys())} data={str(data)[:200]}"
+            )
 
     @staticmethod
     def _to_tick(p: dict) -> TickEvent:
