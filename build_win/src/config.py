@@ -94,6 +94,14 @@ class TradingConfig:
     # ── 系統記錄 ────────────────────────────────────────────────────────────
     file_logging_enabled: bool = True
 
+    # ── 盤中行情錄製（Phase 1）─────────────────────────────────────────────
+    # 啟動策略時若 recording_enabled=True，會把 SDK 推送的原始訊息與解析後的
+    # tick/book 寫入 log/recordings/<YYYYMMDD>/，供事後分析或日後復盤使用。
+    recording_enabled: bool = False
+    recording_dir: str = ""              # 留空 → 使用預設 log/recordings/
+    recording_keep_days: int = 7         # 自動清除超過 N 天的舊錄製；<=0 = 不清理
+    recording_record_raw: bool = True    # 是否錄製原始 SDK JSON 字串（吃較多空間）
+
     # ── 帳號 ────────────────────────────────────────────────────────────────
     api_id: str = ""
     api_key: str = ""

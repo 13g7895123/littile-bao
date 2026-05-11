@@ -89,6 +89,11 @@ from .account import (
     Position,
 )
 from .universe import ScanCriteria, scan_daily
+from .recording import (
+    RecordingWriter,
+    cleanup_old_recordings,
+    default_recording_root,
+)
 
 __all__ = [
     "BrokerError",
@@ -159,4 +164,7 @@ __all__ = [
     "FubonAccountService",
     "ScanCriteria",
     "scan_daily",
+    "RecordingWriter",
+    "cleanup_old_recordings",
+    "default_recording_root",
 ]

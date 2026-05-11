@@ -277,6 +277,32 @@ class FubonRealtimeFeed(RealtimeFeed):
         self._unknown_msg_count: int = 0    # 無法識別的訊息數
         self._empty_code_count: int = 0     # code 解析為空字串的次數
         self._event_name_stats: Dict[str, int] = {}  # event 名稱頻率統計
+        # ── Phase 1：盤中行情錄製 ──────────────────────
+        # 透過 attach_recorder() 注入，未注入時零成本（None 判斷）
+        self._recorder: Optional[Any] = None
+        self._record_raw: bool = True
+
+    def attach_recorder(self, recorder: Any, *, record_raw: bool = True) -> None:
+        """掛上 RecordingWriter；傳 None 可移除。"""
+        self._recorder = recorder
+        self._record_raw = bool(record_raw)
+
+    # ── 覆寫 base 的 emit：在分派給 callback 前先順手錄製 ──
+    def _emit_tick(self, ev: TickEvent) -> None:
+        if self._recorder is not None:
+            try:
+                self._recorder.write_tick(ev)
+            except Exception:
+                pass
+        super()._emit_tick(ev)
+
+    def _emit_book(self, ev: BookEvent) -> None:
+        if self._recorder is not None:
+            try:
+                self._recorder.write_book(ev)
+            except Exception:
+                pass
+        super()._emit_book(ev)
 
     @property
     def max_symbols(self) -> int:
@@ -478,6 +504,14 @@ class FubonRealtimeFeed(RealtimeFeed):
         """SDK 推送的訊息（多半是 JSON 字串），依 channel 分派到 tick / book callback。"""
         self._raw_msg_count += 1
         n = self._raw_msg_count
+
+        # ── Phase 1：錄製原始訊息（不阻塞主流程，內部走 queue+thread） ──
+        if self._recorder is not None and self._record_raw:
+            try:
+                self._recorder.write_raw(msg)
+            except Exception:
+                # 錄製失敗絕不可影響行情處理
+                pass
 
         # 前 3 筆：完整 log 原始內容
         if n <= 3:

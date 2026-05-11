@@ -297,6 +297,7 @@ class App(QMainWindow):
         configure_runtime_logging(self.cfg.file_logging_enabled)
         self.engine: Optional[TradingEngine] = None
         self.broker = None  # type: ignore[assignment]  # broker.BrokerAdapter，由 main.py 注入
+        self._recorder = None  # Phase 1：盤中行情錄製 writer（啟用時建立）
         self._running = False
         self._strategy_starting = False
         self._strategy_start_token = 0
@@ -624,6 +625,27 @@ class App(QMainWindow):
         form.addSpacing(6)
         self._checks["file_logging_enabled"] = _checkbox("寫入實體 log 檔（含完整錯誤訊息）")
         form.addWidget(self._checks["file_logging_enabled"])
+        form.addSpacing(6)
+        # ── Phase 1：盤中行情錄製 ──
+        self._checks["recording_enabled"] = _checkbox("盤中錄製即時行情（供事後分析 / 復盤）")
+        form.addWidget(self._checks["recording_enabled"])
+        self._checks["recording_record_raw"] = _checkbox("　└ 同時錄製原始 SDK 訊息（檔案較大）")
+        form.addWidget(self._checks["recording_record_raw"])
+        rec_row = QHBoxLayout()
+        rec_row.addWidget(_label("保留天數", C["subtext"], 9))
+        from PyQt6.QtWidgets import QLineEdit
+        self._fields["recording_keep_days"] = QLineEdit()
+        self._fields["recording_keep_days"].setFixedWidth(50)
+        rec_row.addWidget(self._fields["recording_keep_days"])
+        rec_row.addWidget(_label("天", C["subtext"], 9))
+        rec_row.addStretch()
+        form.addLayout(rec_row)
+        rec_dir_row = QHBoxLayout()
+        rec_dir_row.addWidget(_label("存放路徑", C["subtext"], 9))
+        self._fields["recording_dir"] = QLineEdit()
+        self._fields["recording_dir"].setPlaceholderText("留空 = 預設 log/recordings")
+        rec_dir_row.addWidget(self._fields["recording_dir"], 1)
+        form.addLayout(rec_dir_row)
         form.addSpacing(6)
         form.addWidget(_divider())
 
@@ -2179,6 +2201,15 @@ class App(QMainWindow):
             c["dry_run_mode"].setChecked(cfg.order_dry_run)
             self._syncing_order_mode_control = False
         c["file_logging_enabled"].setChecked(cfg.file_logging_enabled)
+        # 錄製設定
+        if "recording_enabled" in c:
+            c["recording_enabled"].setChecked(cfg.recording_enabled)
+        if "recording_record_raw" in c:
+            c["recording_record_raw"].setChecked(cfg.recording_record_raw)
+        if "recording_keep_days" in f:
+            f["recording_keep_days"].setText(str(cfg.recording_keep_days))
+        if "recording_dir" in f:
+            f["recording_dir"].setText(cfg.recording_dir or "")
         self._update_order_mode_badge()
 
     def _collect_config(self) -> TradingConfig:
@@ -2244,6 +2275,18 @@ class App(QMainWindow):
             consume_mutex_with_f1         = c["consume_mutex_with_f1"].isChecked(),
             order_dry_run                 = c["dry_run_mode"].isChecked(),
             file_logging_enabled          = c["file_logging_enabled"].isChecked(),
+            recording_enabled             = (c["recording_enabled"].isChecked()
+                                              if "recording_enabled" in c
+                                              else self.cfg.recording_enabled),
+            recording_record_raw          = (c["recording_record_raw"].isChecked()
+                                              if "recording_record_raw" in c
+                                              else self.cfg.recording_record_raw),
+            recording_keep_days           = (max(0, ni("recording_keep_days"))
+                                              if "recording_keep_days" in self._fields
+                                              else self.cfg.recording_keep_days),
+            recording_dir                 = (self._fields["recording_dir"].text().strip()
+                                              if "recording_dir" in self._fields
+                                              else self.cfg.recording_dir),
         )
 
     def _save_settings(self):
@@ -2564,6 +2607,9 @@ class App(QMainWindow):
             if not self._is_start_token_current(token):
                 return
 
+            # ── Phase 1：盤中行情錄製（僅富邦真實 feed 有效） ──
+            self._maybe_attach_recorder(cfg, feed, symbol_infos)
+
             engine = TradingEngine(
                 config=cfg,
                 on_log=push_log,
@@ -2581,16 +2627,106 @@ class App(QMainWindow):
                     engine.stop()
                 except Exception:
                     pass
+                # 取消時也要把 recorder 收掉
+                self._stop_recorder()
                 return
 
             self._dispatch_ui(
                 lambda token=token, engine=engine: self._finish_start_trading(token, engine))
         except Exception as e:
+            # 啟動過程中失敗 → 同步收掉 recorder，避免殘留
+            self._stop_recorder()
             self._dispatch_ui(
                 lambda token=token, e=e: self._fail_start_trading(token, e))
 
     def _is_start_token_current(self, token: int) -> bool:
         return self._strategy_starting and self._strategy_start_token == token
+
+    def _maybe_attach_recorder(self, cfg, feed, symbol_infos) -> None:
+        """
+        Phase 1：依設定建立 RecordingWriter 並掛到 feed 上。
+        - 僅當 cfg.recording_enabled=True 且 feed 支援 attach_recorder 時生效
+        - 失敗一律不影響策略啟動（只 log warning）
+        """
+        # 先收掉舊的（保險）
+        if self._recorder is not None:
+            try:
+                self._recorder.close()
+            except Exception:
+                pass
+            self._recorder = None
+
+        if not getattr(cfg, "recording_enabled", False):
+            return
+        if feed is None or not hasattr(feed, "attach_recorder"):
+            push_log("INFO",
+                "[Recording] 目前 feed 不支援錄製（例如 Mock 模式），略過。",
+                include_traceback=False)
+            return
+        try:
+            from broker import (
+                RecordingWriter, cleanup_old_recordings, default_recording_root,
+            )
+            from pathlib import Path
+            from dataclasses import asdict as _asdict
+
+            root = (Path(cfg.recording_dir).expanduser()
+                    if cfg.recording_dir else default_recording_root())
+            # 先清掉過期錄製
+            try:
+                removed = cleanup_old_recordings(root, cfg.recording_keep_days, log_cb=push_log)
+                if removed:
+                    push_log("INFO",
+                        f"[Recording] 已清除 {removed} 個過期錄製目錄",
+                        include_traceback=False)
+            except Exception as e:
+                push_log("WARN", f"[Recording] 清理舊錄製失敗：{e}")
+
+            writer = RecordingWriter(out_root=root, log_cb=push_log)
+            # 準備 meta：含 config snapshot 與訂閱清單
+            symbol_universe = []
+            try:
+                for code, si in (symbol_infos or {}).items():
+                    symbol_universe.append({
+                        "code": code,
+                        "name": getattr(si, "name", ""),
+                        "market": getattr(si, "market", ""),
+                        "prev_close": str(getattr(si, "prev_close", "")),
+                        "limit_up": str(getattr(si, "limit_up_price", "")),
+                    })
+            except Exception:
+                pass
+            try:
+                cfg_snapshot = _asdict(cfg)
+            except Exception:
+                cfg_snapshot = {}
+            writer.start(meta={
+                "config_snapshot": cfg_snapshot,
+                "symbol_universe": symbol_universe,
+                "symbol_count": len(symbol_universe),
+            })
+            feed.attach_recorder(writer, record_raw=bool(cfg.recording_record_raw))
+            self._recorder = writer
+            push_log("INFO",
+                f"[Recording] 已啟用錄製 → {writer.session_dir}"
+                f"（含原始訊息={cfg.recording_record_raw}，訂閱 {len(symbol_universe)} 檔）",
+                include_traceback=False)
+        except Exception as e:
+            push_log("WARN", f"[Recording] 啟用失敗：{e}")
+            self._recorder = None
+
+    def _stop_recorder(self) -> None:
+        """停止錄製並關檔（在背景執行緒呼叫 close 避免阻塞 UI）。"""
+        rec = self._recorder
+        if rec is None:
+            return
+        self._recorder = None
+        def _do_close():
+            try:
+                rec.close()
+            except Exception as e:
+                push_log("WARN", f"[Recording] close 失敗：{e}")
+        threading.Thread(target=_do_close, daemon=True, name="Recording-Close").start()
 
     def _load_trading_runtime(self, broker, cfg: TradingConfig):
 
@@ -2771,6 +2907,8 @@ class App(QMainWindow):
         self._strategy_starting = False
         if self.engine:
             threading.Thread(target=self.engine.stop, daemon=True).start()
+        # Phase 1：停止盤中錄製並 flush 檔案
+        self._stop_recorder()
         self._running = False
         self._set_badge_active(False)
         self._set_strategy_status("已停止", C["subtext"])
