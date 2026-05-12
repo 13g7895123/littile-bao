@@ -2293,6 +2293,13 @@ class App(QMainWindow):
         try:
             new_cfg = self._collect_config()
             was_file_logging_enabled = self.cfg.file_logging_enabled
+            # 偵測：價格區間是否被變動（影響的是「訂閱清單」，需重啟才會生效）
+            price_range_changed = (
+                self._running and self.engine is not None and (
+                    float(getattr(self.cfg, "price_min", 0) or 0) != float(getattr(new_cfg, "price_min", 0) or 0)
+                    or float(getattr(self.cfg, "price_max", 0) or 0) != float(getattr(new_cfg, "price_max", 0) or 0)
+                )
+            )
             new_cfg.save()
             self.cfg = new_cfg
             if self.cfg.file_logging_enabled:
@@ -2324,14 +2331,144 @@ class App(QMainWindow):
             message = "設定已儲存！"
             if applied_live:
                 message += "\n（已即時套用至執行中的策略）"
+            if price_range_changed:
+                message += (
+                    "\n\n股價區間有變動，即將背景重新掃描訂閱範圍…"
+                    "\n（會顯示進度視窗，請稍候完成後再操作。）"
+                )
             if log_path:
                 message += f"\nlog 檔案：{log_path}"
             QMessageBox.information(self, "儲存成功", message)
+
+            # ── 價格區間有變動且策略執行中 → 背景重跑掃描 + 熱替換訂閱 ──
+            if price_range_changed and self._running and self.engine is not None:
+                self._rescan_universe_with_progress()
         except ValueError as e:
             QMessageBox.critical(self, "格式錯誤", f"數字欄位格式有誤：{e}")
         except Exception as e:
             push_log("ERROR", f"儲存設定失敗：{e}")
             QMessageBox.critical(self, "儲存失敗", str(e))
+
+    # ────────────────────────────────────────────────────────
+    #  盤中熱換訂閱（價格區間變動時呼叫）
+    # ────────────────────────────────────────────────────────
+
+    def _rescan_universe_with_progress(self) -> None:
+        """
+        顯示「重新掃描中…」的 modal 進度對話框，背景執行緒：
+          1. 重跑 _load_trading_runtime → 取得新 symbol_infos
+          2. 停掉現有 engine.feed
+          3. engine.replace_universe(new_infos)（保留有持倉/委託的股票）
+          4. engine.resubscribe_feed()
+          5. 完成後關閉對話框並顯示結果摘要
+        """
+        from PyQt6.QtWidgets import QProgressDialog
+        from PyQt6.QtCore import Qt
+
+        if self.engine is None or not self._running:
+            return
+
+        dlg = QProgressDialog("正在重新掃描股票範圍，請稍候…", "", 0, 0, self)
+        dlg.setWindowTitle("更新訂閱範圍")
+        dlg.setWindowModality(Qt.WindowModality.ApplicationModal)
+        dlg.setCancelButton(None)  # 不允許取消
+        dlg.setMinimumDuration(0)
+        dlg.setAutoClose(False)
+        dlg.setAutoReset(False)
+        dlg.show()
+        QApplication.processEvents()
+
+        engine = self.engine
+        broker = self.broker
+        cfg = self.cfg
+        recording_was_enabled = bool(getattr(cfg, "recording_enabled", False))
+
+        def _worker():
+            error = None
+            result = None
+            try:
+                push_log("INFO",
+                    "[Rescan] 開始重跑訂閱掃描（價格區間已變動）…",
+                    include_traceback=False)
+                new_infos, _new_feed = self._load_trading_runtime(broker, cfg)
+                if new_infos is None:
+                    new_infos = {}
+                push_log("INFO",
+                    f"[Rescan] 新掃描候選 {len(new_infos)} 支，準備熱替換…",
+                    include_traceback=False)
+
+                # 停掉舊 feed（feed 物件本身保留，stop 後再用 start 重新連）
+                if engine.feed is not None:
+                    try:
+                        engine.feed.stop()
+                    except Exception as e:
+                        push_log("WARN", f"[Rescan] 停止舊 feed 時警告：{e}")
+
+                diff = engine.replace_universe(new_infos)
+
+                try:
+                    engine.resubscribe_feed()
+                except Exception as e:
+                    push_log("ERROR", f"[Rescan] 重新訂閱失敗：{e}")
+                    raise
+
+                result = diff
+                push_log("INFO",
+                    "[Rescan] 完成："
+                    f"新增 {len(diff['added'])} 支、"
+                    f"移除 {len(diff['removed'])} 支、"
+                    f"保留（仍在新範圍）{len(diff['kept_in_new'])} 支、"
+                    f"保留（有持倉/委託）{len(diff['kept_protected'])} 支",
+                    include_traceback=False)
+            except Exception as e:  # noqa: BLE001
+                error = e
+                push_log("ERROR", f"[Rescan] 重跑掃描失敗：{e}")
+
+            self._dispatch_ui(lambda: _on_done(error, result))
+
+        def _on_done(error, result):
+            try:
+                dlg.close()
+            except Exception:
+                pass
+            if error is not None:
+                QMessageBox.critical(
+                    self, "重跑掃描失敗",
+                    f"重新掃描訂閱範圍失敗：\n{error}\n\n"
+                    f"建議：請停止策略後重新啟動。",
+                )
+                return
+            diff = result or {}
+            added = diff.get("added", [])
+            removed = diff.get("removed", [])
+            kept_protected = diff.get("kept_protected", [])
+            kept_in_new = diff.get("kept_in_new", [])
+
+            def _preview(codes, n=8):
+                if not codes:
+                    return "（無）"
+                head = "、".join(codes[:n])
+                if len(codes) > n:
+                    head += f" 等共 {len(codes)} 支"
+                return head
+
+            msg = (
+                f"訂閱範圍已更新！\n\n"
+                f"• 新增訂閱：{len(added)} 支\n  {_preview(added)}\n\n"
+                f"• 移除訂閱：{len(removed)} 支\n  {_preview(removed)}\n\n"
+                f"• 保留（仍在新範圍）：{len(kept_in_new)} 支\n"
+                f"• 保留（有持倉/委託，強制保留）：{len(kept_protected)} 支\n"
+                f"  {_preview(kept_protected)}\n\n"
+                f"監控表將以新的訂閱清單顯示。"
+            )
+            QMessageBox.information(self, "重跑掃描完成", msg)
+            if recording_was_enabled:
+                push_log("INFO",
+                    "[Rescan] 提示：feed 已重新連線，本次重訂閱沿用原 recorder；"
+                    "若需建立新錄製檔，請停止後重新啟動策略。",
+                    include_traceback=False)
+
+        threading.Thread(target=_worker, daemon=True, name="Rescan-Universe").start()
 
     def _sell_all_strategy_positions(self):
         if self.engine is None or not self._running:

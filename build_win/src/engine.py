@@ -120,6 +120,7 @@ class TradingEngine:
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._daily_trade_count: int = 0   # 功能 13：當天已成交檔數
+        self._daily_trade_codes: set = set()  # 已成交過的股票代號集合（同股票只算一檔）
         self._today_realized_pnl: Decimal = Decimal("0")  # M4：當日已實現損益
         self._trading_date: date = date.today()  # 跨日重置使用
         # ── 診斷計數器 ─────────────────────────────────────
@@ -212,6 +213,87 @@ class TradingEngine:
                 self.on_log("WARN", f"停止行情訂閱時發生錯誤：{e}")
         self.on_log("INFO", "引擎已停止，登出完成")
 
+    # ─────────────────────────────────────────
+    #  熱替換訂閱清單（盤中改價格區間用）
+    # ─────────────────────────────────────────
+
+    def replace_universe(self, new_symbol_infos: Dict[str, object]) -> dict:
+        """
+        熱替換 _states 內容，呼叫者需自行管控 feed.stop() / 重新訂閱 / feed.start()。
+
+        保留規則（即使不在新清單也不會被移除）：
+          - 有持倉（position_qty > 0）
+          - 有委託在外（pending）
+          - 已有 K 線進場紀錄（candle_index > 0）
+
+        回傳 dict: {"added", "removed", "kept_in_new", "kept_protected"}
+        """
+        markets = set(self.config.get_markets())
+        new_codes: set = set()
+        if new_symbol_infos:
+            for code, si in new_symbol_infos.items():
+                if getattr(si, "market", None) in markets:
+                    new_codes.add(code)
+
+        with self._lock:
+            old_codes = set(self._states.keys())
+
+            protected = {
+                code for code, st in self._states.items()
+                if st.position_qty > 0 or st.pending or st.candle_index > 0
+            }
+
+            removed = (old_codes - new_codes) - protected
+            added = new_codes - old_codes
+            kept_in_new = old_codes & new_codes
+            kept_protected = (old_codes - new_codes) & protected
+
+            for code in removed:
+                self._states.pop(code, None)
+
+            for code in added:
+                si = new_symbol_infos[code]
+                info = StockInfo(
+                    code=si.code,
+                    name=si.name,
+                    limit_up=float(si.limit_up_price),
+                    market=si.market,
+                    is_disposal=si.is_disposal,
+                    is_attention=si.is_attention,
+                    is_day_trade_restricted=si.is_day_trade_restricted,
+                    open_limit_up=si.open_limit_up,
+                    prev_close=float(si.prev_close),
+                )
+                self._states[code] = StockState(info)
+
+        return {
+            "added": sorted(added),
+            "removed": sorted(removed),
+            "kept_in_new": sorted(kept_in_new),
+            "kept_protected": sorted(kept_protected),
+        }
+
+    def resubscribe_feed(self) -> None:
+        """以目前 _states 重新訂閱 feed（呼叫前應確保 feed 已 stop）。"""
+        if self.feed is None or SymbolMeta is None:
+            return
+        meta = {
+            code: SymbolMeta(
+                code=code,
+                limit_up=Decimal(str(s.info.limit_up)),
+                prev_close=Decimal(str(s.info.prev_close)),
+                open_limit_up=s.info.open_limit_up,
+            )
+            for code, s in self._states.items()
+        }
+        if hasattr(self.feed, "set_log_callback"):
+            self.feed.set_log_callback(self.on_log)
+        self.feed.on_tick(self._on_tick)
+        self.feed.on_book(self._on_book)
+        self.feed.subscribe(list(self._states.keys()), meta)
+        self.feed.start()
+        self.on_log("INFO", f"即時行情已重新訂閱（{len(meta)} 檔）")
+
     def _active_features(self) -> str:
         cfg = self.config
         flags = {
@@ -279,6 +361,9 @@ class TradingEngine:
             if ev.price >= limit_up:
                 state.touched_limit_up_today = True
                 state.limit_up_consumed_qty += int(ev.volume)
+                # 若 book 尚未追上，先用 tick 標記為已封板（_on_book 會在 ask 打開時清掉）
+                if not state.is_at_limit_up:
+                    state.is_at_limit_up = True
                 if state.limit_up_since is None and not state.entry_blocked:
                     cfg = self.config
                     if state.candle_index < (cfg.candle_limit if cfg.f7_enabled else 99):
@@ -310,14 +395,24 @@ class TradingEngine:
                 state.bid0_volume = 0
 
             limit_up = Decimal(str(state.info.limit_up))
-            # 委賣張數（漲停板）
-            if state.ask0_price is not None and state.ask0_price == limit_up:
+            # ── 漲停封板偵測（修正：原先只看 ask[0]==limit_up，會漏掉完全封板的情境）──
+            #   情境 A：ask[0] 仍掛在漲停價 → 還有委賣排隊（部分封板）
+            #   情境 B：ask[0] 不在漲停價，但 bid[0] >= 漲停價 → 買盤鎖死，賣盤被吃光（完全封板）
+            #   情境 C：last_price >= limit_up 且尚未跌離 → 視為剛打到漲停（tick 領先 book 時的保險）
+            ask_at_limit = (state.ask0_price is not None and state.ask0_price >= limit_up)
+            bid_at_or_above_limit = (state.bid0_price is not None and state.bid0_price >= limit_up)
+            last_at_limit = (state.last_price is not None and state.last_price >= limit_up)
+            sealed = ask_at_limit or bid_at_or_above_limit or last_at_limit
+
+            if ask_at_limit:
                 state.ask_qty_at_limit = state.ask0_volume
+            else:
+                state.ask_qty_at_limit = 0
+
+            if sealed:
                 state.is_at_limit_up = True
                 state.touched_limit_up_today = True
             else:
-                state.ask_qty_at_limit = 0
-                # 漲停板被打開：ask[0] 不再是漲停價
                 if state.is_at_limit_up:
                     state.is_at_limit_up = False
                     state.limit_up_since = None
@@ -349,6 +444,7 @@ class TradingEngine:
             st.limit_up_consumed_qty = 0
             # 注意：position_qty 不清空，避免影響真實持倉同步
         self._daily_trade_count = 0
+        self._daily_trade_codes.clear()
         self._today_realized_pnl = Decimal("0")
         self._trading_date = today
 
@@ -539,9 +635,11 @@ class TradingEngine:
                 st = self._states.get(code)
                 if st and st.pending:
                     st.pending = False
-                    st.position_qty = qty
+                    st.position_qty += qty   # 累加（支援分批成交）
                     st.entry_price = Decimal(str(info.limit_up))
-                    self._daily_trade_count += 1
+                    if code not in self._daily_trade_codes:
+                        self._daily_trade_codes.add(code)
+                        self._daily_trade_count = len(self._daily_trade_codes)
                     self.on_log("INFO", f"[{code}] 成交 {qty} 張 @ {info.limit_up:,.0f}，"
                                         f"今日第 {self._daily_trade_count} 檔")
                     self.on_trade({
@@ -560,6 +658,34 @@ class TradingEngine:
         qty = state.position_qty
         # ── M5：有 broker 時透過下單流程處理；fill 回報到位後再結算 PnL ──
         if self.broker is not None and OrderRequest is not None and qty > 0:
+            # ── 賣出前確認：先向券商查庫存，避免空單 / 錯帳 ──
+            try:
+                acc_svc = None
+                if hasattr(self.broker, "account_service"):
+                    acc_svc = self.broker.account_service
+                if acc_svc is not None and hasattr(acc_svc, "snapshot"):
+                    snap = acc_svc.snapshot()
+                    pos = next((p for p in (snap.positions or []) if p.code == info.code), None)
+                    broker_qty = int(pos.qty) if pos else 0
+                    if broker_qty <= 0:
+                        self.on_log("WARN",
+                            f"[{info.code}] 券商回報無庫存（本地紀錄 {qty} 張），"
+                            f"取消賣出避免錯帳；本地部位將清零")
+                        state.position_qty = 0
+                        state.entry_blocked = True
+                        state.sold_today = True
+                        state.entry_price = None
+                        return
+                    if broker_qty < qty:
+                        self.on_log("WARN",
+                            f"[{info.code}] 券商庫存 {broker_qty} 張 < 本地 {qty} 張，"
+                            f"以券商實際庫存 {broker_qty} 張下單")
+                        qty = broker_qty
+                        state.position_qty = qty
+            except Exception as e:  # noqa: BLE001
+                self.on_log("WARN",
+                    f"[{info.code}] 查詢券商庫存失敗（使用本地部位 {qty} 張繼續）：{e}")
+
             sell_price_dec = state.last_price or Decimal(str(info.limit_up))
             try:
                 state.pending = True   # 標記掛賣
@@ -699,11 +825,27 @@ class TradingEngine:
             qty = int(ev.qty)
             if ev.side.value == "BUY":
                 state.pending = False
-                state.position_qty = qty
-                state.entry_price = ev.price
-                self._daily_trade_count += 1
+                state.position_qty += qty   # 累加（支援分批 / 加碼成交）
+                # 加權平均成本（若已有持倉，按張數加權；無則直接設成本）
+                if state.entry_price is None:
+                    state.entry_price = ev.price
+                else:
+                    try:
+                        old_qty = max(0, int(state.position_qty) - qty)
+                        if old_qty > 0:
+                            total_cost = state.entry_price * Decimal(old_qty) + ev.price * Decimal(qty)
+                            state.entry_price = (total_cost / Decimal(old_qty + qty)).quantize(Decimal("0.01"))
+                        else:
+                            state.entry_price = ev.price
+                    except Exception:
+                        state.entry_price = ev.price
+                # 同股票算一檔（不論加碼幾次）
+                if ev.code not in self._daily_trade_codes:
+                    self._daily_trade_codes.add(ev.code)
+                    self._daily_trade_count = len(self._daily_trade_codes)
                 self.on_log("INFO",
-                    f"[{ev.code}] 買進成交 {qty} 張 @ {ev.price}，今日第 {self._daily_trade_count} 檔")
+                    f"[{ev.code}] 買進成交 {qty} 張 @ {ev.price}，"
+                    f"累計持倉 {state.position_qty} 張，今日第 {self._daily_trade_count} 檔")
                 self.on_trade({
                     "time": ev.time.strftime("%H:%M:%S"),
                     "code": ev.code,
@@ -721,14 +863,16 @@ class TradingEngine:
                     pnl_net = float(pnl.net)
                     self._today_realized_pnl += pnl.net
                 note = getattr(state, "_sell_note", "出場")
-                state.position_qty = 0
+                # 部分賣出時 position_qty 應該扣掉，而不是直接歸零
+                state.position_qty = max(0, int(state.position_qty) - qty)
                 state.pending = False
-                state.entry_blocked = True
-                state.sold_today = True
-                state.entry_price = None
+                if state.position_qty == 0:
+                    state.entry_blocked = True
+                    state.sold_today = True
+                    state.entry_price = None
                 self.on_log("INFO",
                     f"[{ev.code}] 賣出成交 {qty} 張 @ {ev.price}，"
-                    f"損益 {pnl_net:+,.0f}")
+                    f"剩餘持倉 {state.position_qty} 張，損益 {pnl_net:+,.0f}")
                 self.on_trade({
                     "time": ev.time.strftime("%H:%M:%S"),
                     "code": ev.code,
@@ -769,11 +913,12 @@ class TradingEngine:
                     change = None
                     change_pct = None
 
-                # ── F9：盤中以「即時價」判斷是否在區間內；無即時價時以昨收參考 ──
+                # ── F9：僅在取得即時價後才判斷區間（無即時價 → 不過濾，等行情）──
+                # 注意：訂閱時是以「昨收 ±10%」放寬篩出來的，所以這裡若用昨收判斷
+                # 會在熱套用設定的瞬間（last_price 暫時為 None / 區間變動）把整張表清空。
                 out_of_range = False
-                if f9_on and pmax > 0:
-                    ref = price if price is not None else (prev_close or 0)
-                    if ref <= 0 or not (pmin <= ref <= pmax):
+                if f9_on and pmax > 0 and price is not None and price > 0:
+                    if not (pmin <= price <= pmax):
                         out_of_range = True
 
                 result.append({

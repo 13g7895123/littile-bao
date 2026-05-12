@@ -603,6 +603,16 @@ class FubonRealtimeFeed(RealtimeFeed):
 
         # ── 控制 / metadata 訊息（不算 unknown） ─────────────
         # 富邦初始會推 ticker (個股基本資料)、subscribed (訂閱確認)、authenticated、heartbeat、pong
+        # 第二道防線：以 payload 形狀判斷 ticker（含個股基本資料、無成交價量）
+        # 特徵：有 limitUpPrice/referencePrice/securityStatus，但完全沒有 price/size
+        is_ticker_payload = (
+            ("limitUpPrice" in data or "referencePrice" in data
+             or "securityStatus" in data or "boardLot" in data)
+            and ("price" not in data and "size" not in data
+                 and "lastPrice" not in data)
+        )
+        if is_ticker_payload:
+            return
         if event in ("authenticated", "heartbeat", "pong", "subscribed",
                      "unsubscribed", "ticker", "error", "info"):
             return
