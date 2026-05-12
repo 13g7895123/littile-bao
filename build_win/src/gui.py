@@ -307,7 +307,7 @@ class App(QMainWindow):
         self._realized_pnl = 0.0   # M4：今日已實現損益累計
         self._log_lines = 0
         self._log_entries = []
-        self._log_filter = "all"
+        self._log_filter = "strategy"
         self._log_filter_buttons = {"all": [], "strategy": []}
         self._strategy_trigger_count = 0
         self._syncing_order_mode_control = False
@@ -3480,6 +3480,34 @@ class App(QMainWindow):
                 or s.get("next_day_excluded")
                 or self._is_after_close_monitor_item(s)
             ]
+
+        # ── 排序：準備進場優先（依代號），其他依代號 ──
+        def _is_ready_to_enter(s: dict) -> bool:
+            # 與下方 status 判斷邏輯一致：未完成 / 未進場 / 未掛單，但 candle>0
+            if s.get("next_day_excluded"):
+                return False
+            if self._is_after_close_monitor_item(s):
+                return False
+            if s.get("blocked"):
+                return False
+            if (s.get("qty") or 0) > 0:
+                return False
+            if s.get("pending"):
+                return False
+            return (s.get("candle") or 0) > 0
+
+        def _sort_key(s: dict):
+            code = str(s.get("code") or "")
+            # 數字代號用 int 排序，其餘退回字串
+            try:
+                code_key = (0, int(code))
+            except ValueError:
+                code_key = (1, code)
+            # 群組順序：0=準備進場優先；1=其他
+            group = 0 if _is_ready_to_enter(s) else 1
+            return (group, code_key)
+
+        summary = sorted(summary, key=_sort_key)
 
         threshold = self.cfg.volume_spike_sell_threshold
         pos_cnt = 0
