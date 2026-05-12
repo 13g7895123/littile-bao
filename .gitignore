@@ -24,6 +24,15 @@ build_win/src/log/
 build_win/dist/log/
 data/
 
+# ── 執行期產出（不應進版控）──
+meta.json
+build_win/src/meta.json
+*.ndjson.gz
+dry_run_audit_*.jsonl
+build_win/src/dry_run_audit_*.jsonl
+build_win/src/crash_output.txt
+build_win/src/cache/
+
 # ── IDE ────────────────────────
 .idea/
 .vscode/
