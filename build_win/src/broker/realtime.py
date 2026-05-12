@@ -541,7 +541,14 @@ class FubonRealtimeFeed(RealtimeFeed):
             stat_key = f"{raw_event}|{raw_channel}" if raw_channel else raw_event
             self._event_name_stats[stat_key] = self._event_name_stats.get(stat_key, 0) + 1
 
-            # 富邦標準格式：event='data' + channel='trades'|'books'，用 channel 取代 event 來判斷
+            # ── 控制 / metadata 類訊息：以 raw_event 為準直接略過 ──
+            # 富邦會用 channel='trades' 同時夾帶 event='ticker'（個股基本資料推播）、
+            # event='subscribed' / 'unsubscribed' 等控制訊息，這些不能被當成成交 tick。
+            if raw_event in ("authenticated", "heartbeat", "pong", "subscribed",
+                             "unsubscribed", "ticker", "error", "info"):
+                return
+
+            # 富邦標準資料格式：event='data' + channel='trades'|'books'，用 channel 取代 event 來判斷
             event = raw_channel or raw_event
 
             data = payload.get("data")
