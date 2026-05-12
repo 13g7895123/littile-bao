@@ -19,6 +19,9 @@ dist/
 # ── 日誌 ───────────────────────
 *.log
 logs/
+log/
+build_win/src/log/
+build_win/dist/log/
 data/
 
 # ── IDE ────────────────────────
