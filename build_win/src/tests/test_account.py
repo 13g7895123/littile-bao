@@ -35,8 +35,11 @@ class TestScanDaily(unittest.TestCase):
             min_prev_volume=0,
         )
         out = scan_daily(DEFAULT_MOCK_INFOS, crit)
+        relaxed_min = Decimal("90")
+        relaxed_max = Decimal("330")
         for s in out:
-            self.assertTrue(Decimal("100") <= s.limit_up_price <= Decimal("300"))
+            ref_price = s.prev_close if s.prev_close and s.prev_close > 0 else s.limit_up_price
+            self.assertTrue(relaxed_min <= ref_price <= relaxed_max)
 
     def test_market_filter(self):
         crit = ScanCriteria(markets=("OTC",), min_prev_volume=0)

@@ -173,6 +173,27 @@ class TestPreviewPriceFiltering(unittest.TestCase):
         self.assertEqual(info.quote_price, Decimal("232.5"))
         self.assertEqual(info.prev_volume, 4567)
 
+    def test_fubon_parse_item_reads_special_flags_without_string_truthiness(self):
+        class DummyAdapter:
+            sdk = object()
+
+        loader = FubonSymbolInfoLoader(DummyAdapter())
+        info = loader._parse_item({
+            "symbol": "2603",
+            "name": "長榮",
+            "market": "TSE",
+            "previousClose": "190",
+            "closePrice": "210",
+            "isDisposition": "N",
+            "isAttention": "Y",
+            "canDayTrade": "N",
+        })
+
+        self.assertIsNotNone(info)
+        self.assertFalse(info.is_disposal)
+        self.assertTrue(info.is_attention)
+        self.assertTrue(info.is_day_trade_restricted)
+
 
 class TestPriorLimitUpStreak(unittest.TestCase):
     def test_cache_computes_two_day_limit_up_streak(self):

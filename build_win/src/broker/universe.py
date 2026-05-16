@@ -900,6 +900,17 @@ class FubonSymbolInfoLoader(SymbolInfoLoader):
         except Exception:
             pass
 
+        is_disposal = self._truthy_flag(
+            g,
+            "isDisposition", "isDispositionStock", "isDisposal",
+            "is_disposition", "is_disposal", "disposition", "disposal",
+        )
+        is_attention = self._truthy_flag(
+            g,
+            "isAttention", "isAttentionStock", "is_attention", "attention",
+        )
+        is_day_trade_restricted = self._day_trade_restricted_flag(g)
+
         return build_symbol_info(
             code=code,
             name=str(g("name") or g("stock_name") or code),
@@ -907,12 +918,62 @@ class FubonSymbolInfoLoader(SymbolInfoLoader):
             prev_close=pc,
             quote_price=quote_price,
             prev_volume=prev_vol,
-            is_disposal=bool(g("isDisposition") or g("isDisposal") or g("is_disposal")),
-            is_attention=bool(g("isAttention") or g("is_attention")),
-            is_day_trade_restricted=bool(
-                g("isDayTradeRestricted") or g("is_day_trade_restricted")
-            ),
+            is_disposal=is_disposal,
+            is_attention=is_attention,
+            is_day_trade_restricted=is_day_trade_restricted,
         )
+
+    @classmethod
+    def _truthy_flag(cls, getter, *names: str) -> bool:
+        for name in names:
+            parsed = cls._parse_flag(getter(name, None))
+            if parsed is True:
+                return True
+        return False
+
+    @classmethod
+    def _day_trade_restricted_flag(cls, getter) -> bool:
+        if cls._truthy_flag(
+            getter,
+            "isDayTradeRestricted", "isDayTradingRestricted",
+            "is_day_trade_restricted", "dayTradeRestricted",
+            "day_trade_restricted", "dayTradeLimit", "day_trade_limit",
+            "isDayTradeLimit", "isDayTradeSuspended",
+        ):
+            return True
+
+        for name in (
+            "canDayTrade", "can_day_trade", "dayTradeable", "day_tradeable",
+            "isDayTrade", "is_day_trade", "dayTrade", "day_trade",
+        ):
+            parsed = cls._parse_flag(getter(name, None))
+            if parsed is False:
+                return True
+        return False
+
+    @staticmethod
+    def _parse_flag(value) -> Optional[bool]:
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float, Decimal)):
+            return bool(value)
+        text = str(value).strip().lower()
+        if text in ("", "-", "none", "null"):
+            return None
+        if text in (
+            "1", "true", "t", "y", "yes", "是", "有", "處置", "注意",
+            "restricted", "suspended", "limit", "limited", "禁止", "禁當沖",
+            "限當沖",
+        ):
+            return True
+        if text in (
+            "0", "false", "f", "n", "no", "否", "無", "normal", "allowed",
+            "可", "可當沖",
+        ):
+            return False
+        return None
 
     @classmethod
     def _compute_streak_from_candles(

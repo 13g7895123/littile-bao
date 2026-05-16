@@ -266,6 +266,52 @@ class TestGuiTabLayout(unittest.TestCase):
         self.assertEqual(self.win.monitor_table.item(1, 9).text(), "監控出場")
         self.assertGreater(self.win.monitor_table.columnWidth(1), 70)
 
+    def test_monitor_shows_blocked_reason_and_sell_pending_action(self):
+        summary = [
+            {
+                "code": "2330",
+                "name": "台積電",
+                "market": "TSE",
+                "candle": 1,
+                "qty": 0,
+                "pending": False,
+                "vol_1s": 0,
+                "blocked": True,
+                "blocked_reason": "資金不足",
+                "price": 1100.0,
+                "limit_up": 1100.0,
+                "prev_close": 1000.0,
+                "change": 100.0,
+                "change_pct": 10.0,
+                "ask_qty": 0,
+                "is_at_limit_up": True,
+            },
+            {
+                "code": "2603",
+                "name": "長榮",
+                "market": "TSE",
+                "candle": 1,
+                "qty": 1,
+                "pending": True,
+                "vol_1s": 0,
+                "blocked": False,
+                "price": 210.0,
+                "limit_up": 210.0,
+                "prev_close": 191.0,
+                "change": 19.0,
+                "change_pct": 9.95,
+                "ask_qty": 0,
+                "is_at_limit_up": False,
+            },
+        ]
+
+        self.win._render_monitor(summary)
+
+        self.assertEqual(self.win.monitor_table.item(0, 8).text(), "出場中")
+        self.assertEqual(self.win.monitor_table.item(0, 9).text(), "等待賣出")
+        self.assertEqual(self.win.monitor_table.item(1, 8).text(), "資金不足")
+        self.assertEqual(self.win.monitor_table.item(1, 9).text(), "不購買")
+
     def test_after_close_monitor_shows_close_status(self):
         self.win._is_after_market_close = lambda: True
         self.win._render_monitor([{
@@ -508,7 +554,17 @@ class TestGuiTabLayout(unittest.TestCase):
 
             def quotes(self, **kwargs):
                 self.calls.append(kwargs)
-                self.assertNotIn("symbols", kwargs)
+                if "symbols" in kwargs:
+                    return {"data": [{
+                        "symbol": "2330",
+                        "name": "台積電",
+                        "previousClose": "90",
+                        "closePrice": "88.5",
+                        "tradeVolume": "2000",
+                        "isDisposition": "N",
+                        "isAttention": "N",
+                        "canDayTrade": "Y",
+                    }]}
                 return {"data": [{
                     "symbol": "2330",
                     "name": "台積電",
@@ -553,20 +609,37 @@ class TestGuiTabLayout(unittest.TestCase):
 
         self.assertIsNone(feed)
         self.assertEqual(snapshot.calls[0], {"market": "TSE", "type": "COMMONSTOCK"})
+        self.assertEqual(snapshot.calls[1], {"symbols": ["2330"]})
         self.assertEqual(list(symbol_infos.keys()), ["2330"])
 
     def test_strategy_start_prefers_previous_trading_days_api(self):
         from broker.universe import build_symbol_info
 
         class FakeSnapshot:
-            def quotes(self, **_kwargs):
-                raise AssertionError("snapshot should not be called when previous-days API succeeds")
+            def __init__(self):
+                self.calls = []
+
+            def quotes(self, **kwargs):
+                self.calls.append(kwargs)
+                if "symbols" not in kwargs:
+                    raise AssertionError("market snapshot should not be called when previous-days API succeeds")
+                return {"data": [{
+                    "symbol": "2330",
+                    "name": "台積電",
+                    "previousClose": "100",
+                    "closePrice": "100",
+                    "tradeVolume": "2000",
+                    "isDisposition": "N",
+                    "isAttention": "N",
+                    "canDayTrade": "Y",
+                }]}
 
         class FakeSdk:
             def __init__(self):
+                self.snapshot = FakeSnapshot()
                 self.marketdata = SimpleNamespace(
                     rest_client=SimpleNamespace(
-                        stock=SimpleNamespace(snapshot=FakeSnapshot())
+                        stock=SimpleNamespace(snapshot=self.snapshot)
                     )
                 )
 
@@ -610,6 +683,7 @@ class TestGuiTabLayout(unittest.TestCase):
 
         self.assertIsNone(feed)
         self.assertEqual(FakePreviousDaysClient.instances[0].markets, ("TSE",))
+        self.assertEqual(symbol_infos["2330"].is_attention, False)
         self.assertEqual(list(symbol_infos.keys()), ["2330"])
 
 

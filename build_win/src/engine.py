@@ -58,6 +58,7 @@ class StockState:
         self.position_qty: int = 0
         self.pending: bool = False
         self.entry_blocked: bool = False
+        self.entry_blocked_reason: str = ""
         self.last_1s_vol: int = 0
         self.tick_vols: deque = deque()   # (timestamp, vol)
         self.limit_up_since: Optional[float] = None
@@ -72,6 +73,7 @@ class StockState:
         self.is_at_limit_up: bool = False
         self.touched_limit_up_today: bool = False
         self.limit_up_consumed_qty: int = 0
+        self.special_check_completed: bool = False
         # ── Milestone 4：損益追蹤 ────────────────────
         self.entry_price: Optional[Decimal] = None  # 進場成交均價
 
@@ -437,11 +439,13 @@ class TradingEngine:
         self.on_log("INFO", f"偵測到日期變更 {self._trading_date} → {today}，重置每日狀態")
         for st in self._states.values():
             st.entry_blocked = False
+            st.entry_blocked_reason = ""
             st.sold_today = False
             st.candle_index = 0
             st.limit_up_since = None
             st.touched_limit_up_today = False
             st.limit_up_consumed_qty = 0
+            st.special_check_completed = False
             # 注意：position_qty 不清空，避免影響真實持倉同步
         self._daily_trade_count = 0
         self._daily_trade_codes.clear()
@@ -462,10 +466,7 @@ class TradingEngine:
             if not (cfg.price_min <= info.limit_up <= cfg.price_max):
                 return
 
-        # ── 功能 11：排除處置股、注意股、限當沖股 ────────────────
-        if cfg.f11_enabled:
-            if info.is_disposal or info.is_attention or info.is_day_trade_restricted:
-                return
+        # 功能 11 會在所有進場條件與資金確認通過後，於下單前最後確認。
 
         # ── 取消委託邏輯（功能 6）────────────────────────────────
         if state.pending and cfg.f6_enabled:
@@ -482,6 +483,7 @@ class TradingEngine:
                     f" > {cfg.volume_spike_cancel_threshold} 張，取消委託")
                 state.pending = False
                 state.entry_blocked = True
+                state.entry_blocked_reason = "爆量取消"
                 return
 
         # ── 出場邏輯（功能 4、5）────────────────────────────────
@@ -584,7 +586,34 @@ class TradingEngine:
                 return
             entry_strategy_ids.append("F10")
 
-        qty = max(1, int(cfg.per_stock_amount / (info.limit_up * 1000)))
+        limit_up_price = Decimal(str(info.limit_up))
+        lot_cost = limit_up_price * Decimal("1000")
+        per_stock_amount = Decimal(str(cfg.per_stock_amount))
+        if lot_cost <= 0 or per_stock_amount <= 0:
+            self._block_entry(
+                state,
+                "資金不足",
+                "WARN",
+                f"[{info.code}] 每檔金額設定無效（{cfg.per_stock_amount:,.0f} 元），已略過不購買",
+            )
+            return
+        if lot_cost > per_stock_amount:
+            self._block_entry(
+                state,
+                "資金不足",
+                "WARN",
+                f"[{info.code}] 每檔金額 {per_stock_amount:,.0f} 元不足買進 1 張 @ "
+                f"{limit_up_price:,.2f}，預估需 {lot_cost:,.0f} 元，已略過不購買",
+            )
+            return
+
+        qty = int(per_stock_amount // lot_cost)
+        order_amount = lot_cost * Decimal(qty)
+        if not self._confirm_buying_power(state, order_amount):
+            return
+        if not self._confirm_special_stock_status(state):
+            return
+
         state.pending = True
         self._log_strategy_trigger(
             "BUY", state, "+".join(entry_strategy_ids) or "BASE",
@@ -622,6 +651,7 @@ class TradingEngine:
             except Exception as e:  # noqa: BLE001
                 state.pending = False
                 state.entry_blocked = True
+                state.entry_blocked_reason = "下單失敗"
                 self.on_log("ERROR", f"[{info.code}] 下單失敗：{e}")
             return
 
@@ -635,7 +665,8 @@ class TradingEngine:
                 st = self._states.get(code)
                 if st and st.pending:
                     st.pending = False
-                    st.position_qty += qty   # 累加（支援分批成交）
+                    st.position_qty += qty
+                    st.entry_blocked_reason = ""
                     st.entry_price = Decimal(str(info.limit_up))
                     if code not in self._daily_trade_codes:
                         self._daily_trade_codes.add(code)
@@ -715,6 +746,7 @@ class TradingEngine:
 
         state.position_qty = 0
         state.entry_blocked = True
+        state.entry_blocked_reason = "已賣出"
         state.sold_today = True   # 功能 12：標記當天已賣過
         state.entry_price = None
         self.on_trade({
@@ -758,6 +790,88 @@ class TradingEngine:
         if tick <= 0:
             return 0
         return max(1, int((limit_up - state.ask0_price) / tick))
+
+    def _block_entry(self, state: StockState, reason: str, level: str, message: str) -> None:
+        state.entry_blocked = True
+        state.entry_blocked_reason = reason
+        self.on_log(level, message)
+
+    def _confirm_buying_power(self, state: StockState, order_amount: Decimal) -> bool:
+        broker = self.broker
+        if broker is None or not hasattr(broker, "account_service"):
+            return True
+        try:
+            snap = broker.account_service().snapshot()
+            buying_power = Decimal(str(getattr(snap, "buying_power", 0) or 0))
+        except Exception as exc:  # noqa: BLE001
+            self._block_entry(
+                state,
+                "額度確認失敗",
+                "ERROR",
+                f"[{state.info.code}] 無法確認可用額度，已略過不購買：{exc}",
+            )
+            return False
+
+        if buying_power < order_amount:
+            self._block_entry(
+                state,
+                "資金不足",
+                "WARN",
+                f"[{state.info.code}] 可用額度 {buying_power:,.0f} 元不足，"
+                f"預估買進需 {order_amount:,.0f} 元，已略過不購買",
+            )
+            return False
+        return True
+
+    def _confirm_special_stock_status(self, state: StockState) -> bool:
+        cfg = self.config
+        info = state.info
+        if not cfg.f11_enabled:
+            return True
+
+        if not state.special_check_completed and self.broker is not None and hasattr(self.broker, "load_symbol_info"):
+            try:
+                refreshed = self.broker.load_symbol_info([info.code]) or {}
+                fresh = refreshed.get(info.code)
+            except Exception as exc:  # noqa: BLE001
+                self._block_entry(
+                    state,
+                    "特殊股確認失敗",
+                    "ERROR",
+                    f"[{info.code}] 無法透過富邦 API 確認處置/注意/禁當沖，已略過不購買：{exc}",
+                )
+                return False
+            if fresh is None:
+                self._block_entry(
+                    state,
+                    "特殊股確認失敗",
+                    "ERROR",
+                    f"[{info.code}] 富邦 API 未回傳處置/注意/禁當沖旗標，已略過不購買",
+                )
+                return False
+            info.is_disposal = bool(getattr(fresh, "is_disposal", False))
+            info.is_attention = bool(getattr(fresh, "is_attention", False))
+            info.is_day_trade_restricted = bool(getattr(fresh, "is_day_trade_restricted", False))
+            state.special_check_completed = True
+        else:
+            state.special_check_completed = True
+
+        reasons = []
+        if info.is_disposal:
+            reasons.append("處置股")
+        if info.is_attention:
+            reasons.append("注意股")
+        if info.is_day_trade_restricted:
+            reasons.append("禁當沖")
+        if reasons:
+            self._block_entry(
+                state,
+                "特殊股排除",
+                "WARN",
+                f"[{info.code}] 富邦 API 確認為{'、'.join(reasons)}，已略過不購買",
+            )
+            return False
+        return True
 
     @staticmethod
     def _tick_size(price: Decimal) -> Decimal:
@@ -825,8 +939,8 @@ class TradingEngine:
             qty = int(ev.qty)
             if ev.side.value == "BUY":
                 state.pending = False
-                state.position_qty += qty   # 累加（支援分批 / 加碼成交）
-                # 加權平均成本（若已有持倉，按張數加權；無則直接設成本）
+                state.position_qty += qty
+                state.entry_blocked_reason = ""
                 if state.entry_price is None:
                     state.entry_price = ev.price
                 else:
@@ -839,7 +953,6 @@ class TradingEngine:
                             state.entry_price = ev.price
                     except Exception:
                         state.entry_price = ev.price
-                # 同股票算一檔（不論加碼幾次）
                 if ev.code not in self._daily_trade_codes:
                     self._daily_trade_codes.add(ev.code)
                     self._daily_trade_count = len(self._daily_trade_codes)
@@ -868,6 +981,7 @@ class TradingEngine:
                 state.pending = False
                 if state.position_qty == 0:
                     state.entry_blocked = True
+                    state.entry_blocked_reason = "已賣出"
                     state.sold_today = True
                     state.entry_price = None
                 self.on_log("INFO",
@@ -930,6 +1044,7 @@ class TradingEngine:
                     "pending":    s.pending,
                     "vol_1s":     s.last_1s_vol,
                     "blocked":    s.entry_blocked,
+                    "blocked_reason": s.entry_blocked_reason,
                     # ── 新增欄位 ──
                     "price":      price,          # 最新成交價（None = 尚無行情）
                     "limit_up":   s.info.limit_up,

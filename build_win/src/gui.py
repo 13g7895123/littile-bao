@@ -307,7 +307,7 @@ class App(QMainWindow):
         self._realized_pnl = 0.0   # M4：今日已實現損益累計
         self._log_lines = 0
         self._log_entries = []
-        self._log_filter = "strategy"
+        self._log_filter = "all"
         self._log_filter_buttons = {"all": [], "strategy": []}
         self._strategy_trigger_count = 0
         self._syncing_order_mode_control = False
@@ -2887,9 +2887,9 @@ class App(QMainWindow):
                 crit = ScanCriteria(
                     price_min=Decimal(str(cfg.price_min)) if cfg.f9_enabled else Decimal("0"),
                     price_max=Decimal(str(cfg.price_max)) if cfg.f9_enabled else Decimal("999999"),
-                    exclude_disposal=cfg.f11_enabled,
-                    exclude_attention=cfg.f11_enabled,
-                    exclude_day_trade_restricted=cfg.f11_enabled,
+                    exclude_disposal=False,
+                    exclude_attention=False,
+                    exclude_day_trade_restricted=False,
                     markets=tuple(cfg.get_markets()),
                     min_prev_volume=(cfg.daily_volume_min if cfg.f8_enabled else 0),
                     max_candidates=FUBON_REALTIME_SYMBOL_LIMIT,
@@ -2979,6 +2979,8 @@ class App(QMainWindow):
                                         "部分候選股缺少昨日起漲停序列資料，已保守保留；"
                                         "建議收盤後更新一次全市場快照快取",
                                         include_traceback=False)
+                        candidates = self._confirm_fubon_special_candidates(
+                            loader, candidates, cfg)
                         symbol_infos = {si.code: si for si in candidates}
                         push_log("INFO",
                             f"篩選後候選 {len(symbol_infos)} 支"
@@ -2996,9 +2998,9 @@ class App(QMainWindow):
                     mock_crit = ScanCriteria(
                         price_min=crit.price_min,
                         price_max=crit.price_max,
-                        exclude_disposal=crit.exclude_disposal,
-                        exclude_attention=crit.exclude_attention,
-                        exclude_day_trade_restricted=crit.exclude_day_trade_restricted,
+                        exclude_disposal=cfg.f11_enabled,
+                        exclude_attention=cfg.f11_enabled,
+                        exclude_day_trade_restricted=cfg.f11_enabled,
                         markets=crit.markets,
                         min_prev_volume=0,
                         max_candidates=crit.max_candidates,
@@ -3014,6 +3016,71 @@ class App(QMainWindow):
             except Exception as e:
                 push_log("WARN", f"載入個股基本資料失敗：{e}")
         return symbol_infos, feed
+
+    def _confirm_fubon_special_candidates(self, loader, candidates: list, cfg: TradingConfig) -> list:
+        if not cfg.f11_enabled or not candidates:
+            return candidates
+        codes = [si.code for si in candidates]
+        try:
+            refreshed = loader.load(codes) or {}
+        except Exception as exc:  # noqa: BLE001
+            push_log(
+                "ERROR",
+                f"富邦 API 特殊股最後確認失敗，候選股暫不納入：{exc}",
+                include_traceback=False,
+            )
+            return []
+
+        kept = []
+        excluded = []
+        missing = []
+        for si in candidates:
+            fresh = refreshed.get(si.code)
+            if fresh is None:
+                missing.append(f"{si.code} {si.name}")
+                continue
+            si.is_disposal = bool(getattr(fresh, "is_disposal", False))
+            si.is_attention = bool(getattr(fresh, "is_attention", False))
+            si.is_day_trade_restricted = bool(getattr(fresh, "is_day_trade_restricted", False))
+            reasons = self._special_flag_reasons(si)
+            if reasons:
+                excluded.append(f"{si.code} {si.name}（{'/'.join(reasons)}）")
+            else:
+                kept.append(si)
+
+        if missing:
+            preview = "、".join(missing[:20])
+            more = "" if len(missing) <= 20 else f"，另 {len(missing) - 20} 支"
+            push_log(
+                "WARN",
+                f"富邦 API 未回傳特殊股旗標，保守排除 {len(missing)} 支：{preview}{more}",
+                include_traceback=False,
+            )
+        if excluded:
+            preview = "、".join(excluded[:20])
+            more = "" if len(excluded) <= 20 else f"，另 {len(excluded) - 20} 支"
+            push_log(
+                "INFO",
+                f"F11 富邦 API 最後排除 {len(excluded)} 支特殊股：{preview}{more}",
+                include_traceback=False,
+            )
+        push_log(
+            "INFO",
+            f"F11 富邦 API 已最後確認 {len(codes)} 支候選股，保留 {len(kept)} 支",
+            include_traceback=False,
+        )
+        return kept
+
+    @staticmethod
+    def _special_flag_reasons(info) -> list:
+        reasons = []
+        if getattr(info, "is_disposal", False):
+            reasons.append("處置")
+        if getattr(info, "is_attention", False):
+            reasons.append("注意")
+        if getattr(info, "is_day_trade_restricted", False):
+            reasons.append("禁當沖")
+        return reasons
 
     def _finish_start_trading(self, token: int, engine: TradingEngine) -> None:
         if not self._is_start_token_current(token):
@@ -3431,7 +3498,8 @@ class App(QMainWindow):
         text = str(msg)
         keywords = (
             "策略", "候選", "篩選", "進場", "出場", "漲停",
-            "封板", "委賣", "下單", "成交",
+            "封板", "委賣", "下單", "成交", "資金不足",
+            "可用額度", "處置", "注意", "禁當沖", "限當沖",
         )
         return any(keyword in text for keyword in keywords)
 
@@ -3498,8 +3566,17 @@ class App(QMainWindow):
         bold = level == "TRADE"
         tag_o = "<b>" if bold else ""
         tag_c = "</b>" if bold else ""
-        safe_msg = html.escape(msg).replace("\n", "<br>")
-        html_text = f'{tag_o}<span style="color:{color};">{ts} {safe_msg}</span>{tag_c}'
+        raw_lines = str(msg).splitlines() or [""]
+        safe_lines = [html.escape(raw_lines[0])]
+        safe_lines.extend(
+            f"&nbsp;&nbsp;→ {html.escape(line.strip())}"
+            for line in raw_lines[1:]
+        )
+        safe_msg = "<br>".join(safe_lines)
+        html_text = (
+            f'{tag_o}<span style="color:{color}; line-height:1.35;">'
+            f'{ts} {safe_msg}</span>{tag_c}'
+        )
         entry = {
             "html": html_text,
             "strategy": self._is_strategy_log(level, msg),
@@ -3585,6 +3662,11 @@ class App(QMainWindow):
             "條件不符": C["subtext"],
             "出場中":   C["purple"],
             "已完成":   C["subtext"],
+            "已封鎖":   C["subtext"],
+            "資金不足": C["red_l"],
+            "特殊排除": C["red_l"],
+            "確認失敗": C["red_l"],
+            "下單失敗": C["red_l"],
             "委託中":   C["yellow_l"],
             "等待":     C["subtext"],
             "收盤漲停": C["red_l"],
@@ -3599,6 +3681,11 @@ class App(QMainWindow):
             "條件不符": C["badge_dim"],
             "出場中":   C["badge_out"],
             "已完成":   C["badge_dim"],
+            "已封鎖":   C["badge_dim"],
+            "資金不足": C["badge_cancel"],
+            "特殊排除": C["badge_cancel"],
+            "確認失敗": C["badge_cancel"],
+            "下單失敗": C["badge_cancel"],
             "委託中":   C["badge_order"],
             "等待":     C["badge_dim"],
             "收盤漲停": C["badge_cancel"],
@@ -3661,25 +3748,22 @@ class App(QMainWindow):
                 self.monitor_count_lbl.setText(f"收盤檢視 {after_close_cnt} 檔")
             else:
                 self.monitor_count_lbl.setText(f"共 {len(summary)} 檔")
+        _ORDER = {
+            "準備進場": 0, "委託中": 1, "已進場": 2, "出場中": 3,
+            "委賣過多": 4, "條件不符": 5,
+            "資金不足": 6, "特殊排除": 7, "確認失敗": 8, "下單失敗": 9,
+            "已封鎖": 10, "已完成": 11,
+            "收盤漲停": 12, "收盤觀察": 13, "明日候選": 14, "明日排除": 15,
+            "等待": 99,
+        }
         self.monitor_table.setRowCount(0)
         self._monitor_rows.clear()
+        summary = sorted(summary, key=lambda s: _ORDER.get(self._compute_monitor_status(s), 50))
 
         for s in summary:
-            if s.get("next_day_excluded"):
-                status = "明日排除"
-            elif self._is_after_close_monitor_item(s):
-                status = "收盤漲停" if s.get("closed_at_limit_up") else "收盤觀察"
-            elif s["blocked"]:
-                status = "已完成"
-            elif s["qty"] > 0:
-                status = "已進場"
+            status = self._compute_monitor_status(s)
+            if status == "已進場":
                 pos_cnt += 1
-            elif s["pending"]:
-                status = "委託中"
-            elif s["candle"] > 0:
-                status = "準備進場"
-            else:
-                status = "等待"
 
             if s.get("next_day_excluded"):
                 candle_txt = f"連{s.get('prior_limit_up_streak') or 0}根"
@@ -3759,10 +3843,26 @@ class App(QMainWindow):
             return "明日觀察", C["blue_l"]
         if status == "已完成":
             return "已封鎖", C["subtext"]
+        if status == "已封鎖":
+            return "已封鎖", C["subtext"]
+        if status == "資金不足":
+            return "不購買", C["red_l"]
+        if status == "特殊排除":
+            return "不購買", C["red_l"]
+        if status == "確認失敗":
+            return "查看日誌", C["red_l"]
+        if status == "下單失敗":
+            return "查看日誌", C["red_l"]
+        if status == "出場中":
+            return "等待賣出", C["purple"]
         if status == "已進場":
             return "監控出場", C["green_l"]
         if status == "委託中":
             return "等待成交", C["yellow_l"]
+        if status == "委賣過多":
+            return "等委賣降", C["orange"]
+        if status == "條件不符":
+            return "等待封板", C["subtext"]
         if summary_item.get("is_at_limit_up"):
             ask_qty = int(summary_item.get("ask_qty") or 0)
             if ask_qty >= self.cfg.ask_queue_threshold:
@@ -3771,6 +3871,36 @@ class App(QMainWindow):
         if summary_item.get("candle", 0) > 0:
             return "等待封板", C["yellow_l"]
         return "等待漲停", C["subtext"]
+
+    def _compute_monitor_status(self, s: dict) -> str:
+        if s.get("next_day_excluded"):
+            return "明日排除"
+        if self._is_after_close_monitor_item(s):
+            return "收盤漲停" if s.get("closed_at_limit_up") else "收盤觀察"
+        if s["blocked"]:
+            reason = s.get("blocked_reason") or ""
+            if reason == "資金不足":
+                return "資金不足"
+            if reason == "特殊股排除":
+                return "特殊排除"
+            if reason in ("特殊股確認失敗", "額度確認失敗"):
+                return "確認失敗"
+            if reason == "下單失敗":
+                return "下單失敗"
+            if reason:
+                return "已封鎖"
+            return "已完成"
+        if s["pending"] and s["qty"] > 0:
+            return "出場中"
+        if s["pending"]:
+            return "委託中"
+        if s["qty"] > 0:
+            return "已進場"
+        if s.get("is_at_limit_up") and int(s.get("ask_qty") or 0) >= self.cfg.ask_queue_threshold:
+            return "委賣過多"
+        if s["candle"] > 0:
+            return "準備進場" if s.get("is_at_limit_up") else "條件不符"
+        return "等待"
 
     def _is_after_close_monitor_item(self, summary_item: dict) -> bool:
         return bool(summary_item.get("after_close_preview"))

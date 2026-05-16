@@ -6,6 +6,7 @@ import sys
 import time
 import unittest
 from decimal import Decimal
+from types import SimpleNamespace
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -26,6 +27,17 @@ class TestTradingEngineStrategyRules(unittest.TestCase):
             on_strategy_event=strategy_events.append,
         )
         return engine, logs, trades, strategy_events
+
+    @staticmethod
+    def _arm_entry_state(engine: TradingEngine, code: str = "2330"):
+        state = engine._states[code]
+        state.candle_index = 1
+        state.limit_up_since = time.time()
+        state.is_at_limit_up = True
+        state.ask0_price = Decimal(str(state.info.limit_up))
+        state.ask_qty_at_limit = 0
+        state.last_1s_vol = 999
+        return state
 
     def test_f4_sells_only_after_configured_open_ticks(self):
         cfg = TradingConfig(
@@ -99,6 +111,7 @@ class TestTradingEngineStrategyRules(unittest.TestCase):
             f_consume_enabled=True,
             consume_qty_threshold=10,
             consume_mutex_with_f1=True,
+            per_stock_amount=2_000_000,
         )
         engine, logs, _trades, strategy_events = self._make_engine(cfg)
         state = engine._states["2330"]
@@ -115,6 +128,130 @@ class TestTradingEngineStrategyRules(unittest.TestCase):
         self.assertTrue(any("策略=消化量+F7" in msg for _level, msg in logs))
         self.assertEqual(strategy_events[-1]["strategy"], "消化量+F7")
         self.assertEqual(strategy_events[-1]["code"], "2330")
+
+    def test_per_stock_amount_below_one_lot_blocks_entry(self):
+        cfg = TradingConfig(
+            f1_enabled=False,
+            f9_enabled=False,
+            f10_enabled=False,
+            per_stock_amount=100_000,
+        )
+        engine, logs, _trades, strategy_events = self._make_engine(cfg)
+        state = self._arm_entry_state(engine, "2330")
+
+        engine._tick(state, time.time())
+
+        self.assertFalse(state.pending)
+        self.assertTrue(state.entry_blocked)
+        self.assertEqual(state.entry_blocked_reason, "資金不足")
+        self.assertEqual(strategy_events, [])
+        self.assertTrue(any("不足買進 1 張" in msg for _level, msg in logs))
+
+    def test_per_stock_amount_uses_floor_lots_without_forcing_one(self):
+        cfg = TradingConfig(
+            f1_enabled=False,
+            f9_enabled=False,
+            f10_enabled=False,
+            per_stock_amount=350_000,
+        )
+        engine, _logs, _trades, strategy_events = self._make_engine(cfg)
+        state = self._arm_entry_state(engine, "3711")
+
+        engine._tick(state, time.time())
+
+        self.assertTrue(state.pending)
+        self.assertEqual(strategy_events[-1]["details"]["qty"], "2")
+
+    def test_buying_power_is_confirmed_before_order(self):
+        class FakeAccountService:
+            def snapshot(self):
+                return SimpleNamespace(buying_power=Decimal("500000"))
+
+        class FakeBroker:
+            def __init__(self):
+                self.orders = []
+
+            def account_service(self):
+                return FakeAccountService()
+
+            def place_order(self, req):
+                self.orders.append(req)
+                return "O1"
+
+        cfg = TradingConfig(
+            f1_enabled=False,
+            f9_enabled=False,
+            f10_enabled=False,
+            per_stock_amount=2_000_000,
+        )
+        broker = FakeBroker()
+        logs = []
+        engine = TradingEngine(
+            cfg,
+            on_log=lambda level, msg: logs.append((level, msg)),
+            on_trade=lambda _trade: None,
+            on_status=lambda _summary: None,
+            broker=broker,
+        )
+        state = self._arm_entry_state(engine, "2330")
+
+        engine._tick(state, time.time())
+
+        self.assertFalse(state.pending)
+        self.assertEqual(state.entry_blocked_reason, "資金不足")
+        self.assertEqual(broker.orders, [])
+        self.assertTrue(any("可用額度" in msg for _level, msg in logs))
+
+    def test_f11_special_status_is_confirmed_before_order(self):
+        class FakeAccountService:
+            def snapshot(self):
+                return SimpleNamespace(buying_power=Decimal("3000000"))
+
+        class FakeBroker:
+            def __init__(self):
+                self.load_calls = []
+                self.orders = []
+
+            def account_service(self):
+                return FakeAccountService()
+
+            def load_symbol_info(self, codes):
+                self.load_calls.append(list(codes))
+                return {
+                    "2330": SimpleNamespace(
+                        is_disposal=False,
+                        is_attention=True,
+                        is_day_trade_restricted=False,
+                    )
+                }
+
+            def place_order(self, req):
+                self.orders.append(req)
+                return "O1"
+
+        cfg = TradingConfig(
+            f1_enabled=False,
+            f9_enabled=False,
+            f10_enabled=False,
+            per_stock_amount=2_000_000,
+        )
+        broker = FakeBroker()
+        logs = []
+        engine = TradingEngine(
+            cfg,
+            on_log=lambda level, msg: logs.append((level, msg)),
+            on_trade=lambda _trade: None,
+            on_status=lambda _summary: None,
+            broker=broker,
+        )
+        state = self._arm_entry_state(engine, "2330")
+
+        engine._tick(state, time.time())
+
+        self.assertEqual(broker.load_calls, [["2330"]])
+        self.assertEqual(broker.orders, [])
+        self.assertEqual(state.entry_blocked_reason, "特殊股排除")
+        self.assertTrue(any("注意股" in msg for _level, msg in logs))
 
     def test_sell_all_strategy_positions_sells_current_positions(self):
         cfg = TradingConfig(f9_enabled=False, f5_enabled=False)
