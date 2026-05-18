@@ -59,6 +59,9 @@ class StockState:
         self.pending: bool = False
         self.entry_blocked: bool = False
         self.entry_blocked_reason: str = ""
+        # 進場「最近一次被略過」的原因（軟性過濾；不會像 entry_blocked 那樣永久封鎖）
+        # 由 _skip_entry() 寫入，於 GUI 動作欄顯示，協助使用者了解為何尚未進場
+        self.last_skip_reason: str = ""
         self.last_1s_vol: int = 0
         self.tick_vols: deque = deque()   # (timestamp, vol)
         self.limit_up_since: Optional[float] = None
@@ -464,6 +467,12 @@ class TradingEngine:
         # ── 功能 9：股價區間 ──────────────────────────────────────
         if cfg.f9_enabled:
             if not (cfg.price_min <= info.limit_up <= cfg.price_max):
+                # 漲停價超出區間 → 軟性略過（不封鎖，讓使用者可即時改設定）
+                self._skip_entry(
+                    state,
+                    f"F9:漲停價 {info.limit_up} 不在 {cfg.price_min}~{cfg.price_max}",
+                    log=False,  # 訂閱清單一次就過濾掉，無須每秒寫 log
+                )
                 return
 
         # 功能 11 會在所有進場條件與資金確認通過後，於下單前最後確認。
@@ -537,14 +546,20 @@ class TradingEngine:
 
         # 功能 12：開盤即漲停 且 當天已賣過 → 封鎖
         if cfg.f12_enabled and info.open_limit_up and state.sold_today:
+            self._skip_entry(state, "F12:開盤即漲停且當日已賣過")
             return
 
         # 開盤即漲停獨立開關：不論有無賣過，都可選擇不追
         if not getattr(cfg, "f_open_limitup_entry_enabled", True) and info.open_limit_up:
+            self._skip_entry(state, "已關閉追開盤即漲停")
             return
 
         # 功能 13：當天成交檔數上限
         if cfg.f13_enabled and self._daily_trade_count >= cfg.daily_max_trades:
+            self._skip_entry(
+                state,
+                f"F13:已達當日上限 {self._daily_trade_count}/{cfg.daily_max_trades}",
+            )
             return
 
         # 功能 1：時間 + 委賣篩選（漲停價委賣張數）
@@ -554,6 +569,10 @@ class TradingEngine:
         if consume_enabled:
             consume_threshold = int(getattr(cfg, "consume_qty_threshold", 0) or 0)
             if state.limit_up_consumed_qty < consume_threshold:
+                self._skip_entry(
+                    state,
+                    f"消化量 {state.limit_up_consumed_qty} < {consume_threshold} 張",
+                )
                 return
             entry_strategy_ids.append("消化量")
 
@@ -564,28 +583,51 @@ class TradingEngine:
             now_time = datetime.now().time()
             cutoff = dtime(*map(int, cfg.entry_before_time.split(":")))
             if now_time >= cutoff:
+                self._skip_entry(state, f"F1:已過進場時段 {cfg.entry_before_time}")
                 return
             if ask_qty >= cfg.ask_queue_threshold:
+                self._skip_entry(
+                    state,
+                    f"F1:委賣 {ask_qty} ≥ {cfg.ask_queue_threshold} 張",
+                )
                 return
             entry_strategy_ids.append("F1")
 
         # 功能 7：只買第N根以內
         if cfg.f7_enabled and state.candle_index > cfg.candle_limit:
+            self._skip_entry(
+                state,
+                f"F7:第 {state.candle_index} 根 > 上限 {cfg.candle_limit}",
+            )
             return
         if cfg.f7_enabled:
             entry_strategy_ids.append("F7")
 
-        # 功能 10：委賣價 + 即時量
+        # 功能 10：委賣價 + 即時量（進場確認）
         if cfg.f10_enabled:
+            # F10-①：委賣價資料是否已到位
             if state.ask0_price is None:
+                self._skip_entry(state, "F10:尚無委賣價資料")
                 return
+            # F10-②：委賣價需 ≥ 漲停價 × ask_price_ratio（確認掛在板上）
             min_ask_price = Decimal(str(info.limit_up)) * Decimal(str(cfg.ask_price_ratio))
             if state.ask0_price < min_ask_price:
+                self._skip_entry(
+                    state,
+                    f"F10:委賣價 {state.ask0_price} < 漲停 × {cfg.ask_price_ratio}",
+                )
                 return
+            # F10-③：1秒成交量需 ≥ entry_volume_confirm 張（確認買壓足夠，非假鎖板）
             if state.last_1s_vol < cfg.entry_volume_confirm:
+                self._skip_entry(
+                    state,
+                    f"F10:1秒量 {state.last_1s_vol} < {cfg.entry_volume_confirm} 張",
+                )
                 return
             entry_strategy_ids.append("F10")
 
+        # 走到這裡：所有過濾條件皆通過，清掉上一次的略過訊息
+        state.last_skip_reason = ""
         limit_up_price = Decimal(str(info.limit_up))
         lot_cost = limit_up_price * Decimal("1000")
         per_stock_amount = Decimal(str(cfg.per_stock_amount))
@@ -796,9 +838,29 @@ class TradingEngine:
         state.entry_blocked_reason = reason
         self.on_log(level, message)
 
+    def _skip_entry(self, state: StockState, reason: str, *, log: bool = True) -> None:
+        """記錄一次「軟性略過」進場的原因（不會永久封鎖）。
+
+        會把原因寫入 ``state.last_skip_reason``，供 GUI 在「動作」欄顯示，
+        使用者可立即看到該檔目前沒進場的原因，而不是只顯示「檢查進場」。
+        """
+        if state.last_skip_reason != reason:
+            state.last_skip_reason = reason
+            if log:
+                # 使用 DEBUG 等級，避免每秒刷屏；如需排查可調 log level。
+                try:
+                    self.on_log("DEBUG", f"[{state.info.code}] 略過進場：{reason}")
+                except Exception:  # noqa: BLE001
+                    pass
+
     def _confirm_buying_power(self, state: StockState, order_amount: Decimal) -> bool:
         broker = self.broker
         if broker is None or not hasattr(broker, "account_service"):
+            return True
+        # 模擬下單模式：跳過真實券商可用額度檢查。
+        # 否則當 SDK 回傳 available=0（例如尚未登入、或 API 暫時失敗）會誤判
+        # 「資金不足」把每一筆漲停都擋掉，造成模擬時看不到任何成交。
+        if bool(getattr(self.config, "order_dry_run", False)):
             return True
         try:
             snap = broker.account_service().snapshot()
@@ -1054,5 +1116,6 @@ class TradingEngine:
                     "ask_qty":    s.ask_qty_at_limit,  # 漲停委賣張數
                     "is_at_limit_up": s.is_at_limit_up,
                     "out_of_range": out_of_range,  # F9 即時價過濾旗標（True = 該檔被排除顯示）
+                    "last_skip_reason": s.last_skip_reason,  # 最近一次被略過進場的原因（GUI 動作欄使用）
                 })
             return result

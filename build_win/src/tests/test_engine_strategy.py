@@ -183,6 +183,7 @@ class TestTradingEngineStrategyRules(unittest.TestCase):
             f9_enabled=False,
             f10_enabled=False,
             per_stock_amount=2_000_000,
+            order_dry_run=False,
         )
         broker = FakeBroker()
         logs = []
@@ -201,6 +202,65 @@ class TestTradingEngineStrategyRules(unittest.TestCase):
         self.assertEqual(state.entry_blocked_reason, "資金不足")
         self.assertEqual(broker.orders, [])
         self.assertTrue(any("可用額度" in msg for _level, msg in logs))
+
+    def test_dry_run_bypasses_broker_buying_power_check(self):
+        """模擬下單模式下，券商 buying_power 回傳 0 也不應擋進場。"""
+        class FakeAccountService:
+            def snapshot(self):
+                # 模擬 SDK 尚未回覆或 API 失敗，buying_power = 0
+                return SimpleNamespace(buying_power=Decimal("0"))
+
+        class FakeBroker:
+            def __init__(self):
+                self.orders = []
+
+            def account_service(self):
+                return FakeAccountService()
+
+            def place_order(self, req):
+                self.orders.append(req)
+                return "O1"
+
+        cfg = TradingConfig(
+            f1_enabled=False,
+            f9_enabled=False,
+            f10_enabled=False,
+            f11_enabled=False,
+            per_stock_amount=2_000_000,
+            order_dry_run=True,
+        )
+        broker = FakeBroker()
+        engine = TradingEngine(
+            cfg,
+            on_log=lambda _level, _msg: None,
+            on_trade=lambda _trade: None,
+            on_status=lambda _summary: None,
+            broker=broker,
+        )
+        state = self._arm_entry_state(engine, "2330")
+
+        engine._tick(state, time.time())
+
+        # 模擬下單時應略過 buying_power 比對 → 進入 pending
+        self.assertTrue(state.pending)
+        self.assertEqual(state.entry_blocked_reason, "")
+
+    def test_skip_reason_records_filter_failures(self):
+        """進場條件未通過時，state.last_skip_reason 應記錄原因（供 GUI 顯示）。"""
+        cfg = TradingConfig(
+            f1_enabled=True,
+            entry_before_time="00:00",  # 立刻過時，必擋下
+            f9_enabled=False,
+            f10_enabled=False,
+        )
+        engine, _logs, _trades, _events = self._make_engine(cfg)
+        state = self._arm_entry_state(engine, "2330")
+
+        engine._tick(state, time.time())
+
+        self.assertFalse(state.pending)
+        self.assertIn("F1", state.last_skip_reason)
+        self.assertIn("進場時段", state.last_skip_reason)
 
     def test_f11_special_status_is_confirmed_before_order(self):
         class FakeAccountService:

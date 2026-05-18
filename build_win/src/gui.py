@@ -3867,6 +3867,12 @@ class App(QMainWindow):
             ask_qty = int(summary_item.get("ask_qty") or 0)
             if ask_qty >= self.cfg.ask_queue_threshold:
                 return "等委賣降", C["orange"]
+            # 引擎若有「最近一次略過」訊息，優先顯示，讓使用者知道目前卡在哪一條
+            skip = (summary_item.get("last_skip_reason") or "").strip()
+            if skip:
+                # 取冒號前的關鍵字，例如 "F1:委賣 600 ≥ 500 張" → "略過:F1"
+                head = skip.split(":", 1)[0] if ":" in skip else skip
+                return f"略過:{head}", C["orange"]
             return "檢查進場", C["blue_l"]
         if summary_item.get("candle", 0) > 0:
             return "等待封板", C["yellow_l"]
