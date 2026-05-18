@@ -38,7 +38,8 @@ class StockInfo:
                  is_disposal: bool = False, is_attention: bool = False,
                  is_day_trade_restricted: bool = False,
                  open_limit_up: bool = False,
-                 prev_close: float = 0.0):
+                 prev_close: float = 0.0,
+                 prior_limit_up_streak: Optional[int] = 0):
         self.code = code
         self.name = name
         self.limit_up = limit_up
@@ -49,6 +50,11 @@ class StockInfo:
         self.open_limit_up = open_limit_up                   # 開盤即漲停
         # 昨收價：未提供時以 limit_up / 1.1 推估，方便 Mock 行情運作
         self.prev_close = prev_close or round(limit_up / 1.1, 2)
+        # 昨日起往前連續收漲停天數；今天首次觸及漲停後 candle_index = 此值 + 1
+        self.prior_limit_up_streak = (
+            None if prior_limit_up_streak is None
+            else max(0, int(prior_limit_up_streak))
+        )
 
 
 class StockState:
@@ -65,6 +71,7 @@ class StockState:
         self.last_1s_vol: int = 0
         self.tick_vols: deque = deque()   # (timestamp, vol)
         self.limit_up_since: Optional[float] = None
+        self.today_limit_up_counted: bool = False
         self.sold_today: bool = False     # 功能 12：當天已賣過
         # ── Milestone 2：行情驅動欄位 ───────────────────────
         self.last_price: Optional[Decimal] = None
@@ -141,23 +148,28 @@ class TradingEngine:
             for code, si in symbol_infos.items():
                 if si.market not in markets:
                     continue
-                info = StockInfo(
-                    code=si.code,
-                    name=si.name,
-                    limit_up=float(si.limit_up_price),
-                    market=si.market,
-                    is_disposal=si.is_disposal,
-                    is_attention=si.is_attention,
-                    is_day_trade_restricted=si.is_day_trade_restricted,
-                    open_limit_up=si.open_limit_up,
-                    prev_close=float(si.prev_close),
-                )
-                self._states[code] = StockState(info)
+                self._states[code] = StockState(
+                    self._stock_info_from_symbol_info(si))
         else:
             # 退回 MOCK_STOCKS 預設清單
             for s in MOCK_STOCKS:
                 if s.market in markets:
                     self._states[s.code] = StockState(s)
+
+    @staticmethod
+    def _stock_info_from_symbol_info(si: object) -> StockInfo:
+        return StockInfo(
+            code=si.code,
+            name=si.name,
+            limit_up=float(si.limit_up_price),
+            market=si.market,
+            is_disposal=si.is_disposal,
+            is_attention=si.is_attention,
+            is_day_trade_restricted=si.is_day_trade_restricted,
+            open_limit_up=si.open_limit_up,
+            prev_close=float(si.prev_close),
+            prior_limit_up_streak=getattr(si, "prior_limit_up_streak", None),
+        )
 
     # ─────────────────────────────────────────
     #  啟動 / 停止
@@ -258,18 +270,12 @@ class TradingEngine:
 
             for code in added:
                 si = new_symbol_infos[code]
-                info = StockInfo(
-                    code=si.code,
-                    name=si.name,
-                    limit_up=float(si.limit_up_price),
-                    market=si.market,
-                    is_disposal=si.is_disposal,
-                    is_attention=si.is_attention,
-                    is_day_trade_restricted=si.is_day_trade_restricted,
-                    open_limit_up=si.open_limit_up,
-                    prev_close=float(si.prev_close),
-                )
-                self._states[code] = StockState(info)
+                self._states[code] = StockState(
+                    self._stock_info_from_symbol_info(si))
+
+            for code in kept_in_new:
+                self._states[code].info = self._stock_info_from_symbol_info(
+                    new_symbol_infos[code])
 
         return {
             "added": sorted(added),
@@ -364,21 +370,11 @@ class TradingEngine:
             # 漲停判斷：成交價 == 漲停價
             limit_up = Decimal(str(state.info.limit_up))
             if ev.price >= limit_up:
-                state.touched_limit_up_today = True
                 state.limit_up_consumed_qty += int(ev.volume)
                 # 若 book 尚未追上，先用 tick 標記為已封板（_on_book 會在 ask 打開時清掉）
                 if not state.is_at_limit_up:
                     state.is_at_limit_up = True
-                if state.limit_up_since is None and not state.entry_blocked:
-                    cfg = self.config
-                    if state.candle_index < (cfg.candle_limit if cfg.f7_enabled else 99):
-                        state.limit_up_since = now
-                        state.candle_index += 1
-                        self.on_log(
-                            "INFO",
-                            f"[{state.info.code} {state.info.name}] 漲停！"
-                            f"第 {state.candle_index} 根，委賣 {state.ask_qty_at_limit} 張",
-                        )
+                self._mark_limit_up_touched(state, now)
 
     def _on_book(self, ev) -> None:
         """RealtimeFeed 五檔推送。"""
@@ -417,12 +413,35 @@ class TradingEngine:
             if sealed:
                 state.is_at_limit_up = True
                 state.touched_limit_up_today = True
+                self._mark_limit_up_touched(state, time.time())
             else:
                 if state.is_at_limit_up:
                     state.is_at_limit_up = False
                     state.limit_up_since = None
 
+    def _mark_limit_up_touched(self, state: StockState, now: float) -> None:
+        state.touched_limit_up_today = True
+        if state.today_limit_up_counted:
+            if state.limit_up_since is None:
+                state.limit_up_since = now
+            return
 
+        prior_streak = state.info.prior_limit_up_streak
+        base_streak = prior_streak if prior_streak is not None else 0
+        state.candle_index = base_streak + 1
+        state.today_limit_up_counted = True
+        state.limit_up_since = now
+        if prior_streak is None:
+            self.on_log(
+                "WARN",
+                f"[{state.info.code} {state.info.name}] 缺少昨日前連續漲停日K資料，"
+                f"暫以日K第 {state.candle_index} 根判斷",
+            )
+        self.on_log(
+            "INFO",
+            f"[{state.info.code} {state.info.name}] 漲停！"
+            f"日K第 {state.candle_index} 根，委賣 {state.ask_qty_at_limit} 張",
+        )
 
     def _loop(self):
         while self._running:
@@ -446,6 +465,7 @@ class TradingEngine:
             st.sold_today = False
             st.candle_index = 0
             st.limit_up_since = None
+            st.today_limit_up_counted = False
             st.touched_limit_up_today = False
             st.limit_up_consumed_qty = 0
             st.special_check_completed = False
@@ -1102,6 +1122,7 @@ class TradingEngine:
                     "name":       s.info.name,
                     "market":     s.info.market,
                     "candle":     s.candle_index,
+                    "prior_limit_up_streak": s.info.prior_limit_up_streak,
                     "qty":        s.position_qty,
                     "pending":    s.pending,
                     "vol_1s":     s.last_1s_vol,

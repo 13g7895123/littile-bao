@@ -5,11 +5,13 @@ import os
 import sys
 import time
 import unittest
+from datetime import datetime
 from decimal import Decimal
 from types import SimpleNamespace
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from broker import BookEvent, TickEvent, build_symbol_info  # noqa: E402
 from config import TradingConfig  # noqa: E402
 from engine import TradingEngine  # noqa: E402
 
@@ -101,6 +103,86 @@ class TestTradingEngineStrategyRules(unittest.TestCase):
         engine._tick(state, time.time())
 
         self.assertFalse(state.pending)
+
+    def test_candle_index_uses_daily_prior_streak_once_per_day(self):
+        cfg = TradingConfig(
+            f1_enabled=False,
+            f9_enabled=False,
+            f10_enabled=False,
+            candle_limit=2,
+            per_stock_amount=2_000_000,
+        )
+        symbol_info = build_symbol_info(
+            "1111", "測試股", "TSE", Decimal("100"),
+            prev_volume=5000,
+            prior_limit_up_streak=1,
+        )
+        logs = []
+        engine = TradingEngine(
+            cfg,
+            symbol_infos={"1111": symbol_info},
+            on_log=lambda level, msg: logs.append((level, msg)),
+            on_trade=lambda _trade: None,
+            on_status=lambda _summary: None,
+        )
+        state = engine._states["1111"]
+
+        engine._on_tick(TickEvent(
+            code="1111",
+            time=datetime(2026, 5, 18, 9, 1),
+            price=Decimal("110"),
+            volume=10,
+        ))
+
+        self.assertEqual(state.candle_index, 2)
+        self.assertTrue(state.today_limit_up_counted)
+        self.assertTrue(any("日K第 2 根" in msg for _level, msg in logs))
+
+        state.last_price = Decimal("109")
+        engine._on_book(BookEvent(
+            code="1111",
+            time=datetime(2026, 5, 18, 9, 2),
+            ask=[],
+            bid=[],
+        ))
+        self.assertIsNone(state.limit_up_since)
+
+        engine._on_tick(TickEvent(
+            code="1111",
+            time=datetime(2026, 5, 18, 9, 3),
+            price=Decimal("110"),
+            volume=5,
+        ))
+
+        self.assertEqual(state.candle_index, 2)
+        self.assertEqual(
+            sum(1 for _level, msg in logs if "日K第 2 根" in msg),
+            1,
+        )
+
+    def test_first_daily_limit_up_is_candle_one_without_prior_streak(self):
+        cfg = TradingConfig(f1_enabled=False, f9_enabled=False, f10_enabled=False)
+        symbol_info = build_symbol_info(
+            "2222", "首根股", "TSE", Decimal("50"),
+            prev_volume=5000,
+            prior_limit_up_streak=0,
+        )
+        engine = TradingEngine(
+            cfg,
+            symbol_infos={"2222": symbol_info},
+            on_log=lambda _level, _msg: None,
+            on_trade=lambda _trade: None,
+            on_status=lambda _summary: None,
+        )
+
+        engine._on_tick(TickEvent(
+            code="2222",
+            time=datetime(2026, 5, 18, 9, 1),
+            price=Decimal("55"),
+            volume=10,
+        ))
+
+        self.assertEqual(engine._states["2222"].candle_index, 1)
 
     def test_consume_entry_skips_f1_when_mutex_enabled(self):
         cfg = TradingConfig(
