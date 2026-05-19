@@ -761,6 +761,8 @@ class FubonRealtimeFeed(RealtimeFeed):
         cum_raw = (p.get("total") or p.get("cum_volume")
                    or p.get("totalVolume") or p.get("accVolume") or 0)
         prev = p.get("prev_close") or p.get("previousClose") or p.get("referencePrice")
+        bid_raw = p.get("bid")
+        ask_raw = p.get("ask")
         return TickEvent(
             code=str(p.get("symbol") or p.get("code") or ""),
             time=datetime.now(),
@@ -768,6 +770,21 @@ class FubonRealtimeFeed(RealtimeFeed):
             volume=int(vol_raw or 0),
             cum_volume=int(cum_raw or 0),
             prev_close=Decimal(str(prev)) if prev else None,
+            bid=Decimal(str(bid_raw)) if bid_raw not in (None, "") else None,
+            ask=Decimal(str(ask_raw)) if ask_raw not in (None, "") else None,
+            is_limit_up_price=(
+                bool(p.get("isLimitUpPrice"))
+                if "isLimitUpPrice" in p else None
+            ),
+            is_limit_up_bid=(
+                bool(p.get("isLimitUpBid"))
+                if "isLimitUpBid" in p else None
+            ),
+            is_limit_up_ask=(
+                bool(p.get("isLimitUpAsk"))
+                if "isLimitUpAsk" in p else None
+            ),
+            is_trial=bool(p.get("isTrial")) if "isTrial" in p else None,
         )
 
     @staticmethod

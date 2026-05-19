@@ -102,6 +102,10 @@ class TradingConfig:
     recording_keep_days: int = 7         # 自動清除超過 N 天的舊錄製；<=0 = 不清理
     recording_record_raw: bool = True    # 是否錄製原始 SDK JSON 字串（吃較多空間）
 
+    # ── 鎖漲停判斷模式 ──────────────────────────────────────────────────────
+    # 預設先沿用目前最寬鬆、最不易漏瞬間的版本；明日可透過錄製檔比對後再切換。
+    limit_up_detection_mode: str = "ask_or_bid_or_last"
+
     # ── 帳號 ────────────────────────────────────────────────────────────────
     api_id: str = ""
     api_key: str = ""
@@ -319,4 +323,3 @@ class BrokerSettings:
             if not self.branch_no:   checks.append("分行代號")
             if not self.account_no:  checks.append("帳號")
         return checks
-

@@ -65,6 +65,12 @@ class TickEvent:
     volume: int
     cum_volume: int = 0
     prev_close: Optional[Decimal] = None
+    bid: Optional[Decimal] = None
+    ask: Optional[Decimal] = None
+    is_limit_up_price: Optional[bool] = None
+    is_limit_up_bid: Optional[bool] = None
+    is_limit_up_ask: Optional[bool] = None
+    is_trial: Optional[bool] = None
 
 
 @dataclass

@@ -167,6 +167,12 @@ class RecordingWriter:
                 "volume": int(ev.volume or 0),
                 "cum_volume": int(getattr(ev, "cum_volume", 0) or 0),
                 "prev_close": str(ev.prev_close) if getattr(ev, "prev_close", None) else None,
+                "bid": str(ev.bid) if getattr(ev, "bid", None) is not None else None,
+                "ask": str(ev.ask) if getattr(ev, "ask", None) is not None else None,
+                "is_limit_up_price": getattr(ev, "is_limit_up_price", None),
+                "is_limit_up_bid": getattr(ev, "is_limit_up_bid", None),
+                "is_limit_up_ask": getattr(ev, "is_limit_up_ask", None),
+                "is_trial": getattr(ev, "is_trial", None),
             })
         except Exception as e:
             self._log("WARN", f"[Recording] write_tick 序列化失敗：{e}")

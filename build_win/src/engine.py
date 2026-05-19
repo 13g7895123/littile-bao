@@ -16,6 +16,12 @@ from decimal import Decimal
 from typing import Callable, Dict, List, Optional
 
 from config import TradingConfig
+from limitup_detection import (
+    DEFAULT_LIMIT_UP_DETECTION_MODE,
+    LIMIT_UP_DETECTION_MODES,
+    evaluate_limit_up_state,
+    resolve_limit_up_mode,
+)
 
 try:
     from broker import (
@@ -83,6 +89,15 @@ class StockState:
         self.is_at_limit_up: bool = False
         self.touched_limit_up_today: bool = False
         self.limit_up_consumed_qty: int = 0
+        self.trade_bid: Optional[Decimal] = None
+        self.trade_ask: Optional[Decimal] = None
+        self.trade_is_limit_up_price: Optional[bool] = None
+        self.trade_is_limit_up_bid: Optional[bool] = None
+        self.trade_is_limit_up_ask: Optional[bool] = None
+        self.has_ask_levels: bool = False
+        self.has_bid_levels: bool = False
+        self.limit_up_candidate_states: Dict[str, bool] = {}
+        self.active_limit_up_mode: str = DEFAULT_LIMIT_UP_DETECTION_MODE
         self.special_check_completed: bool = False
         # ── Milestone 4：損益追蹤 ────────────────────
         self.entry_price: Optional[Decimal] = None  # 進場成交均價
@@ -135,6 +150,9 @@ class TradingEngine:
         self._daily_trade_codes: set = set()  # 已成交過的股票代號集合（同股票只算一檔）
         self._today_realized_pnl: Decimal = Decimal("0")  # M4：當日已實現損益
         self._trading_date: date = date.today()  # 跨日重置使用
+        self._limit_up_mode: str = resolve_limit_up_mode(
+            getattr(config, "limit_up_detection_mode", DEFAULT_LIMIT_UP_DETECTION_MODE)
+        )
         # ── 診斷計數器 ─────────────────────────────────────
         self._tick_recv_count: int = 0   # engine 收到的 tick 總數
         self._book_recv_count: int = 0   # engine 收到的 book 總數
@@ -150,11 +168,13 @@ class TradingEngine:
                     continue
                 self._states[code] = StockState(
                     self._stock_info_from_symbol_info(si))
+                self._states[code].active_limit_up_mode = self._limit_up_mode
         else:
             # 退回 MOCK_STOCKS 預設清單
             for s in MOCK_STOCKS:
                 if s.market in markets:
                     self._states[s.code] = StockState(s)
+                    self._states[s.code].active_limit_up_mode = self._limit_up_mode
 
     @staticmethod
     def _stock_info_from_symbol_info(si: object) -> StockInfo:
@@ -181,6 +201,11 @@ class TradingEngine:
         self.on_log("INFO", f"監控 {len(self._states)} 支股票")
         active = self._active_features()
         self.on_log("INFO", f"已啟用篩選功能：{active}")
+        self.on_log(
+            "INFO",
+            f"鎖漲停判斷模式：{self._limit_up_mode} "
+            f"（{LIMIT_UP_DETECTION_MODES.get(self._limit_up_mode, '')}）",
+        )
 
         # ── Milestone 2：訂閱即時行情 ─────────────────────
         if self.feed is not None and SymbolMeta is not None:
@@ -366,15 +391,17 @@ class TradingEngine:
                 state.tick_vols.popleft()
             state.last_1s_vol = sum(v for _, v in state.tick_vols)
             state.last_price = ev.price
+            state.trade_bid = getattr(ev, "bid", None)
+            state.trade_ask = getattr(ev, "ask", None)
+            state.trade_is_limit_up_price = getattr(ev, "is_limit_up_price", None)
+            state.trade_is_limit_up_bid = getattr(ev, "is_limit_up_bid", None)
+            state.trade_is_limit_up_ask = getattr(ev, "is_limit_up_ask", None)
 
             # 漲停判斷：成交價 == 漲停價
             limit_up = Decimal(str(state.info.limit_up))
             if ev.price >= limit_up:
                 state.limit_up_consumed_qty += int(ev.volume)
-                # 若 book 尚未追上，先用 tick 標記為已封板（_on_book 會在 ask 打開時清掉）
-                if not state.is_at_limit_up:
-                    state.is_at_limit_up = True
-                self._mark_limit_up_touched(state, now)
+            self._refresh_limit_up_state(state, source="tick", now=now)
 
     def _on_book(self, ev) -> None:
         """RealtimeFeed 五檔推送。"""
@@ -388,36 +415,65 @@ class TradingEngine:
             else:
                 state.ask0_price = None
                 state.ask0_volume = 0
+            state.has_ask_levels = bool(ev.ask)
             if ev.bid:
                 state.bid0_price = ev.bid[0].price
                 state.bid0_volume = int(ev.bid[0].volume)
             else:
                 state.bid0_price = None
                 state.bid0_volume = 0
+            state.has_bid_levels = bool(ev.bid)
+            self._refresh_limit_up_state(state, source="book", now=time.time())
 
-            limit_up = Decimal(str(state.info.limit_up))
-            # ── 漲停封板偵測（修正：原先只看 ask[0]==limit_up，會漏掉完全封板的情境）──
-            #   情境 A：ask[0] 仍掛在漲停價 → 還有委賣排隊（部分封板）
-            #   情境 B：ask[0] 不在漲停價，但 bid[0] >= 漲停價 → 買盤鎖死，賣盤被吃光（完全封板）
-            #   情境 C：last_price >= limit_up 且尚未跌離 → 視為剛打到漲停（tick 領先 book 時的保險）
-            ask_at_limit = (state.ask0_price is not None and state.ask0_price >= limit_up)
-            bid_at_or_above_limit = (state.bid0_price is not None and state.bid0_price >= limit_up)
-            last_at_limit = (state.last_price is not None and state.last_price >= limit_up)
-            sealed = ask_at_limit or bid_at_or_above_limit or last_at_limit
+    def _refresh_limit_up_state(self, state: StockState, *, source: str, now: float) -> None:
+        decision = evaluate_limit_up_state(
+            limit_up=Decimal(str(state.info.limit_up)),
+            ask0_price=state.ask0_price,
+            ask0_volume=state.ask0_volume,
+            bid0_price=state.bid0_price,
+            bid0_volume=state.bid0_volume,
+            last_price=state.last_price,
+            trade_bid=state.trade_bid,
+            trade_ask=state.trade_ask,
+            has_ask_levels=state.has_ask_levels,
+            has_bid_levels=state.has_bid_levels,
+            is_limit_up_price=state.trade_is_limit_up_price,
+            is_limit_up_bid=state.trade_is_limit_up_bid,
+            is_limit_up_ask=state.trade_is_limit_up_ask,
+        )
+        state.ask_qty_at_limit = int(decision["ask_qty_at_limit"])
+        state.limit_up_candidate_states = dict(decision["candidates"])
+        mode = state.active_limit_up_mode or self._limit_up_mode
+        sealed = bool(decision["candidates"].get(mode, False))
 
-            if ask_at_limit:
-                state.ask_qty_at_limit = state.ask0_volume
-            else:
-                state.ask_qty_at_limit = 0
+        if sealed:
+            state.is_at_limit_up = True
+            state.touched_limit_up_today = True
+            self._mark_limit_up_touched(state, now)
+        else:
+            if state.is_at_limit_up:
+                state.is_at_limit_up = False
+                state.limit_up_since = None
 
-            if sealed:
-                state.is_at_limit_up = True
-                state.touched_limit_up_today = True
-                self._mark_limit_up_touched(state, time.time())
-            else:
-                if state.is_at_limit_up:
-                    state.is_at_limit_up = False
-                    state.limit_up_since = None
+        self._log_limit_up_signal_change(state, source=source, signals=decision["signals"])
+
+    def _log_limit_up_signal_change(self, state: StockState, *, source: str, signals: dict) -> None:
+        prev = getattr(state, "_last_limit_signal_snapshot", None)
+        snapshot = (
+            bool(state.is_at_limit_up),
+            int(state.ask_qty_at_limit),
+            tuple(sorted(state.limit_up_candidate_states.items())),
+        )
+        if prev == snapshot:
+            return
+        state._last_limit_signal_snapshot = snapshot  # type: ignore[attr-defined]
+        active_desc = LIMIT_UP_DETECTION_MODES.get(state.active_limit_up_mode, "")
+        self.on_log(
+            "DEBUG",
+            f"[LimitUpDiag][{state.info.code}] source={source} active={state.active_limit_up_mode} "
+            f"sealed={state.is_at_limit_up} ask_qty={state.ask_qty_at_limit} "
+            f"signals={signals} candidates={state.limit_up_candidate_states} desc={active_desc}",
+        )
 
     def _mark_limit_up_touched(self, state: StockState, now: float) -> None:
         state.touched_limit_up_today = True
@@ -440,7 +496,8 @@ class TradingEngine:
         self.on_log(
             "INFO",
             f"[{state.info.code} {state.info.name}] 漲停！"
-            f"日K第 {state.candle_index} 根，委賣 {state.ask_qty_at_limit} 張",
+            f"日K第 {state.candle_index} 根，委賣 {state.ask_qty_at_limit} 張，"
+            f"判斷={state.active_limit_up_mode}",
         )
 
     def _loop(self):
@@ -1140,6 +1197,8 @@ class TradingEngine:
                     "change_pct": change_pct,     # 漲跌幅 %
                     "ask_qty":    s.ask_qty_at_limit,  # 漲停委賣張數
                     "is_at_limit_up": s.is_at_limit_up,
+                    "limit_up_mode": s.active_limit_up_mode,
+                    "limit_up_candidates": dict(s.limit_up_candidate_states),
                     "out_of_range": out_of_range,  # F9 即時價過濾旗標（True = 該檔被排除顯示）
                     "last_skip_reason": s.last_skip_reason,  # 最近一次被略過進場的原因（GUI 動作欄使用）
                 })

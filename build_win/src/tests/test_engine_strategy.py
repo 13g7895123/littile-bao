@@ -184,6 +184,52 @@ class TestTradingEngineStrategyRules(unittest.TestCase):
 
         self.assertEqual(engine._states["2222"].candle_index, 1)
 
+    def test_default_limitup_mode_uses_last_price_as_fallback(self):
+        cfg = TradingConfig(
+            f1_enabled=False,
+            f9_enabled=False,
+            f10_enabled=False,
+            limit_up_detection_mode="ask_or_bid_or_last",
+        )
+        engine, _logs, _trades, _strategy_events = self._make_engine(cfg)
+
+        engine._on_tick(TickEvent(
+            code="2330",
+            time=datetime(2026, 5, 19, 9, 1),
+            price=Decimal("1100"),
+            volume=10,
+        ))
+
+        self.assertTrue(engine._states["2330"].is_at_limit_up)
+
+    def test_bid_and_no_ask_mode_requires_bid_lock_without_asks(self):
+        cfg = TradingConfig(
+            f1_enabled=False,
+            f9_enabled=False,
+            f10_enabled=False,
+            limit_up_detection_mode="bid_and_no_ask",
+        )
+        engine, _logs, _trades, _strategy_events = self._make_engine(cfg)
+
+        engine._on_book(BookEvent(
+            code="2330",
+            time=datetime(2026, 5, 19, 9, 1),
+            ask=[],
+            bid=[SimpleNamespace(price=Decimal("1100"), volume=99)],
+        ))
+
+        self.assertTrue(engine._states["2330"].is_at_limit_up)
+
+        engine2, _logs2, _trades2, _strategy_events2 = self._make_engine(cfg)
+        engine2._on_book(BookEvent(
+            code="2330",
+            time=datetime(2026, 5, 19, 9, 2),
+            ask=[SimpleNamespace(price=Decimal("1100"), volume=1)],
+            bid=[SimpleNamespace(price=Decimal("1100"), volume=99)],
+        ))
+
+        self.assertFalse(engine2._states["2330"].is_at_limit_up)
+
     def test_consume_entry_skips_f1_when_mutex_enabled(self):
         cfg = TradingConfig(
             entry_before_time="00:00",
