@@ -328,6 +328,32 @@ class FubonRealtimeFeed(RealtimeFeed):
         if self._started:
             return
         try:
+            self._start_once()
+        except FubonNetworkError as e:
+            # Fubon SDK 的底層 gRPC 連線會 silently 斷線（session timeout / 同帳號別處登入 /
+            # 系統休眠 / 網路抖動），登入狀態看起來正常但 init_realtime() 會丟
+            # "Unable to make method calls because underlying connection is closed"。
+            # 偵測到此類訊息時，自動觸發一次重新登入並再嘗試一次。
+            if self._is_connection_dead_error(e) and self._can_relogin():
+                self._log(
+                    "WARN",
+                    f"[FubonFeed] 偵測到 SDK 底層連線已斷，嘗試重新登入後再啟動：{e}",
+                )
+                try:
+                    self._relogin()
+                except Exception as relogin_err:  # noqa: BLE001
+                    self.stop()
+                    raise FubonNetworkError(
+                        f"啟動 Fubon WebSocket 失敗（重新登入也失敗）：{relogin_err}"
+                    ) from relogin_err
+                # 重新登入成功後再試一次（只重試一次，避免無限迴圈）
+                self._start_once()
+            else:
+                raise
+
+    def _start_once(self) -> None:
+        """單次啟動嘗試；任何錯誤都包成 FubonNetworkError 拋出。"""
+        try:
             sdk = self._adapter.sdk  # 會在未登入時拋 FubonNotLoggedInError
         except FubonNotLoggedInError:
             raise
@@ -352,6 +378,47 @@ class FubonRealtimeFeed(RealtimeFeed):
         except Exception as e:  # noqa: BLE001
             self.stop()
             raise FubonNetworkError(f"啟動 Fubon WebSocket 失敗：{e}") from e
+
+    @staticmethod
+    def _is_connection_dead_error(err: Exception) -> bool:
+        """判斷錯誤是否屬於『SDK 底層連線已死、需重登入』類型。"""
+        # 從最外層往內看所有 cause / context 的訊息
+        seen = set()
+        cur: Optional[BaseException] = err
+        while cur is not None and id(cur) not in seen:
+            seen.add(id(cur))
+            msg = str(cur).lower()
+            if (
+                "underlying connection is closed" in msg
+                or "login error" in msg and "connection" in msg
+                or "channel closed" in msg
+                or "not connected" in msg
+            ):
+                return True
+            cur = cur.__cause__ or cur.__context__
+        return False
+
+    def _can_relogin(self) -> bool:
+        adapter = self._adapter
+        return adapter is not None and hasattr(adapter, "login") and callable(getattr(adapter, "login"))
+
+    def _relogin(self) -> None:
+        """強制 adapter 重新登入；先清掉舊 SDK 物件再呼叫 login()。"""
+        adapter = self._adapter
+        # 嘗試先登出（忽略失敗），再清空狀態，最後重新登入
+        try:
+            logout = getattr(adapter, "logout", None)
+            if callable(logout):
+                logout()
+        except Exception:  # noqa: BLE001
+            pass
+        # 重置本物件的 ws 狀態，避免殘留
+        self._ws_clients = []
+        self._ws = None
+        self._sdk_token = None
+        self._started = False
+        adapter.login()
+        self._log("INFO", "[FubonFeed] 重新登入完成")
 
     def stop(self) -> None:
         if not self._ws_clients and self._ws is None:
