@@ -517,6 +517,10 @@ class TradingEngine:
 
         # ── 出場邏輯（功能 4、5）────────────────────────────────
         if state.position_qty > 0:
+            # 若已有出場單在途（state.pending=True），跳過本次評估，避免重複下賣單
+            # （否則 fill 未回前，下一個 tick 仍會觸發 F4/F5 再送一張）
+            if state.pending:
+                return
             reason = None
 
             # 功能 4：板被打開（曾為漲停 → 目前 ask[0] 不再是漲停價）
