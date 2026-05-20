@@ -130,6 +130,7 @@ class TradingEngine:
         on_trade: Callable[[dict], None],
         on_status: Callable[[List[dict]], None],
         on_strategy_event: Optional[Callable[[dict], None]] = None,
+        on_decision_event: Optional[Callable[[dict], None]] = None,
         feed: Optional["RealtimeFeed"] = None,
         symbol_infos: Optional[Dict[str, "object"]] = None,
         broker: Optional[object] = None,
@@ -139,6 +140,7 @@ class TradingEngine:
         self.on_trade = on_trade
         self.on_status = on_status
         self.on_strategy_event = on_strategy_event
+        self.on_decision_event = on_decision_event
         self.feed = feed
         self.broker = broker
 
@@ -150,6 +152,7 @@ class TradingEngine:
         self._daily_trade_codes: set = set()  # 已成交過的股票代號集合（同股票只算一檔）
         self._today_realized_pnl: Decimal = Decimal("0")  # M4：當日已實現損益
         self._trading_date: date = date.today()  # 跨日重置使用
+        self._processed_fill_keys: set = set()   # 避免同一筆成交被重複處理
         self._limit_up_mode: str = resolve_limit_up_mode(
             getattr(config, "limit_up_detection_mode", DEFAULT_LIMIT_UP_DETECTION_MODE)
         )
@@ -401,7 +404,7 @@ class TradingEngine:
             limit_up = Decimal(str(state.info.limit_up))
             if ev.price >= limit_up:
                 state.limit_up_consumed_qty += int(ev.volume)
-            self._refresh_limit_up_state(state, source="tick", now=now)
+            self._refresh_limit_up_state(state, source="tick", now=now, event_time=ev.time)
 
     def _on_book(self, ev) -> None:
         """RealtimeFeed 五檔推送。"""
@@ -423,9 +426,9 @@ class TradingEngine:
                 state.bid0_price = None
                 state.bid0_volume = 0
             state.has_bid_levels = bool(ev.bid)
-            self._refresh_limit_up_state(state, source="book", now=time.time())
+            self._refresh_limit_up_state(state, source="book", now=time.time(), event_time=ev.time)
 
-    def _refresh_limit_up_state(self, state: StockState, *, source: str, now: float) -> None:
+    def _refresh_limit_up_state(self, state: StockState, *, source: str, now: float, event_time=None) -> None:
         decision = evaluate_limit_up_state(
             limit_up=Decimal(str(state.info.limit_up)),
             ask0_price=state.ask0_price,
@@ -455,9 +458,14 @@ class TradingEngine:
                 state.is_at_limit_up = False
                 state.limit_up_since = None
 
-        self._log_limit_up_signal_change(state, source=source, signals=decision["signals"])
+        self._log_limit_up_signal_change(
+            state,
+            source=source,
+            signals=decision["signals"],
+            event_time=event_time,
+        )
 
-    def _log_limit_up_signal_change(self, state: StockState, *, source: str, signals: dict) -> None:
+    def _log_limit_up_signal_change(self, state: StockState, *, source: str, signals: dict, event_time=None) -> None:
         prev = getattr(state, "_last_limit_signal_snapshot", None)
         snapshot = (
             bool(state.is_at_limit_up),
@@ -473,6 +481,19 @@ class TradingEngine:
             f"[LimitUpDiag][{state.info.code}] source={source} active={state.active_limit_up_mode} "
             f"sealed={state.is_at_limit_up} ask_qty={state.ask_qty_at_limit} "
             f"signals={signals} candidates={state.limit_up_candidate_states} desc={active_desc}",
+        )
+        self._emit_decision_event(
+            "LIMIT_UP",
+            state,
+            "鎖板中" if state.is_at_limit_up else "未鎖板",
+            f"{source}:{state.active_limit_up_mode}",
+            {
+                "ask_qty": state.ask_qty_at_limit,
+                "active_mode": state.active_limit_up_mode,
+                "signals": signals,
+                "candidates": dict(state.limit_up_candidate_states),
+            },
+            event_time=event_time,
         )
 
     def _mark_limit_up_touched(self, state: StockState, now: float) -> None:
@@ -529,6 +550,7 @@ class TradingEngine:
             # 注意：position_qty 不清空，避免影響真實持倉同步
         self._daily_trade_count = 0
         self._daily_trade_codes.clear()
+        self._processed_fill_keys.clear()
         self._today_realized_pnl = Decimal("0")
         self._trading_date = today
 
@@ -776,6 +798,13 @@ class TradingEngine:
                 state.entry_blocked = True
                 state.entry_blocked_reason = "下單失敗"
                 self.on_log("ERROR", f"[{info.code}] 下單失敗：{e}")
+                self._emit_decision_event(
+                    "ORDER",
+                    state,
+                    "下單失敗",
+                    str(e),
+                    {"side": "BUY", "qty": qty, "price": info.limit_up},
+                )
             return
 
         # 無 broker：保留原模擬延遲成交（單元測試 / 純離線情境）
@@ -918,6 +947,13 @@ class TradingEngine:
         state.entry_blocked = True
         state.entry_blocked_reason = reason
         self.on_log(level, message)
+        self._emit_decision_event(
+            "ENTRY_BLOCK",
+            state,
+            "封鎖進場",
+            reason,
+            {"level": level, "message": message},
+        )
 
     def _skip_entry(self, state: StockState, reason: str, *, log: bool = True) -> None:
         """記錄一次「軟性略過」進場的原因（不會永久封鎖）。
@@ -927,6 +963,13 @@ class TradingEngine:
         """
         if state.last_skip_reason != reason:
             state.last_skip_reason = reason
+            self._emit_decision_event(
+                "ENTRY_SKIP",
+                state,
+                "未進場",
+                reason,
+                {},
+            )
             if log:
                 # 使用 DEBUG 等級，避免每秒刷屏；如需排查可調 log level。
                 try:
@@ -1053,6 +1096,17 @@ class TradingEngine:
                 "details": {key: _fmt(value) for key, value in details.items()
                             if value is not None},
             })
+        self._emit_decision_event(
+            "STRATEGY",
+            state,
+            {
+                "BUY": "進場觸發",
+                "SELL": "出場觸發",
+                "CANCEL": "取消觸發",
+            }.get(side, side),
+            strategy,
+            details,
+        )
         self.on_log(
             "TRADE",
             f"[策略觸發][{side}][{state.info.code} {state.info.name}] "
@@ -1071,10 +1125,43 @@ class TradingEngine:
                 f"@ {ev.price} 狀態={ev.status.value}")
         except Exception:  # noqa: BLE001
             pass
+        state = self._states.get(ev.code)
+        if state is not None:
+            self._emit_decision_event(
+                "ORDER",
+                state,
+                f"委託{ev.status.value}",
+                ev.side.value,
+                {
+                    "order_id": ev.order_id,
+                    "qty": ev.qty,
+                    "filled_qty": ev.filled_qty,
+                    "price": ev.price,
+                    "status": ev.status.value,
+                    "source": getattr(ev, "source", ""),
+                },
+                event_time=ev.time,
+            )
 
     def _on_broker_fill(self, ev) -> None:
         """成交回報：更新部位、累計損益、推送 trade。"""
         with self._lock:
+            fill_key = (
+                str(getattr(ev, "order_id", "") or ""),
+                str(getattr(ev.side, "value", ev.side)),
+                str(getattr(ev, "code", "") or ""),
+                str(getattr(ev, "price", "") or ""),
+                int(getattr(ev, "qty", 0) or 0),
+                getattr(getattr(ev, "time", None), "isoformat", lambda: "")(),
+            )
+            if fill_key in self._processed_fill_keys:
+                self.on_log(
+                    "WARN",
+                    f"[{getattr(ev, 'code', '')}] 忽略重複成交回報 "
+                    f"order_id={getattr(ev, 'order_id', '')}",
+                )
+                return
+            self._processed_fill_keys.add(fill_key)
             state = self._states.get(ev.code)
             if state is None:
                 return
@@ -1112,6 +1199,19 @@ class TradingEngine:
                     "pnl": 0.0,
                     "note": f"第 {state.candle_index} 根漲停",
                 })
+                self._emit_decision_event(
+                    "FILL",
+                    state,
+                    "買進成交",
+                    "BUY",
+                    {
+                        "order_id": ev.order_id,
+                        "qty": qty,
+                        "price": ev.price,
+                        "daily_trade_count": self._daily_trade_count,
+                    },
+                    event_time=ev.time,
+                )
             else:  # SELL
                 pnl_net = 0.0
                 if state.entry_price is not None and qty > 0 and realized_pnl is not None:
@@ -1141,6 +1241,81 @@ class TradingEngine:
                     "realized_total": float(self._today_realized_pnl),
                     "note": note,
                 })
+                self._emit_decision_event(
+                    "FILL",
+                    state,
+                    "賣出成交",
+                    note,
+                    {
+                        "order_id": ev.order_id,
+                        "qty": qty,
+                        "price": ev.price,
+                        "pnl": pnl_net,
+                        "realized_total": float(self._today_realized_pnl),
+                    },
+                    event_time=ev.time,
+                )
+
+    @staticmethod
+    def _fmt_decision_value(value):
+        if isinstance(value, Decimal):
+            return str(value)
+        if isinstance(value, dict):
+            return {k: TradingEngine._fmt_decision_value(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [TradingEngine._fmt_decision_value(v) for v in value]
+        return value
+
+    def _state_snapshot_details(self, state: StockState) -> dict:
+        return {
+            "candle": state.candle_index,
+            "limit_up_mode": state.active_limit_up_mode,
+            "is_at_limit_up": state.is_at_limit_up,
+            "ask_qty": state.ask_qty_at_limit,
+            "ask0_price": state.ask0_price,
+            "ask0_volume": state.ask0_volume,
+            "bid0_price": state.bid0_price,
+            "bid0_volume": state.bid0_volume,
+            "last_price": state.last_price,
+            "last_1s_vol": state.last_1s_vol,
+            "consume_qty": state.limit_up_consumed_qty,
+            "pending": state.pending,
+            "position_qty": state.position_qty,
+            "blocked": state.entry_blocked,
+            "blocked_reason": state.entry_blocked_reason,
+            "sold_today": state.sold_today,
+        }
+
+    def _emit_decision_event(
+        self,
+        category: str,
+        state: StockState,
+        result: str,
+        reason: str,
+        details: dict,
+        *,
+        event_time=None,
+    ) -> None:
+        if self.on_decision_event is None:
+            return
+        merged = self._state_snapshot_details(state)
+        merged.update(details or {})
+        try:
+            self.on_decision_event({
+                "time": (
+                    event_time.strftime("%H:%M:%S")
+                    if hasattr(event_time, "strftime")
+                    else datetime.now().strftime("%H:%M:%S")
+                ),
+                "code": state.info.code,
+                "name": state.info.name,
+                "category": category,
+                "result": result,
+                "reason": reason,
+                "details": self._fmt_decision_value(merged),
+            })
+        except Exception:
+            pass
 
     # ─────────────────────────────────────────
     #  狀態彙整（供 UI 輪詢）

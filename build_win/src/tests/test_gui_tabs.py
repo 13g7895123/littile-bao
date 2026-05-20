@@ -5,6 +5,7 @@ import os
 import sys
 import threading
 import unittest
+from datetime import datetime
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest import mock
@@ -108,6 +109,10 @@ class TestGuiTabLayout(unittest.TestCase):
         self.assertTrue(
             self._is_descendant(self.win.strategy_trigger_table, self.win._pages["events"])
         )
+        self.assertTrue(
+            self._is_descendant(self.win.decision_detail_table, self.win._pages["decision_detail"])
+        )
+        self.assertTrue(self.win._tab_btns["decision_detail"].isHidden())
         self.assertIsNot(self.win.orders_table, self.win.orders_full_table)
         self.assertIsNot(self.win.trades_table, self.win.trades_full_table)
         self.assertIsNot(self.win.positions_table, self.win.positions_full_table)
@@ -154,6 +159,29 @@ class TestGuiTabLayout(unittest.TestCase):
         self.assertIn("ask_qty=20", self.win.strategy_trigger_table.item(0, 5).text())
         self.assertEqual(self.win.strategy_trigger_summary_lbl.text(), "共 1 筆")
 
+    def test_decision_detail_tab_can_be_shown_and_receives_events(self):
+        self.assertTrue(self.win._tab_btns["decision_detail"].isHidden())
+
+        self.win._toggle_decision_detail_tab()
+
+        self.assertFalse(self.win._tab_btns["decision_detail"].isHidden())
+        self.assertFalse(self.win._pages["decision_detail"].isHidden())
+
+        self.win._append_decision_detail({
+            "time": "09:01:02",
+            "code": "2330",
+            "name": "台積電",
+            "category": "ENTRY_SKIP",
+            "result": "未進場",
+            "reason": "F1:委賣 120 ≥ 100 張",
+            "details": {"ask_qty": 120, "candle": 1, "last_1s_vol": 33},
+        })
+
+        self.assertEqual(self.win.decision_detail_table.rowCount(), 1)
+        self.assertEqual(self.win.decision_detail_table.item(0, 1).text(), "2330")
+        self.assertEqual(self.win.decision_detail_table.item(0, 4).text(), "未進場")
+        self.assertIn("ask_qty=120", self.win.decision_detail_table.item(0, 6).text())
+
     def test_tables_and_log_update_their_own_tabs(self):
         order = SimpleNamespace(
             order_id="DRYTEST001",
@@ -164,20 +192,26 @@ class TestGuiTabLayout(unittest.TestCase):
             price=Decimal("100"),
             qty=1,
             source="DRY",
+            time=datetime(2026, 5, 20, 9, 1, 2),
         )
         self.win._append_order(order)
         self.assertEqual(self.win.orders_table.rowCount(), 1)
         self.assertEqual(self.win.orders_full_table.rowCount(), 1)
+        self.assertEqual(self.win.orders_table.item(0, 5).text(), "09:01:02")
+        self.assertEqual(self.win.orders_table.item(0, 6).text(), "")
         self.assertTrue(
             self._is_descendant(self.win.orders_full_table, self.win._pages["orders"])
         )
 
         order.status = _Value("FILLED")
+        order.time = datetime(2026, 5, 20, 9, 1, 5)
         self.win._append_order(order)
         self.assertEqual(self.win.orders_table.rowCount(), 1)
         self.assertEqual(self.win.orders_full_table.rowCount(), 1)
-        self.assertEqual(self.win.orders_table.item(0, 5).text(), "已成交")
-        self.assertEqual(self.win.orders_full_table.item(0, 5).text(), "已成交")
+        self.assertEqual(self.win.orders_table.item(0, 6).text(), "09:01:05")
+        self.assertEqual(self.win.orders_table.item(0, 7).text(), "已成交")
+        self.assertEqual(self.win.orders_full_table.item(0, 6).text(), "09:01:05")
+        self.assertEqual(self.win.orders_full_table.item(0, 7).text(), "已成交")
 
         self.win._switch_tab("orders")
         self.assertEqual(self.win.orders_full_table.rowCount(), 1)
@@ -190,8 +224,18 @@ class TestGuiTabLayout(unittest.TestCase):
             "price": 100.0,
             "qty": 1,
         })
-        self.assertEqual(self.win.trades_table.rowCount(), 1)
-        self.assertEqual(self.win.trades_full_table.rowCount(), 1)
+        self.win._append_trade({
+            "time": "09:03:00",
+            "code": "2330",
+            "name": "台積電",
+            "action": "SELL",
+            "price": 101.0,
+            "qty": 1,
+            "pnl": 500.0,
+        })
+        self.assertEqual(self.win.trades_table.rowCount(), 2)
+        self.assertEqual(self.win.trades_full_table.rowCount(), 2)
+        self.assertEqual(self.win.stat_trade_cnt.text(), "1 / 5")
 
         self.win._append_log("INFO", "tab log smoke")
         self.assertIn("tab log smoke", self.win.event_log.toPlainText())

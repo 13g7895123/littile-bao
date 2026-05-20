@@ -58,7 +58,8 @@ class BrokerAdapter(ABC):
         """註冊成交回報 callback；同一適配器可註冊多個。"""
         if not hasattr(self, "_fill_subs"):
             self._fill_subs: List[FillCallback] = []
-        self._fill_subs.append(callback)
+        if callback not in self._fill_subs:
+            self._fill_subs.append(callback)
 
     def dispatch_fill(self, ev: FillEvent) -> None:
         """由 SDK 回報或模擬流程觸發；對所有訂閱者廣播。"""
@@ -72,7 +73,8 @@ class BrokerAdapter(ABC):
     def on_order(self, callback: OrderCallback) -> None:
         if not hasattr(self, "_order_subs"):
             self._order_subs: List[OrderCallback] = []
-        self._order_subs.append(callback)
+        if callback not in self._order_subs:
+            self._order_subs.append(callback)
 
     def dispatch_order(self, ev: OrderEvent) -> None:
         for cb in getattr(self, "_order_subs", []):

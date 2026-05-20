@@ -19,7 +19,7 @@ LIMIT_UP_DETECTION_MODES: Dict[str, str] = {
     "trade_flag_only": "只有 API 漲停旗標為真才算",
 }
 
-DEFAULT_LIMIT_UP_DETECTION_MODE = "ask_or_bid_or_last"
+DEFAULT_LIMIT_UP_DETECTION_MODE = "bid_and_zero_ask"
 
 
 def _to_decimal(value: Optional[Decimal]) -> Optional[Decimal]:

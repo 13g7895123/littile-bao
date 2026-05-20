@@ -60,6 +60,13 @@ class TestTradingConfigJsonIO(unittest.TestCase):
         with self.assertRaises(ValueError):
             TradingConfig.from_dict(["not", "an", "object"])
 
+    def test_from_dict_migrates_old_limitup_mode(self):
+        cfg = TradingConfig.from_dict({
+            "limit_up_detection_mode": "ask_or_bid_or_last",
+        })
+
+        self.assertEqual(cfg.limit_up_detection_mode, "bid_and_zero_ask")
+
 
 if __name__ == "__main__":
     unittest.main()

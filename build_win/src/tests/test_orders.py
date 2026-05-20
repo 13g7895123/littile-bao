@@ -77,6 +77,22 @@ class TestMockOrderFlow(unittest.TestCase):
         time.sleep(2.5)
         self.assertEqual(len(self.fills), 0)
 
+    def test_duplicate_subscription_is_ignored(self):
+        self.adapter.on_order(self.orders.append)
+        self.adapter.on_filled(self.fills.append)
+
+        self.adapter.place_order(OrderRequest(
+            code="2330", name="台積電",
+            side=OrderSide.BUY, price=Decimal("1100"), qty=1,
+        ))
+
+        deadline = time.time() + 5.0
+        while time.time() < deadline and not self.fills:
+            time.sleep(0.1)
+
+        self.assertEqual(len(self.fills), 1)
+        self.assertEqual(len(self.orders), 2)
+
 
 class TestFubonDryRun(unittest.TestCase):
     def _make(self, dry_run: bool) -> FubonAdapter:

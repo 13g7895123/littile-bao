@@ -109,6 +109,7 @@ class TestTradingEngineStrategyRules(unittest.TestCase):
             f1_enabled=False,
             f9_enabled=False,
             f10_enabled=False,
+            limit_up_detection_mode="ask_or_bid_or_last",
             candle_limit=2,
             per_stock_amount=2_000_000,
         )
@@ -161,7 +162,12 @@ class TestTradingEngineStrategyRules(unittest.TestCase):
         )
 
     def test_first_daily_limit_up_is_candle_one_without_prior_streak(self):
-        cfg = TradingConfig(f1_enabled=False, f9_enabled=False, f10_enabled=False)
+        cfg = TradingConfig(
+            f1_enabled=False,
+            f9_enabled=False,
+            f10_enabled=False,
+            limit_up_detection_mode="ask_or_bid_or_last",
+        )
         symbol_info = build_symbol_info(
             "2222", "首根股", "TSE", Decimal("50"),
             prev_volume=5000,
@@ -229,6 +235,57 @@ class TestTradingEngineStrategyRules(unittest.TestCase):
         ))
 
         self.assertFalse(engine2._states["2330"].is_at_limit_up)
+
+    def test_bid_and_zero_ask_mode_requires_bid_lock_and_zero_ask(self):
+        cfg = TradingConfig(
+            f1_enabled=False,
+            f9_enabled=False,
+            f10_enabled=False,
+            limit_up_detection_mode="bid_and_zero_ask",
+        )
+        engine, _logs, _trades, _strategy_events = self._make_engine(cfg)
+
+        engine._on_book(BookEvent(
+            code="2330",
+            time=datetime(2026, 5, 19, 9, 1),
+            ask=[SimpleNamespace(price=Decimal("1100"), volume=3)],
+            bid=[SimpleNamespace(price=Decimal("1100"), volume=99)],
+        ))
+        self.assertFalse(engine._states["2330"].is_at_limit_up)
+
+        engine._on_book(BookEvent(
+            code="2330",
+            time=datetime(2026, 5, 19, 9, 2),
+            ask=[],
+            bid=[SimpleNamespace(price=Decimal("1100"), volume=99)],
+        ))
+        self.assertTrue(engine._states["2330"].is_at_limit_up)
+
+    def test_skip_entry_emits_decision_detail_event(self):
+        cfg = TradingConfig(
+            f9_enabled=False,
+            f10_enabled=False,
+            entry_before_time="23:59",
+            ask_queue_threshold=100,
+        )
+        decision_events = []
+        engine = TradingEngine(
+            cfg,
+            on_log=lambda _level, _msg: None,
+            on_trade=lambda _trade: None,
+            on_status=lambda _summary: None,
+            on_decision_event=decision_events.append,
+        )
+        state = self._arm_entry_state(engine)
+        state.ask_qty_at_limit = 120
+        state.last_price = Decimal(str(state.info.limit_up))
+
+        engine._tick(state, time.time())
+
+        self.assertTrue(decision_events)
+        self.assertEqual(decision_events[-1]["category"], "ENTRY_SKIP")
+        self.assertEqual(decision_events[-1]["result"], "未進場")
+        self.assertIn("委賣", decision_events[-1]["reason"])
 
     def test_consume_entry_skips_f1_when_mutex_enabled(self):
         cfg = TradingConfig(

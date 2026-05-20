@@ -304,13 +304,17 @@ class App(QMainWindow):
         self._trade_count = 0
         self._buy_count = 0
         self._sell_count = 0
+        self._daily_trade_codes = set()
         self._realized_pnl = 0.0   # M4：今日已實現損益累計
         self._log_lines = 0
         self._log_entries = []
         self._log_filter = "all"
         self._log_filter_buttons = {"all": [], "strategy": []}
         self._strategy_trigger_count = 0
+        self._decision_detail_count = 0
         self._syncing_order_mode_control = False
+        self._current_tab = "dashboard"
+        self._hidden_tabs = {"decision_detail", "risk"}
 
         self._fields: Dict[str, QLineEdit] = {}
         self._bfields: Dict[str, QLineEdit] = {}   # 券商設定欄位
@@ -389,6 +393,7 @@ class App(QMainWindow):
             ("orders",    "委託/成交"),
             ("positions", "持倉部位"),
             ("events",    "事件日誌"),
+            ("decision_detail", "決策明細"),
             ("risk",      "風控設定"),
         ]
         for key, text in tabs:
@@ -401,6 +406,7 @@ class App(QMainWindow):
             btn.mousePressEvent = lambda _e, k=key: self._switch_tab(k)
             lay.addWidget(btn)
             self._tab_btns[key] = btn
+            btn.setVisible(key not in self._hidden_tabs)
 
         lay.addStretch()
 
@@ -475,6 +481,9 @@ class App(QMainWindow):
                 f"color: {color}; background: transparent;")
 
     def _switch_tab(self, key: str):
+        if key in self._hidden_tabs:
+            return
+        self._current_tab = key
         if hasattr(self, "_strategy_settings_panel"):
             self._place_strategy_settings_panel(full_page=(key == "settings"))
         for k, btn in self._tab_btns.items():
@@ -525,7 +534,7 @@ class App(QMainWindow):
         pages_lay.setSpacing(0)
 
         self._pages: Dict[str, QWidget] = {}
-        for key in ("dashboard", "settings", "broker", "orders", "positions", "events", "risk"):
+        for key in ("dashboard", "settings", "broker", "orders", "positions", "events", "decision_detail", "risk"):
             page = QWidget()
             page.setStyleSheet(f"background-color: {C['bg']};")
             pages_lay.addWidget(page)
@@ -537,6 +546,7 @@ class App(QMainWindow):
         self._build_orders_page(self._pages["orders"])
         self._build_positions_page(self._pages["positions"])
         self._build_events_page(self._pages["events"])
+        self._build_decision_detail_page(self._pages["decision_detail"])
         self._build_placeholder(self._pages["risk"],      "風控設定")
 
         lay.addWidget(pages_w, 1)
@@ -1138,7 +1148,7 @@ class App(QMainWindow):
         oh.addWidget(_label("委託狀態", C["text"], 10, bold=True))
         oh.addStretch()
         ol.addLayout(oh)
-        ord_cols = ["代碼", "名稱", "委託類別", "價格", "數量", "狀態", "來源"]
+        ord_cols = ["代碼", "名稱", "委託類別", "價格", "數量", "掛單時間", "成交時間", "狀態", "來源"]
         self.orders_table = QTableWidget(0, len(ord_cols))
         self.orders_table.setHorizontalHeaderLabels(ord_cols)
         self.orders_table.setStyleSheet(_table_style())
@@ -1147,7 +1157,7 @@ class App(QMainWindow):
         self.orders_table.setShowGrid(True)
         self.orders_table.horizontalHeader().setStretchLastSection(True)
         self.orders_table.verticalHeader().setDefaultSectionSize(26)
-        for i, w in enumerate([48, 55, 62, 58, 46, 48, 46]):
+        for i, w in enumerate([48, 55, 62, 58, 46, 70, 70, 48, 46]):
             self.orders_table.setColumnWidth(i, w)
         ol.addWidget(self.orders_table, 1)
         rl.addWidget(ord_f, 2)
@@ -1222,7 +1232,7 @@ class App(QMainWindow):
         oh.addWidget(_label("委託狀態", C["text"], 10, bold=True))
         oh.addStretch()
         ol.addLayout(oh)
-        ord_cols = ["代碼", "名稱", "委託類別", "價格", "數量", "狀態", "來源"]
+        ord_cols = ["代碼", "名稱", "委託類別", "價格", "數量", "掛單時間", "成交時間", "狀態", "來源"]
         self.orders_full_table = QTableWidget(0, len(ord_cols))
         self.orders_full_table.setHorizontalHeaderLabels(ord_cols)
         self.orders_full_table.setStyleSheet(_table_style())
@@ -1232,7 +1242,7 @@ class App(QMainWindow):
         self.orders_full_table.setShowGrid(True)
         self.orders_full_table.horizontalHeader().setStretchLastSection(True)
         self.orders_full_table.verticalHeader().setDefaultSectionSize(28)
-        for i, w in enumerate([60, 80, 80, 72, 55, 65, 65]):
+        for i, w in enumerate([60, 80, 80, 72, 55, 90, 90, 65, 65]):
             self.orders_full_table.setColumnWidth(i, w)
         ol.addWidget(self.orders_full_table, 1)
         self.orders_full_summary_lbl = _label("委託總計 (0)", C["subtext"], 9)
@@ -1321,6 +1331,13 @@ class App(QMainWindow):
         th = QHBoxLayout()
         th.addWidget(_label("策略觸發紀錄", C["text"], 10, bold=True))
         th.addStretch()
+        self.decision_tab_toggle_btn = QPushButton("顯示決策明細")
+        self.decision_tab_toggle_btn.setFont(_font(9))
+        self.decision_tab_toggle_btn.setFixedHeight(24)
+        self.decision_tab_toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.decision_tab_toggle_btn.clicked.connect(self._toggle_decision_detail_tab)
+        th.addWidget(self.decision_tab_toggle_btn)
+        th.addSpacing(8)
         self.strategy_trigger_summary_lbl = _label("共 0 筆", C["subtext"], 9)
         th.addWidget(self.strategy_trigger_summary_lbl)
         tl.addLayout(th)
@@ -1379,8 +1396,87 @@ class App(QMainWindow):
         """)
         el.addWidget(self.events_full_log, 1)
         lay.addWidget(ev_f, 1)
+        self._sync_decision_tab_toggle_text()
+
+    def _build_decision_detail_page(self, parent: QWidget):
+        lay = QVBoxLayout(parent)
+        lay.setContentsMargins(10, 10, 10, 10)
+        lay.setSpacing(8)
+
+        detail_f = _panel_frame()
+        dl = QVBoxLayout(detail_f)
+        dl.setContentsMargins(10, 8, 10, 8)
+        dl.setSpacing(6)
+        dh = QHBoxLayout()
+        dh.addWidget(_label("決策明細", C["text"], 10, bold=True))
+        dh.addSpacing(8)
+        self.decision_detail_summary_lbl = _label("共 0 筆", C["subtext"], 9)
+        dh.addWidget(self.decision_detail_summary_lbl)
+        dh.addStretch()
+        hide_btn = QPushButton("隱藏頁籤")
+        hide_btn.setFont(_font(9))
+        hide_btn.setFixedHeight(24)
+        hide_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        hide_btn.clicked.connect(self._hide_decision_detail_tab)
+        dh.addWidget(hide_btn)
+        clear_btn = QPushButton("清除")
+        clear_btn.setFont(_font(9))
+        clear_btn.setFixedHeight(24)
+        clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        clear_btn.clicked.connect(self._clear_decision_detail)
+        dh.addWidget(clear_btn)
+        dl.addLayout(dh)
+
+        detail_cols = ["時間", "代碼", "名稱", "類型", "結果", "原因/策略", "條件快照"]
+        self.decision_detail_table = QTableWidget(0, len(detail_cols))
+        self.decision_detail_table.setHorizontalHeaderLabels(detail_cols)
+        self.decision_detail_table.setStyleSheet(_table_style())
+        self.decision_detail_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.decision_detail_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.decision_detail_table.verticalHeader().setVisible(False)
+        self.decision_detail_table.setShowGrid(True)
+        self.decision_detail_table.horizontalHeader().setStretchLastSection(True)
+        self.decision_detail_table.verticalHeader().setDefaultSectionSize(28)
+        for i, w in enumerate([72, 60, 80, 88, 88, 150, 520]):
+            self.decision_detail_table.setColumnWidth(i, w)
+        dl.addWidget(self.decision_detail_table, 1)
+        lay.addWidget(detail_f, 1)
 
     # ── 頁面資料同步輔助 ──────────────────────
+
+    def _sync_decision_tab_toggle_text(self) -> None:
+        btn = getattr(self, "decision_tab_toggle_btn", None)
+        if btn is None:
+            return
+        visible = "decision_detail" not in self._hidden_tabs
+        btn.setText("隱藏決策明細" if visible else "顯示決策明細")
+
+    def _set_tab_visible(self, key: str, visible: bool) -> None:
+        if visible:
+            self._hidden_tabs.discard(key)
+        else:
+            self._hidden_tabs.add(key)
+        btn = self._tab_btns.get(key)
+        if btn is not None:
+            btn.setVisible(visible)
+        if not visible and self._current_tab == key:
+            self._switch_tab("events")
+        self._sync_decision_tab_toggle_text()
+
+    def _toggle_decision_detail_tab(self) -> None:
+        self._set_tab_visible("decision_detail", "decision_detail" in self._hidden_tabs)
+        if "decision_detail" not in self._hidden_tabs:
+            self._switch_tab("decision_detail")
+
+    def _hide_decision_detail_tab(self) -> None:
+        self._set_tab_visible("decision_detail", False)
+
+    def _clear_decision_detail(self) -> None:
+        self._decision_detail_count = 0
+        if hasattr(self, "decision_detail_table"):
+            self.decision_detail_table.setRowCount(0)
+        if hasattr(self, "decision_detail_summary_lbl"):
+            self.decision_detail_summary_lbl.setText("共 0 筆")
 
     def _sync_orders_full_table(self) -> None:
         """從儀表板 orders_table 同步至全頁面 orders_full_table。"""
@@ -2728,6 +2824,8 @@ class App(QMainWindow):
         self._trade_count = 0
         self._buy_count = 0
         self._sell_count = 0
+        self._daily_trade_codes = set()
+        self._clear_decision_detail()
         self._set_badge_loading()
         self._set_strategy_status("載入中…", C["yellow_l"])
         push_log("INFO", "策略啟動準備中，正在背景載入市場資料…", include_traceback=False)
@@ -2753,6 +2851,7 @@ class App(QMainWindow):
                 on_trade=self._on_trade,
                 on_status=lambda _s: None,
                 on_strategy_event=self._on_strategy_event,
+                on_decision_event=self._on_decision_event,
                 feed=feed,
                 symbol_infos=symbol_infos,
                 broker=broker,
@@ -3148,6 +3247,11 @@ class App(QMainWindow):
                 broker.on_order(self._on_order_event)
             except Exception:  # noqa: BLE001
                 pass
+        if broker is not None and hasattr(broker, "on_filled"):
+            try:
+                broker.on_filled(self._on_fill_event)
+            except Exception:  # noqa: BLE001
+                pass
         # M6：啟動帳戶輪詢（10 秒一次）
         self._stop_account_polling()
         if broker is not None and hasattr(broker, "account_service"):
@@ -3299,9 +3403,17 @@ class App(QMainWindow):
         """從 broker 執行緒接收 OrderEvent，丟回 GUI 主執行緒繪製。"""
         self._dispatch_ui(lambda: self._append_order(ev))
 
+    def _on_fill_event(self, ev) -> None:
+        """從 broker 執行緒接收 FillEvent，丟回 GUI 主執行緒更新成交時間。"""
+        self._dispatch_ui(lambda: self._mark_order_filled(ev))
+
     def _on_strategy_event(self, ev: dict) -> None:
         """從策略引擎接收結構化觸發紀錄，丟回 GUI 主執行緒繪製。"""
         self._dispatch_ui(lambda ev=ev: self._append_strategy_event(ev))
+
+    def _on_decision_event(self, ev: dict) -> None:
+        """從策略引擎接收決策明細事件，丟回 GUI 主執行緒繪製。"""
+        self._dispatch_ui(lambda ev=ev: self._append_decision_detail(ev))
 
     def _append_strategy_event(self, ev: dict) -> None:
         if not hasattr(self, "strategy_trigger_table"):
@@ -3344,6 +3456,50 @@ class App(QMainWindow):
             self.strategy_trigger_table.removeRow(self.strategy_trigger_table.rowCount() - 1)
         self.strategy_trigger_summary_lbl.setText(f"共 {self._strategy_trigger_count} 筆")
 
+    def _append_decision_detail(self, ev: dict) -> None:
+        if not hasattr(self, "decision_detail_table"):
+            return
+        self._decision_detail_count += 1
+        details = ev.get("details") or {}
+        if isinstance(details, dict):
+            detail_txt = "；".join(f"{k}={v}" for k, v in details.items())
+        else:
+            detail_txt = str(details)
+        result = str(ev.get("result") or "")
+        fg = {
+            "未進場": C["yellow_l"],
+            "封鎖進場": C["red"],
+            "進場觸發": C["green"],
+            "出場觸發": C["red"],
+            "取消觸發": C["yellow_l"],
+            "買進成交": C["green"],
+            "賣出成交": C["red"],
+            "鎖板中": C["red_l"],
+            "未鎖板": C["subtext"],
+        }.get(result, C["text"])
+        row = 0
+        self.decision_detail_table.insertRow(row)
+        cells = [
+            (str(ev.get("time") or ""), fg),
+            (str(ev.get("code") or ""), fg),
+            (str(ev.get("name") or ""), fg),
+            (str(ev.get("category") or ""), fg),
+            (result, fg),
+            (str(ev.get("reason") or ""), C["text"]),
+            (detail_txt, C["subtext"]),
+        ]
+        for col, (val, color) in enumerate(cells):
+            item = QTableWidgetItem(val)
+            item.setTextAlignment(
+                Qt.AlignmentFlag.AlignCenter
+                if col < 6 else Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft
+            )
+            item.setForeground(QColor(color))
+            self.decision_detail_table.setItem(row, col, item)
+        if self.decision_detail_table.rowCount() > 3000:
+            self.decision_detail_table.removeRow(self.decision_detail_table.rowCount() - 1)
+        self.decision_detail_summary_lbl.setText(f"共 {self._decision_detail_count} 筆")
+
     def _append_order(self, ev) -> None:
         # 依 order_id 找既有列；若有則更新狀態欄，否則插入新列
         oid = getattr(ev, "order_id", "")
@@ -3368,6 +3524,8 @@ class App(QMainWindow):
         }
         st_txt, st_color = status_map.get(ev.status.value, (ev.status.value, C["text"]))
         side_color = C["green"] if ev.side.value == "BUY" else C["red"]
+        order_time_txt = getattr(getattr(ev, "time", None), "strftime", lambda _fmt: "")("%H:%M:%S")
+        fill_time_txt = order_time_txt if ev.status.value == "FILLED" else ""
 
         if row_idx < 0:
             row_idx = 0
@@ -3379,6 +3537,8 @@ class App(QMainWindow):
                 (side_txt, side_color),
                 (f"{float(ev.price):,.2f}", side_color),
                 (str(ev.qty), side_color),
+                (order_time_txt, C["subtext"]),
+                (fill_time_txt, C["subtext"]),
                 (st_txt, st_color),
                 (source, C["yellow_l"] if source == "DRY" else C["red_l"]),
             ]
@@ -3403,20 +3563,57 @@ class App(QMainWindow):
                 self.orders_full_summary_lbl.setText(
                     f"委託總計 ({self.orders_table.rowCount()})")
         else:
-            cell = self.orders_table.item(row_idx, 5)
+            cell = self.orders_table.item(row_idx, 7)
             if cell:
                 cell.setText(st_txt)
                 cell.setForeground(QColor(st_color))
+            if order_time_txt:
+                order_time_cell = self.orders_table.item(row_idx, 5)
+                if order_time_cell and not order_time_cell.text():
+                    order_time_cell.setText(order_time_txt)
+            if fill_time_txt:
+                fill_time_cell = self.orders_table.item(row_idx, 6)
+                if fill_time_cell:
+                    fill_time_cell.setText(fill_time_txt)
+                    fill_time_cell.setForeground(QColor(C["subtext"]))
             # 同步更新全頁面狀態欄
             if mirror_orders:
                 for r in range(self.orders_full_table.rowCount()):
                     it = self.orders_full_table.item(r, 0)
                     if it and it.data(Qt.ItemDataRole.UserRole) == oid:
-                        cell2 = self.orders_full_table.item(r, 5)
+                        cell2 = self.orders_full_table.item(r, 7)
                         if cell2:
                             cell2.setText(st_txt)
                             cell2.setForeground(QColor(st_color))
+                        if order_time_txt:
+                            order_time_cell2 = self.orders_full_table.item(r, 5)
+                            if order_time_cell2 and not order_time_cell2.text():
+                                order_time_cell2.setText(order_time_txt)
+                        if fill_time_txt:
+                            fill_time_cell2 = self.orders_full_table.item(r, 6)
+                            if fill_time_cell2:
+                                fill_time_cell2.setText(fill_time_txt)
+                                fill_time_cell2.setForeground(QColor(C["subtext"]))
                         break
+
+    def _mark_order_filled(self, ev) -> None:
+        oid = getattr(ev, "order_id", "")
+        if not oid:
+            return
+        fill_time_txt = getattr(getattr(ev, "time", None), "strftime", lambda _fmt: "")("%H:%M:%S")
+        if not fill_time_txt:
+            return
+        for table in (self.orders_table, getattr(self, "orders_full_table", None)):
+            if table is None:
+                continue
+            for r in range(table.rowCount()):
+                it = table.item(r, 0)
+                if it and it.data(Qt.ItemDataRole.UserRole) == oid:
+                    fill_item = table.item(r, 6)
+                    if fill_item is not None:
+                        fill_item.setText(fill_time_txt)
+                        fill_item.setForeground(QColor(C["subtext"]))
+                    break
 
     def _refresh_broker_status(self) -> None:
         if self.broker is None:
@@ -3588,6 +3785,9 @@ class App(QMainWindow):
 
     def _append_trade(self, d: dict):
         self._trade_count += 1
+        code = str(d.get("code") or "").strip()
+        if code:
+            self._daily_trade_codes.add(code)
         mirror_trades = (
             hasattr(self, "trades_full_table")
             and self.trades_full_table is not self.trades_table
@@ -3650,8 +3850,11 @@ class App(QMainWindow):
         self.stat_realized.setStyleSheet(f"color:{rp_color};")
         self.stat_pnl_today.setText(rp_text)
         self.stat_pnl_today.setStyleSheet(f"color:{rp_color};")
+        self._update_trade_count_stat()
+
+    def _update_trade_count_stat(self) -> None:
         self.stat_trade_cnt.setText(
-            f"{self._trade_count} / {self.cfg.daily_max_trades}"
+            f"{len(self._daily_trade_codes)} / {self.cfg.daily_max_trades}"
         )
 
     def _render_monitor(self, summary: list):
@@ -3829,9 +4032,7 @@ class App(QMainWindow):
                 self.monitor_table.setItem(row, col, item)
 
         self.stat_positions.setText(str(pos_cnt))
-        self.stat_trade_cnt.setText(
-            f"{self._trade_count} / {self.cfg.daily_max_trades}"
-        )
+        self._update_trade_count_stat()
         self._autosize_monitor_columns()
 
     def _monitor_action_text(self, summary_item: dict, status: str) -> tuple[str, str]:
