@@ -777,7 +777,7 @@ class App(QMainWindow):
         mode_row = QHBoxLayout()
         mode_row.addWidget(_label("鎖漲停判斷", C["subtext"], 9))
         mode_row.addStretch()
-        self._combos["limit_up_detection_mode"] = _combo([], 320)
+        self._combos["limit_up_detection_mode"] = _combo([], 180)
         self._populate_limit_up_mode_combo(self._combos["limit_up_detection_mode"])
         mode_row.addWidget(self._combos["limit_up_detection_mode"])
         form.addLayout(mode_row)
