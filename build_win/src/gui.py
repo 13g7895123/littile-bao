@@ -777,7 +777,7 @@ class App(QMainWindow):
         mode_row = QHBoxLayout()
         mode_row.addWidget(_label("鎖漲停判斷", C["subtext"], 9))
         mode_row.addStretch()
-        self._combos["limit_up_detection_mode"] = _combo([], 180)
+        self._combos["limit_up_detection_mode"] = _combo([], 160)
         self._populate_limit_up_mode_combo(self._combos["limit_up_detection_mode"])
         mode_row.addWidget(self._combos["limit_up_detection_mode"])
         form.addLayout(mode_row)
@@ -949,8 +949,8 @@ class App(QMainWindow):
             )
             self._strategy_settings_content.setStyleSheet(f"background-color: {C['bg']};")
         else:
-            panel.setMinimumWidth(270)
-            panel.setMaximumWidth(270)
+            panel.setMinimumWidth(300)
+            panel.setMaximumWidth(300)
             panel.setStyleSheet(f"background-color: {C['sidebar']}; border: none;")
             self._strategy_settings_scroll.setStyleSheet(
                 f"QScrollArea {{ border: none; background-color: {C['sidebar']}; }}"
