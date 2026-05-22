@@ -107,6 +107,12 @@ class TestGuiTabLayout(unittest.TestCase):
             self._is_descendant(self.win.events_full_log, self.win._pages["events"])
         )
         self.assertTrue(
+            self._is_descendant(self.win.limitup_test_stock_table, self.win._pages["limitup_test"])
+        )
+        self.assertTrue(
+            self._is_descendant(self.win.limitup_test_mode_table, self.win._pages["limitup_test"])
+        )
+        self.assertTrue(
             self._is_descendant(self.win.strategy_trigger_table, self.win._pages["events"])
         )
         self.assertTrue(
@@ -282,6 +288,89 @@ class TestGuiTabLayout(unittest.TestCase):
 
         self.assertIn("系統一般訊息", self.win.event_log.toPlainText())
         self.assertIn("策略啟動準備中", self.win.events_full_log.toPlainText())
+
+    def test_limitup_test_tab_renders_analysis_and_can_apply_mode(self):
+        summary = [{
+            "code": "2330",
+            "name": "台積電",
+            "market": "TSE",
+            "candle": 1,
+            "qty": 0,
+            "pending": False,
+            "vol_1s": 12,
+            "blocked": False,
+            "price": 1100.0,
+            "limit_up": 1100.0,
+            "prev_close": 1000.0,
+            "change": 100.0,
+            "change_pct": 10.0,
+            "ask_qty": 0,
+            "is_at_limit_up": True,
+            "limit_up_mode": "bid_and_zero_ask",
+            "ask0_price": None,
+            "ask0_volume": 0,
+            "bid0_price": 1100.0,
+            "bid0_volume": 88,
+            "trade_bid": 1100.0,
+            "trade_ask": 1100.0,
+            "has_ask_levels": False,
+            "has_bid_levels": True,
+            "limit_up_signals": {
+                "bid_at_limit": True,
+                "last_at_limit": True,
+                "ask_empty": True,
+                "ask_qty_zero": True,
+                "bid_qty_positive": True,
+            },
+            "limit_up_candidates": {
+                "ask_or_bid_or_last": True,
+                "ask_only": False,
+                "bid_only": True,
+                "bid_or_trade_flag": True,
+                "bid_and_last": True,
+                "bid_and_no_ask": True,
+                "bid_and_zero_ask": True,
+                "trade_price_only": True,
+                "trade_flag_only": False,
+            },
+        }]
+
+        class FakeEngine:
+            def __init__(self):
+                self.config = SimpleNamespace(limit_up_detection_mode="bid_and_zero_ask")
+                self.applied_modes = []
+
+            def update_limit_up_mode(self, mode):
+                self.applied_modes.append(mode)
+                self.config.limit_up_detection_mode = mode
+                return mode
+
+        fake_engine = FakeEngine()
+        self.win.engine = fake_engine
+        self.win._running = True
+
+        self.win._refresh_limitup_test_page(summary)
+
+        self.assertEqual(self.win.limitup_test_stock_table.rowCount(), 1)
+        self.assertGreaterEqual(
+            self.win.limitup_test_mode_table.rowCount(),
+            len(gui.LIMIT_UP_DETECTION_MODES),
+        )
+        self.assertIn("bid_and_zero_ask", self.win.limitup_test_selected_lbl.text())
+        self.assertIn("signals=", self.win.limitup_test_snapshot.toPlainText())
+
+        for row in range(self.win.limitup_test_mode_table.rowCount()):
+            item = self.win.limitup_test_mode_table.item(row, 0)
+            if item and item.text() == "bid_only":
+                self.win.limitup_test_mode_table.setCurrentCell(row, 0)
+                break
+
+        self.win._apply_selected_limitup_test_mode()
+
+        combo = self.win._combos["limit_up_detection_mode"]
+        self.assertEqual(combo.currentData(), "bid_only")
+        self.assertEqual(self.win.cfg.limit_up_detection_mode, "bid_only")
+        self.assertEqual(fake_engine.applied_modes, ["bid_only"])
 
     def test_monitor_count_action_text_and_column_autosize(self):
         summary = [

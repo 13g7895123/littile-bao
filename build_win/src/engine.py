@@ -96,6 +96,7 @@ class StockState:
         self.trade_is_limit_up_ask: Optional[bool] = None
         self.has_ask_levels: bool = False
         self.has_bid_levels: bool = False
+        self.limit_up_signal_states: Dict[str, bool] = {}
         self.limit_up_candidate_states: Dict[str, bool] = {}
         self.active_limit_up_mode: str = DEFAULT_LIMIT_UP_DETECTION_MODE
         self.special_check_completed: bool = False
@@ -248,6 +249,22 @@ class TradingEngine:
 
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
+
+    def update_limit_up_mode(self, mode: str) -> str:
+        resolved = resolve_limit_up_mode(mode)
+        with self._lock:
+            self._limit_up_mode = resolved
+            self.config.limit_up_detection_mode = resolved
+            now = time.time()
+            for state in self._states.values():
+                state.active_limit_up_mode = resolved
+                self._refresh_limit_up_state(state, source="mode_apply", now=now)
+        self.on_log(
+            "INFO",
+            f"鎖漲停判斷模式已切換為：{resolved} "
+            f"（{LIMIT_UP_DETECTION_MODES.get(resolved, '')}）",
+        )
+        return resolved
 
     def stop(self):
         self._running = False
@@ -445,6 +462,7 @@ class TradingEngine:
             is_limit_up_ask=state.trade_is_limit_up_ask,
         )
         state.ask_qty_at_limit = int(decision["ask_qty_at_limit"])
+        state.limit_up_signal_states = dict(decision["signals"])
         state.limit_up_candidate_states = dict(decision["candidates"])
         mode = state.active_limit_up_mode or self._limit_up_mode
         sealed = bool(decision["candidates"].get(mode, False))
@@ -1270,6 +1288,8 @@ class TradingEngine:
             "bid0_price": state.bid0_price,
             "bid0_volume": state.bid0_volume,
             "last_price": state.last_price,
+            "trade_bid": state.trade_bid,
+            "trade_ask": state.trade_ask,
             "last_1s_vol": state.last_1s_vol,
             "consume_qty": state.limit_up_consumed_qty,
             "pending": state.pending,
@@ -1277,6 +1297,10 @@ class TradingEngine:
             "blocked": state.entry_blocked,
             "blocked_reason": state.entry_blocked_reason,
             "sold_today": state.sold_today,
+            "has_ask_levels": state.has_ask_levels,
+            "has_bid_levels": state.has_bid_levels,
+            "limit_up_signals": dict(state.limit_up_signal_states),
+            "limit_up_candidates": dict(state.limit_up_candidate_states),
         }
 
     def _emit_decision_event(
@@ -1366,6 +1390,15 @@ class TradingEngine:
                     "ask_qty":    s.ask_qty_at_limit,  # 漲停委賣張數
                     "is_at_limit_up": s.is_at_limit_up,
                     "limit_up_mode": s.active_limit_up_mode,
+                    "ask0_price": (float(s.ask0_price) if s.ask0_price is not None else None),
+                    "ask0_volume": s.ask0_volume,
+                    "bid0_price": (float(s.bid0_price) if s.bid0_price is not None else None),
+                    "bid0_volume": s.bid0_volume,
+                    "trade_bid": (float(s.trade_bid) if s.trade_bid is not None else None),
+                    "trade_ask": (float(s.trade_ask) if s.trade_ask is not None else None),
+                    "has_ask_levels": s.has_ask_levels,
+                    "has_bid_levels": s.has_bid_levels,
+                    "limit_up_signals": dict(s.limit_up_signal_states),
                     "limit_up_candidates": dict(s.limit_up_candidate_states),
                     "out_of_range": out_of_range,  # F9 即時價過濾旗標（True = 該檔被排除顯示）
                     "last_skip_reason": s.last_skip_reason,  # 最近一次被略過進場的原因（GUI 動作欄使用）

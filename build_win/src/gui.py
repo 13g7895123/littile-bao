@@ -23,6 +23,7 @@ from PyQt6.QtGui import QPainter, QColor, QFont, QBrush
 from app_logging import compose_log_message, configure_runtime_logging, write_log_event
 from config import BROKER_SETTINGS_FILE, CONFIG_FILE, BrokerSettings, TradingConfig
 from engine import TradingEngine
+from limitup_detection import LIMIT_UP_DETECTION_MODES, resolve_limit_up_mode
 
 # ──────────────────────────────────────────────
 #  配色（暗色交易終端風格）
@@ -58,6 +59,23 @@ C = {
 LOG_Q: queue.Queue = queue.Queue()
 FONT_MAIN = "微軟正黑體"
 FONT_MONO = "Consolas"
+
+LIMIT_UP_SIGNAL_LABELS = {
+    "ask_at_limit": "賣一價=漲停",
+    "bid_at_limit": "買一價=漲停",
+    "last_at_limit": "最新成交=漲停",
+    "trade_bid_at_limit": "成交 bid=漲停",
+    "trade_ask_at_limit": "成交 ask=漲停",
+    "trade_flag_price": "API 漲停價旗標",
+    "trade_flag_bid": "API 漲停買價旗標",
+    "trade_flag_ask": "API 漲停賣價旗標",
+    "trade_at_ask": "成交貼近賣方",
+    "trade_at_bid": "成交貼近買方",
+    "ask_empty": "無委賣檔",
+    "bid_empty": "無委買檔",
+    "ask_qty_zero": "賣一量=0/無委賣",
+    "bid_qty_positive": "買一量>0",
+}
 
 
 def push_log(level: str, msg: object, *, include_traceback: Optional[bool] = None) -> None:
@@ -315,6 +333,11 @@ class App(QMainWindow):
         self._syncing_order_mode_control = False
         self._current_tab = "dashboard"
         self._hidden_tabs = {"risk"}
+        self._latest_monitor_summary = []
+        self._limitup_test_selected_code = ""
+        self._limitup_test_selected_mode = resolve_limit_up_mode(
+            getattr(self.cfg, "limit_up_detection_mode", "")
+        )
 
         self._fields: Dict[str, QLineEdit] = {}
         self._bfields: Dict[str, QLineEdit] = {}   # 券商設定欄位
@@ -393,6 +416,7 @@ class App(QMainWindow):
             ("orders",    "委託/成交"),
             ("positions", "持倉部位"),
             ("events",    "事件日誌"),
+            ("limitup_test", "鎖板測試"),
             ("decision_detail", "決策明細"),
             ("risk",      "風控設定"),
         ]
@@ -516,6 +540,8 @@ class App(QMainWindow):
             self._sync_trades_full_table()
         elif key == "positions":
             self._sync_positions_full_table()
+        elif key == "limitup_test":
+            self._refresh_limitup_test_page()
 
     # ── 主體 ─────────────────────────────────
 
@@ -534,7 +560,7 @@ class App(QMainWindow):
         pages_lay.setSpacing(0)
 
         self._pages: Dict[str, QWidget] = {}
-        for key in ("dashboard", "settings", "broker", "orders", "positions", "events", "decision_detail", "risk"):
+        for key in ("dashboard", "settings", "broker", "orders", "positions", "events", "limitup_test", "decision_detail", "risk"):
             page = QWidget()
             page.setStyleSheet(f"background-color: {C['bg']};")
             pages_lay.addWidget(page)
@@ -546,6 +572,7 @@ class App(QMainWindow):
         self._build_orders_page(self._pages["orders"])
         self._build_positions_page(self._pages["positions"])
         self._build_events_page(self._pages["events"])
+        self._build_limitup_test_page(self._pages["limitup_test"])
         self._build_decision_detail_page(self._pages["decision_detail"])
         self._build_placeholder(self._pages["risk"],      "風控設定")
 
@@ -747,6 +774,14 @@ class App(QMainWindow):
         self._checks["consume_mutex_with_f1"] = _checkbox("啟用消化量時略過時間/委賣策略")
         form.addWidget(self._checks["consume_mutex_with_f1"])
         form.addSpacing(6)
+        mode_row = QHBoxLayout()
+        mode_row.addWidget(_label("鎖漲停判斷", C["subtext"], 9))
+        mode_row.addStretch()
+        self._combos["limit_up_detection_mode"] = _combo([], 320)
+        self._populate_limit_up_mode_combo(self._combos["limit_up_detection_mode"])
+        mode_row.addWidget(self._combos["limit_up_detection_mode"])
+        form.addLayout(mode_row)
+        form.addSpacing(6)
         form.addWidget(_divider())
 
         # ── 排除條件
@@ -930,6 +965,46 @@ class App(QMainWindow):
         )
         self._set_strategy_panel_mode(full_page=full_page)
         target_lay.addWidget(self._strategy_settings_panel)
+
+    def _populate_limit_up_mode_combo(self, combo: QComboBox) -> None:
+        combo.clear()
+        for mode, desc in LIMIT_UP_DETECTION_MODES.items():
+            combo.addItem(f"{mode} | {desc}", mode)
+
+    def _set_limit_up_mode_selection(self, mode: str) -> str:
+        resolved = resolve_limit_up_mode(mode)
+        combo = self._combos.get("limit_up_detection_mode")
+        if combo is None:
+            return resolved
+        idx = combo.findData(resolved)
+        if idx >= 0:
+            combo.setCurrentIndex(idx)
+        return resolved
+
+    def _get_selected_limit_up_mode(self) -> str:
+        combo = self._combos.get("limit_up_detection_mode")
+        if combo is None:
+            return resolve_limit_up_mode(getattr(self.cfg, "limit_up_detection_mode", ""))
+        return resolve_limit_up_mode(str(combo.currentData() or combo.currentText()))
+
+    def _apply_limit_up_mode(self, mode: str, *, log_change: bool = True) -> str:
+        resolved = self._set_limit_up_mode_selection(mode)
+        self.cfg.limit_up_detection_mode = resolved
+        self._limitup_test_selected_mode = resolved
+        if self._running and self.engine is not None:
+            try:
+                resolved = self.engine.update_limit_up_mode(resolved)
+            except Exception as e:
+                push_log("WARN", f"熱套用鎖漲停判斷模式失敗：{e}")
+        if log_change:
+            push_log(
+                "INFO",
+                f"鎖漲停判斷模式已套用：{resolved} "
+                f"（{LIMIT_UP_DETECTION_MODES.get(resolved, '')}）",
+                include_traceback=False,
+            )
+        self._refresh_limitup_test_page()
+        return resolved
 
     def _sf(self, form: QVBoxLayout, lbl: str, key: str,
             suffix: str = "", w: int = 90):
@@ -1398,6 +1473,90 @@ class App(QMainWindow):
         lay.addWidget(ev_f, 1)
         self._sync_decision_tab_toggle_text()
 
+    def _build_limitup_test_page(self, parent: QWidget):
+        lay = QVBoxLayout(parent)
+        lay.setContentsMargins(10, 10, 10, 10)
+        lay.setSpacing(8)
+
+        top_f = _panel_frame()
+        tl = QVBoxLayout(top_f)
+        tl.setContentsMargins(10, 8, 10, 8)
+        tl.setSpacing(6)
+        head = QHBoxLayout()
+        head.addWidget(_label("鎖板測試 / 判斷分析", C["text"], 10, bold=True))
+        head.addStretch()
+        self.limitup_test_selected_lbl = _label("尚未選擇股票", C["subtext"], 9)
+        head.addWidget(self.limitup_test_selected_lbl)
+        head.addSpacing(8)
+        self.limitup_test_apply_btn = QPushButton("套用選取模式")
+        self.limitup_test_apply_btn.setFont(_font(9))
+        self.limitup_test_apply_btn.setFixedHeight(24)
+        self.limitup_test_apply_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.limitup_test_apply_btn.clicked.connect(self._apply_selected_limitup_test_mode)
+        head.addWidget(self.limitup_test_apply_btn)
+        tl.addLayout(head)
+
+        self.limitup_test_hint_lbl = _label(
+            "上表選股票，下表看各模式在當前節點的成立結果，選一列後可直接套用。",
+            C["subtext"],
+            9,
+        )
+        tl.addWidget(self.limitup_test_hint_lbl)
+
+        stock_cols = ["代碼", "名稱", "成交", "漲停", "啟用模式", "目前結果", "成立模式", "委賣", "買一", "賣一"]
+        self.limitup_test_stock_table = QTableWidget(0, len(stock_cols))
+        self.limitup_test_stock_table.setHorizontalHeaderLabels(stock_cols)
+        self.limitup_test_stock_table.setStyleSheet(_table_style())
+        self.limitup_test_stock_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.limitup_test_stock_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.limitup_test_stock_table.verticalHeader().setVisible(False)
+        self.limitup_test_stock_table.setShowGrid(True)
+        self.limitup_test_stock_table.horizontalHeader().setStretchLastSection(True)
+        self.limitup_test_stock_table.verticalHeader().setDefaultSectionSize(28)
+        for i, w in enumerate([66, 86, 66, 66, 130, 70, 260, 60, 70, 70]):
+            self.limitup_test_stock_table.setColumnWidth(i, w)
+        self.limitup_test_stock_table.currentCellChanged.connect(self._on_limitup_test_stock_changed)
+        tl.addWidget(self.limitup_test_stock_table, 1)
+        lay.addWidget(top_f, 1)
+
+        bottom_f = _panel_frame()
+        bl = QVBoxLayout(bottom_f)
+        bl.setContentsMargins(10, 8, 10, 8)
+        bl.setSpacing(6)
+        bl.addWidget(_label("模式明細", C["text"], 10, bold=True))
+        detail_cols = ["模式", "條件說明", "結果", "符合項目"]
+        self.limitup_test_mode_table = QTableWidget(0, len(detail_cols))
+        self.limitup_test_mode_table.setHorizontalHeaderLabels(detail_cols)
+        self.limitup_test_mode_table.setStyleSheet(_table_style())
+        self.limitup_test_mode_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.limitup_test_mode_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.limitup_test_mode_table.verticalHeader().setVisible(False)
+        self.limitup_test_mode_table.setShowGrid(True)
+        self.limitup_test_mode_table.horizontalHeader().setStretchLastSection(True)
+        self.limitup_test_mode_table.verticalHeader().setDefaultSectionSize(28)
+        for i, w in enumerate([150, 250, 72, 500]):
+            self.limitup_test_mode_table.setColumnWidth(i, w)
+        self.limitup_test_mode_table.currentCellChanged.connect(self._on_limitup_test_mode_changed)
+        bl.addWidget(self.limitup_test_mode_table, 1)
+
+        bl.addWidget(_label("當前資料快照", C["text"], 10, bold=True))
+        self.limitup_test_snapshot = QTextEdit()
+        self.limitup_test_snapshot.setReadOnly(True)
+        self.limitup_test_snapshot.setFont(QFont(FONT_MONO, 9))
+        self.limitup_test_snapshot.setFixedHeight(130)
+        self.limitup_test_snapshot.setStyleSheet(f"""
+            QTextEdit {{
+                background-color: {C['bg']};
+                color: {C['text']};
+                border: none;
+                border-radius: 4px;
+                padding: 4px;
+            }}
+            {_scroll_style()}
+        """)
+        bl.addWidget(self.limitup_test_snapshot)
+        lay.addWidget(bottom_f, 1)
+
     def _build_decision_detail_page(self, parent: QWidget):
         lay = QVBoxLayout(parent)
         lay.setContentsMargins(10, 10, 10, 10)
@@ -1441,6 +1600,186 @@ class App(QMainWindow):
             self.decision_detail_table.setColumnWidth(i, w)
         dl.addWidget(self.decision_detail_table, 1)
         lay.addWidget(detail_f, 1)
+
+    @staticmethod
+    def _fmt_limitup_price(value) -> str:
+        if value is None or value == "":
+            return "—"
+        try:
+            return f"{float(value):,.2f}"
+        except Exception:
+            return str(value)
+
+    @staticmethod
+    def _fmt_limitup_mode_hits(candidates: dict) -> str:
+        hits = [mode for mode, ok in (candidates or {}).items() if ok]
+        return ", ".join(hits) if hits else "—"
+
+    @staticmethod
+    def _fmt_limitup_signal_hits(signals: dict) -> str:
+        hits = [
+            LIMIT_UP_SIGNAL_LABELS.get(key, key)
+            for key, ok in (signals or {}).items()
+            if ok
+        ]
+        return ", ".join(hits) if hits else "無"
+
+    def _render_limitup_test_snapshot(self, item: Optional[dict]) -> None:
+        if not hasattr(self, "limitup_test_snapshot"):
+            return
+        if not item:
+            self.limitup_test_snapshot.setPlainText("尚無即時資料")
+            return
+        lines = [
+            f"code={item.get('code') or ''}",
+            f"name={item.get('name') or ''}",
+            f"price={self._fmt_limitup_price(item.get('price'))}",
+            f"limit_up={self._fmt_limitup_price(item.get('limit_up'))}",
+            f"ask0={self._fmt_limitup_price(item.get('ask0_price'))} / vol={item.get('ask0_volume', 0)}",
+            f"bid0={self._fmt_limitup_price(item.get('bid0_price'))} / vol={item.get('bid0_volume', 0)}",
+            f"trade_bid={self._fmt_limitup_price(item.get('trade_bid'))}",
+            f"trade_ask={self._fmt_limitup_price(item.get('trade_ask'))}",
+            f"has_ask_levels={bool(item.get('has_ask_levels'))}",
+            f"has_bid_levels={bool(item.get('has_bid_levels'))}",
+            f"ask_qty={int(item.get('ask_qty') or 0)}",
+            f"signals={item.get('limit_up_signals') or {}}",
+            f"candidates={item.get('limit_up_candidates') or {}}",
+        ]
+        self.limitup_test_snapshot.setPlainText("\n".join(lines))
+
+    def _render_limitup_test_detail(self, item: Optional[dict]) -> None:
+        if not hasattr(self, "limitup_test_mode_table"):
+            return
+        table = self.limitup_test_mode_table
+        table.setRowCount(0)
+        if not item:
+            if hasattr(self, "limitup_test_selected_lbl"):
+                self.limitup_test_selected_lbl.setText("尚未選擇股票")
+            self._render_limitup_test_snapshot(None)
+            return
+        if hasattr(self, "limitup_test_selected_lbl"):
+            self.limitup_test_selected_lbl.setText(
+                f"目前選擇：{item.get('code')} {item.get('name')} / 啟用={item.get('limit_up_mode')}"
+            )
+        candidates = dict(item.get("limit_up_candidates") or {})
+        signals = dict(item.get("limit_up_signals") or {})
+        selected_mode = self._limitup_test_selected_mode or item.get("limit_up_mode") or self._get_selected_limit_up_mode()
+        selected_row = -1
+        for row, (mode, desc) in enumerate(LIMIT_UP_DETECTION_MODES.items()):
+            table.insertRow(row)
+            result_text = "成立" if candidates.get(mode) else "未成立"
+            color = QColor(C["green_l"] if candidates.get(mode) else C["subtext"])
+            vals = [
+                mode,
+                desc,
+                result_text,
+                self._fmt_limitup_signal_hits(signals),
+            ]
+            for col, val in enumerate(vals):
+                item_widget = QTableWidgetItem(val)
+                if col == 2:
+                    item_widget.setForeground(color)
+                else:
+                    item_widget.setForeground(QColor(C["text"]))
+                if mode == item.get("limit_up_mode"):
+                    item_widget.setBackground(QColor(C["badge_order"]))
+                item_widget.setTextAlignment(Qt.AlignmentFlag.AlignCenter if col != 3 else Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+                table.setItem(row, col, item_widget)
+            if mode == selected_mode:
+                selected_row = row
+        if selected_row < 0:
+            selected_row = 0 if table.rowCount() else -1
+        if selected_row >= 0:
+            table.setCurrentCell(selected_row, 0)
+            self._limitup_test_selected_mode = str(table.item(selected_row, 0).text())
+        self._render_limitup_test_snapshot(item)
+
+    def _current_limitup_test_item(self) -> Optional[dict]:
+        for item in self._latest_monitor_summary:
+            if str(item.get("code") or "") == self._limitup_test_selected_code:
+                return item
+        return None
+
+    def _refresh_limitup_test_page(self, summary=None) -> None:
+        if not hasattr(self, "limitup_test_stock_table"):
+            return
+        if summary is None:
+            summary = self._latest_monitor_summary
+        self._latest_monitor_summary = list(summary or [])
+        table = self.limitup_test_stock_table
+        table.blockSignals(True)
+        table.setRowCount(0)
+        rows = sorted(self._latest_monitor_summary, key=lambda s: str(s.get("code") or ""))
+        for row, item in enumerate(rows):
+            table.insertRow(row)
+            candidates = dict(item.get("limit_up_candidates") or {})
+            buy1_txt = f"{self._fmt_limitup_price(item.get('bid0_price'))}/{int(item.get('bid0_volume') or 0)}"
+            sell1_txt = f"{self._fmt_limitup_price(item.get('ask0_price'))}/{int(item.get('ask0_volume') or 0)}"
+            vals = [
+                str(item.get("code") or ""),
+                str(item.get("name") or ""),
+                self._fmt_limitup_price(item.get("price")),
+                self._fmt_limitup_price(item.get("limit_up")),
+                str(item.get("limit_up_mode") or ""),
+                "鎖板中" if item.get("is_at_limit_up") else "未鎖板",
+                self._fmt_limitup_mode_hits(candidates),
+                str(item.get("ask_qty") or 0),
+                buy1_txt,
+                sell1_txt,
+            ]
+            for col, val in enumerate(vals):
+                cell = QTableWidgetItem(val)
+                cell.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                if col == 5:
+                    cell.setForeground(QColor(C["green_l"] if item.get("is_at_limit_up") else C["subtext"]))
+                else:
+                    cell.setForeground(QColor(C["text"]))
+                table.setItem(row, col, cell)
+        if rows:
+            codes = {str(item.get("code") or "") for item in rows}
+            if self._limitup_test_selected_code not in codes:
+                self._limitup_test_selected_code = str(rows[0].get("code") or "")
+            for row in range(table.rowCount()):
+                code_item = table.item(row, 0)
+                if code_item and code_item.text() == self._limitup_test_selected_code:
+                    table.setCurrentCell(row, 0)
+                    break
+        else:
+            self._limitup_test_selected_code = ""
+        table.blockSignals(False)
+        self._render_limitup_test_detail(self._current_limitup_test_item())
+
+    def _on_limitup_test_stock_changed(self, current_row: int, _current_col: int, _prev_row: int, _prev_col: int) -> None:
+        if current_row < 0 or not hasattr(self, "limitup_test_stock_table"):
+            return
+        code_item = self.limitup_test_stock_table.item(current_row, 0)
+        if code_item is None:
+            return
+        self._limitup_test_selected_code = code_item.text()
+        current = self._current_limitup_test_item()
+        if hasattr(self, "limitup_test_selected_lbl"):
+            if current:
+                self.limitup_test_selected_lbl.setText(
+                    f"目前選擇：{current.get('code')} {current.get('name')} / 啟用={current.get('limit_up_mode')}"
+                )
+            else:
+                self.limitup_test_selected_lbl.setText(f"目前選擇：{self._limitup_test_selected_code}")
+        self._render_limitup_test_detail(current)
+
+    def _on_limitup_test_mode_changed(self, current_row: int, _current_col: int, _prev_row: int, _prev_col: int) -> None:
+        if current_row < 0 or not hasattr(self, "limitup_test_mode_table"):
+            return
+        mode_item = self.limitup_test_mode_table.item(current_row, 0)
+        if mode_item is None:
+            return
+        self._limitup_test_selected_mode = mode_item.text()
+
+    def _apply_selected_limitup_test_mode(self) -> None:
+        mode = resolve_limit_up_mode(self._limitup_test_selected_mode)
+        if not mode:
+            QMessageBox.warning(self, "未選擇模式", "請先在模式明細表選擇一個判斷模式。")
+            return
+        self._apply_limit_up_mode(mode)
 
     # ── 頁面資料同步輔助 ──────────────────────
 
@@ -2306,6 +2645,8 @@ class App(QMainWindow):
             f["recording_keep_days"].setText(str(cfg.recording_keep_days))
         if "recording_dir" in f:
             f["recording_dir"].setText(cfg.recording_dir or "")
+        self._set_limit_up_mode_selection(cfg.limit_up_detection_mode)
+        self._limitup_test_selected_mode = resolve_limit_up_mode(cfg.limit_up_detection_mode)
         self._update_order_mode_badge()
 
     def _collect_config(self) -> TradingConfig:
@@ -2383,12 +2724,17 @@ class App(QMainWindow):
             recording_dir                 = (self._fields["recording_dir"].text().strip()
                                               if "recording_dir" in self._fields
                                               else self.cfg.recording_dir),
+            limit_up_detection_mode      = self._get_selected_limit_up_mode(),
         )
 
     def _save_settings(self):
         try:
             new_cfg = self._collect_config()
             was_file_logging_enabled = self.cfg.file_logging_enabled
+            limit_up_mode_changed = (
+                resolve_limit_up_mode(getattr(self.cfg, "limit_up_detection_mode", ""))
+                != resolve_limit_up_mode(getattr(new_cfg, "limit_up_detection_mode", ""))
+            )
             # 偵測：價格區間是否被變動（影響的是「訂閱清單」，需重啟才會生效）
             price_range_changed = (
                 self._running and self.engine is not None and (
@@ -2412,6 +2758,8 @@ class App(QMainWindow):
             if self._running and self.engine is not None:
                 try:
                     self.engine.config = new_cfg
+                    if limit_up_mode_changed:
+                        self.engine.update_limit_up_mode(new_cfg.limit_up_detection_mode)
                     applied_live = True
                     push_log("INFO",
                         "設定已熱套用至執行中的策略（價格區間 / 各功能開關 / 數值閾值即時生效；"
@@ -3858,6 +4206,8 @@ class App(QMainWindow):
         )
 
     def _render_monitor(self, summary: list):
+        self._latest_monitor_summary = list(summary or [])
+        self._refresh_limitup_test_page(self._latest_monitor_summary)
         STATUS_COLOR = {
             "準備進場": C["yellow_l"],
             "已進場":   C["green"],

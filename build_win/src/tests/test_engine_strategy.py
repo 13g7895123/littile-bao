@@ -262,6 +262,36 @@ class TestTradingEngineStrategyRules(unittest.TestCase):
         ))
         self.assertTrue(engine._states["2330"].is_at_limit_up)
 
+    def test_update_limitup_mode_refreshes_state_and_summary_signals(self):
+        cfg = TradingConfig(
+            f1_enabled=False,
+            f9_enabled=False,
+            f10_enabled=False,
+            limit_up_detection_mode="bid_and_zero_ask",
+        )
+        engine, _logs, _trades, _strategy_events = self._make_engine(cfg)
+
+        engine._on_book(BookEvent(
+            code="2330",
+            time=datetime(2026, 5, 19, 9, 1),
+            ask=[SimpleNamespace(price=Decimal("1100"), volume=3)],
+            bid=[SimpleNamespace(price=Decimal("1100"), volume=99)],
+        ))
+
+        state = engine._states["2330"]
+        self.assertFalse(state.is_at_limit_up)
+        self.assertTrue(state.limit_up_signal_states["bid_at_limit"])
+        self.assertFalse(state.limit_up_candidate_states["bid_and_zero_ask"])
+
+        engine.update_limit_up_mode("bid_only")
+
+        summary = {item["code"]: item for item in engine.get_summary()}
+        self.assertEqual(state.active_limit_up_mode, "bid_only")
+        self.assertTrue(state.is_at_limit_up)
+        self.assertEqual(summary["2330"]["limit_up_mode"], "bid_only")
+        self.assertTrue(summary["2330"]["limit_up_signals"]["bid_at_limit"])
+        self.assertTrue(summary["2330"]["limit_up_candidates"]["bid_only"])
+
     def test_skip_entry_emits_decision_detail_event(self):
         cfg = TradingConfig(
             f9_enabled=False,
