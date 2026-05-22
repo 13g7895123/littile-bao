@@ -308,13 +308,13 @@ class App(QMainWindow):
         self._realized_pnl = 0.0   # M4：今日已實現損益累計
         self._log_lines = 0
         self._log_entries = []
-        self._log_filter = "all"
+        self._log_filter = "strategy"
         self._log_filter_buttons = {"all": [], "strategy": []}
         self._strategy_trigger_count = 0
         self._decision_detail_count = 0
         self._syncing_order_mode_control = False
         self._current_tab = "dashboard"
-        self._hidden_tabs = {"decision_detail", "risk"}
+        self._hidden_tabs = {"risk"}
 
         self._fields: Dict[str, QLineEdit] = {}
         self._bfields: Dict[str, QLineEdit] = {}   # 券商設定欄位

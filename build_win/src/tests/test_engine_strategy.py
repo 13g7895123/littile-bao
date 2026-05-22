@@ -207,6 +207,7 @@ class TestTradingEngineStrategyRules(unittest.TestCase):
         ))
 
         self.assertTrue(engine._states["2330"].is_at_limit_up)
+        self.assertFalse(any("LimitUpDiag" in msg for _level, msg in _logs))
 
     def test_bid_and_no_ask_mode_requires_bid_lock_without_asks(self):
         cfg = TradingConfig(

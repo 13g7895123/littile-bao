@@ -475,13 +475,6 @@ class TradingEngine:
         if prev == snapshot:
             return
         state._last_limit_signal_snapshot = snapshot  # type: ignore[attr-defined]
-        active_desc = LIMIT_UP_DETECTION_MODES.get(state.active_limit_up_mode, "")
-        self.on_log(
-            "DEBUG",
-            f"[LimitUpDiag][{state.info.code}] source={source} active={state.active_limit_up_mode} "
-            f"sealed={state.is_at_limit_up} ask_qty={state.ask_qty_at_limit} "
-            f"signals={signals} candidates={state.limit_up_candidate_states} desc={active_desc}",
-        )
         self._emit_decision_event(
             "LIMIT_UP",
             state,

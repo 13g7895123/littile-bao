@@ -112,7 +112,7 @@ class TestGuiTabLayout(unittest.TestCase):
         self.assertTrue(
             self._is_descendant(self.win.decision_detail_table, self.win._pages["decision_detail"])
         )
-        self.assertTrue(self.win._tab_btns["decision_detail"].isHidden())
+        self.assertFalse(self.win._tab_btns["decision_detail"].isHidden())
         self.assertIsNot(self.win.orders_table, self.win.orders_full_table)
         self.assertIsNot(self.win.trades_table, self.win.trades_full_table)
         self.assertIsNot(self.win.positions_table, self.win.positions_full_table)
@@ -160,7 +160,12 @@ class TestGuiTabLayout(unittest.TestCase):
         self.assertEqual(self.win.strategy_trigger_summary_lbl.text(), "共 1 筆")
 
     def test_decision_detail_tab_can_be_shown_and_receives_events(self):
+        self.assertFalse(self.win._tab_btns["decision_detail"].isHidden())
+
+        self.win._toggle_decision_detail_tab()
+
         self.assertTrue(self.win._tab_btns["decision_detail"].isHidden())
+        self.assertTrue(self.win._pages["decision_detail"].isHidden())
 
         self.win._toggle_decision_detail_tab()
 
@@ -237,14 +242,27 @@ class TestGuiTabLayout(unittest.TestCase):
         self.assertEqual(self.win.trades_full_table.rowCount(), 2)
         self.assertEqual(self.win.stat_trade_cnt.text(), "1 / 5")
 
+        self.win._set_log_filter("all")
         self.win._append_log("INFO", "tab log smoke")
         self.assertIn("tab log smoke", self.win.event_log.toPlainText())
         self.assertIn("tab log smoke", self.win.events_full_log.toPlainText())
+
+    def test_event_log_defaults_to_strategy_filter_and_hides_non_strategy_logs(self):
+        self.assertEqual(self.win._log_filter, "strategy")
+
+        self.win._append_log("INFO", "一般系統訊息")
+        self.assertNotIn("一般系統訊息", self.win.event_log.toPlainText())
+        self.assertNotIn("一般系統訊息", self.win.events_full_log.toPlainText())
+
+        self.win._append_log("INFO", "策略訊號：檢查進場")
+        self.assertIn("策略訊號：檢查進場", self.win.event_log.toPlainText())
+        self.assertIn("策略訊號：檢查進場", self.win.events_full_log.toPlainText())
         self.assertTrue(
             self._is_descendant(self.win.events_full_log, self.win._pages["events"])
         )
 
     def test_event_log_can_filter_strategy_related_entries(self):
+        self.win._set_log_filter("all")
         self.win._append_log("INFO", "系統一般訊息")
         self.win._append_log("TRADE", "[策略觸發][BUY][2330 台積電] 策略=F1")
 
