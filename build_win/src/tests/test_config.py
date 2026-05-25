@@ -19,6 +19,7 @@ class TestTradingConfigJsonIO(unittest.TestCase):
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(
                     {
+                        "start_time": "09:05",
                         "entry_before_time": "09:30",
                         "per_stock_amount": 250000,
                         "f4_open_ticks_to_sell": 3,
@@ -37,6 +38,7 @@ class TestTradingConfigJsonIO(unittest.TestCase):
 
             cfg = TradingConfig.load_strict(path)
 
+            self.assertEqual(cfg.start_time, "09:05")
             self.assertEqual(cfg.entry_before_time, "09:30")
             self.assertEqual(cfg.per_stock_amount, 250000)
             self.assertEqual(cfg.f4_open_ticks_to_sell, 3)

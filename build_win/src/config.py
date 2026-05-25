@@ -31,6 +31,7 @@ BROKER_SETTINGS_FILE = _broker_settings_path()
 class TradingConfig:
     # ── 功能 1：10點前漲停，委賣(漲停價)低於N張才進場 ─────────────────────
     f1_enabled: bool = True
+    start_time: str = "09:00"
     entry_before_time: str = "10:00"
     ask_queue_threshold: int = 100
 

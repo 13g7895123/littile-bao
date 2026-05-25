@@ -100,6 +100,8 @@ class StockState:
         self.limit_up_candidate_states: Dict[str, bool] = {}
         self.active_limit_up_mode: str = DEFAULT_LIMIT_UP_DETECTION_MODE
         self.special_check_completed: bool = False
+        self.initial_limit_up_checked: bool = False
+        self.startup_limitup_blocked: bool = False
         # ── Milestone 4：損益追蹤 ────────────────────
         self.entry_price: Optional[Decimal] = None  # 進場成交均價
 
@@ -149,6 +151,7 @@ class TradingEngine:
         self._lock = threading.Lock()
         self._running = False
         self._thread: Optional[threading.Thread] = None
+        self._started_at: Optional[datetime] = None
         self._daily_trade_count: int = 0   # 功能 13：當天已成交檔數
         self._daily_trade_codes: set = set()  # 已成交過的股票代號集合（同股票只算一檔）
         self._today_realized_pnl: Decimal = Decimal("0")  # M4：當日已實現損益
@@ -201,6 +204,8 @@ class TradingEngine:
 
     def start(self):
         self._running = True
+        self._started_at = self._current_datetime()
+        self.on_log("INFO", f"策略啟用時間：{self._started_at.strftime('%Y-%m-%d %H:%M:%S')}")
         self.on_log("INFO", f"引擎啟動，監控市場：{', '.join(self.config.get_markets())}")
         self.on_log("INFO", f"監控 {len(self._states)} 支股票")
         active = self._active_features()
@@ -467,14 +472,44 @@ class TradingEngine:
         mode = state.active_limit_up_mode or self._limit_up_mode
         sealed = bool(decision["candidates"].get(mode, False))
 
+        if self._started_at is not None and not state.initial_limit_up_checked:
+            state.initial_limit_up_checked = True
+            if sealed:
+                state.is_at_limit_up = True
+                state.startup_limitup_blocked = True
+                state.limit_up_since = None
+                state.last_skip_reason = "程式啟用後已漲停"
+                self.on_log(
+                    "INFO",
+                    f"[{state.info.code} {state.info.name}] 啟用時已鎖漲停，"
+                    "先標記為「程式啟用後已漲停」，待撬開後再觀察重鎖進場",
+                )
+                self._log_limit_up_signal_change(
+                    state,
+                    source=source,
+                    signals=decision["signals"],
+                    event_time=event_time,
+                )
+                return
+        elif self._started_at is None and not state.initial_limit_up_checked:
+            state.initial_limit_up_checked = True
+
         if sealed:
             state.is_at_limit_up = True
-            state.touched_limit_up_today = True
-            self._mark_limit_up_touched(state, now)
+            if not state.startup_limitup_blocked:
+                state.touched_limit_up_today = True
+                self._mark_limit_up_touched(state, now)
         else:
             if state.is_at_limit_up:
                 state.is_at_limit_up = False
                 state.limit_up_since = None
+            if state.startup_limitup_blocked:
+                state.startup_limitup_blocked = False
+                state.last_skip_reason = ""
+                self.on_log(
+                    "INFO",
+                    f"[{state.info.code} {state.info.name}] 啟用後既有漲停已撬開，恢復觀察重鎖進場",
+                )
 
         self._log_limit_up_signal_change(
             state,
@@ -558,6 +593,8 @@ class TradingEngine:
             st.touched_limit_up_today = False
             st.limit_up_consumed_qty = 0
             st.special_check_completed = False
+            st.initial_limit_up_checked = False
+            st.startup_limitup_blocked = False
             # 注意：position_qty 不清空，避免影響真實持倉同步
         self._daily_trade_count = 0
         self._daily_trade_codes.clear()
@@ -657,6 +694,9 @@ class TradingEngine:
             return
         if state.limit_up_since is None or not state.is_at_limit_up:
             return
+        if state.startup_limitup_blocked:
+            self._skip_entry(state, "程式啟用後已漲停", log=False)
+            return
 
         # 功能 12：開盤即漲停 且 當天已賣過 → 封鎖
         if cfg.f12_enabled and info.open_limit_up and state.sold_today:
@@ -694,10 +734,17 @@ class TradingEngine:
             consume_enabled and bool(getattr(cfg, "consume_mutex_with_f1", True))
         )
         if apply_f1:
-            now_time = datetime.now().time()
-            cutoff = dtime(*map(int, cfg.entry_before_time.split(":")))
+            now_time = self._current_datetime().time()
+            start_time = self._parse_config_time(getattr(cfg, "start_time", "09:00"), dtime(9, 0))
+            cutoff = self._parse_config_time(cfg.entry_before_time, dtime(10, 0))
+            market_close = dtime(13, 30)
+            if cutoff > market_close:
+                cutoff = market_close
+            if now_time < start_time:
+                self._skip_entry(state, f"F1:未到開始時間 {start_time.strftime('%H:%M')}")
+                return
             if now_time >= cutoff:
-                self._skip_entry(state, f"F1:已過進場時段 {cfg.entry_before_time}")
+                self._skip_entry(state, f"F1:已過進場時段 {cutoff.strftime('%H:%M')}")
                 return
             if ask_qty >= cfg.ask_queue_threshold:
                 self._skip_entry(
@@ -1086,6 +1133,20 @@ class TradingEngine:
             return Decimal("1")
         return Decimal("5")
 
+    @staticmethod
+    def _parse_config_time(value: str, fallback: dtime) -> dtime:
+        try:
+            parts = [int(part) for part in str(value).strip().split(":", 1)]
+            if len(parts) != 2:
+                return fallback
+            return dtime(parts[0], parts[1])
+        except Exception:
+            return fallback
+
+    @staticmethod
+    def _current_datetime() -> datetime:
+        return datetime.now()
+
     def _log_strategy_trigger(self, side: str, state: StockState,
                               strategy: str, details: dict) -> None:
         def _fmt(value) -> str:
@@ -1402,5 +1463,9 @@ class TradingEngine:
                     "limit_up_candidates": dict(s.limit_up_candidate_states),
                     "out_of_range": out_of_range,  # F9 即時價過濾旗標（True = 該檔被排除顯示）
                     "last_skip_reason": s.last_skip_reason,  # 最近一次被略過進場的原因（GUI 動作欄使用）
+                    "startup_limitup_blocked": s.startup_limitup_blocked,
+                    "engine_started_at": (
+                        self._started_at.strftime("%H:%M:%S") if self._started_at else ""
+                    ),
                 })
             return result

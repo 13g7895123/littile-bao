@@ -2608,7 +2608,7 @@ class App(QMainWindow):
         f = self._fields
         f["per_stock_amount"].setText(str(cfg.per_stock_amount))
         f["daily_max_trades"].setText(str(cfg.daily_max_trades))
-        f["start_time"].setText("09:00")
+        f["start_time"].setText(cfg.start_time)
         f["entry_before_time"].setText(cfg.entry_before_time)
         f["ask_queue_threshold"].setText(str(cfg.ask_queue_threshold))
         f["daily_volume_min"].setText(str(cfg.daily_volume_min))
@@ -2680,6 +2680,7 @@ class App(QMainWindow):
             api_key                       = self.cfg.api_key,
             broker_cert_path              = self.cfg.broker_cert_path,
             f1_enabled                    = True,
+            start_time                    = f["start_time"].text(),
             entry_before_time             = f["entry_before_time"].text(),
             ask_queue_threshold           = ni("ask_queue_threshold"),
             market_twse                   = c["market_twse"].isChecked(),
@@ -3540,7 +3541,9 @@ class App(QMainWindow):
         self._strategy_starting = False
         self._running = True
         self._set_badge_active(True)
-        self._set_strategy_status("運行中", C["green"])
+        started_at = getattr(engine, "_started_at", None)
+        started_txt = started_at.strftime("%H:%M:%S") if started_at else datetime.now().strftime("%H:%M:%S")
+        self._set_strategy_status(f"運行中（{started_txt} 啟用）", C["green"])
 
     def _fail_start_trading(self, token: int, error: Exception) -> None:
         if not self._is_start_token_current(token):
@@ -4386,6 +4389,11 @@ class App(QMainWindow):
         self._autosize_monitor_columns()
 
     def _monitor_action_text(self, summary_item: dict, status: str) -> tuple[str, str]:
+        if status == "啟用後已漲停":
+            started = (summary_item.get("engine_started_at") or "").strip()
+            if started:
+                return f"{started} 已鎖", C["orange"]
+            return "等撬開重鎖", C["orange"]
         if status == "明日排除":
             return "隔日不追", C["red_l"]
         if status == "收盤漲停":
@@ -4434,6 +4442,8 @@ class App(QMainWindow):
             return "明日排除"
         if self._is_after_close_monitor_item(s):
             return "收盤漲停" if s.get("closed_at_limit_up") else "收盤觀察"
+        if s.get("startup_limitup_blocked") and s.get("is_at_limit_up"):
+            return "啟用後已漲停"
         if s["blocked"]:
             reason = s.get("blocked_reason") or ""
             if reason == "資金不足":

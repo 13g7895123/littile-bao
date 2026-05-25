@@ -209,6 +209,83 @@ class TestTradingEngineStrategyRules(unittest.TestCase):
         self.assertTrue(engine._states["2330"].is_at_limit_up)
         self.assertFalse(any("LimitUpDiag" in msg for _level, msg in _logs))
 
+    def test_startup_locked_limitup_is_marked_and_waits_for_relock(self):
+        cfg = TradingConfig(
+            f1_enabled=False,
+            f9_enabled=False,
+            f10_enabled=False,
+            limit_up_detection_mode="ask_or_bid_or_last",
+        )
+        engine, logs, _trades, _strategy_events = self._make_engine(cfg)
+        engine._started_at = datetime(2026, 5, 19, 9, 0, 0)
+        state = engine._states["2330"]
+
+        engine._on_tick(TickEvent(
+            code="2330",
+            time=datetime(2026, 5, 19, 9, 1),
+            price=Decimal("1100"),
+            volume=10,
+        ))
+
+        self.assertTrue(state.startup_limitup_blocked)
+        self.assertEqual(state.candle_index, 0)
+        self.assertEqual(state.last_skip_reason, "程式啟用後已漲停")
+        self.assertTrue(any("啟用時已鎖漲停" in msg for _level, msg in logs))
+
+        engine._on_tick(TickEvent(
+            code="2330",
+            time=datetime(2026, 5, 19, 9, 2),
+            price=Decimal("1090"),
+            volume=5,
+        ))
+
+        self.assertFalse(state.startup_limitup_blocked)
+        self.assertFalse(state.is_at_limit_up)
+
+        engine._on_tick(TickEvent(
+            code="2330",
+            time=datetime(2026, 5, 19, 9, 3),
+            price=Decimal("1100"),
+            volume=8,
+        ))
+
+        self.assertEqual(state.candle_index, 1)
+        self.assertTrue(state.is_at_limit_up)
+
+    def test_f1_respects_start_time(self):
+        cfg = TradingConfig(
+            start_time="09:05",
+            entry_before_time="10:00",
+            f9_enabled=False,
+            f10_enabled=False,
+            per_stock_amount=2_000_000,
+        )
+        engine, _logs, _trades, _strategy_events = self._make_engine(cfg)
+        engine._current_datetime = lambda: datetime(2026, 5, 19, 9, 4, 59)
+        state = self._arm_entry_state(engine)
+
+        engine._tick(state, time.time())
+
+        self.assertFalse(state.pending)
+        self.assertEqual(state.last_skip_reason, "F1:未到開始時間 09:05")
+
+    def test_f1_stops_at_market_close_even_if_configured_later(self):
+        cfg = TradingConfig(
+            start_time="09:00",
+            entry_before_time="14:00",
+            f9_enabled=False,
+            f10_enabled=False,
+            per_stock_amount=2_000_000,
+        )
+        engine, _logs, _trades, _strategy_events = self._make_engine(cfg)
+        engine._current_datetime = lambda: datetime(2026, 5, 19, 13, 30, 1)
+        state = self._arm_entry_state(engine)
+
+        engine._tick(state, time.time())
+
+        self.assertFalse(state.pending)
+        self.assertEqual(state.last_skip_reason, "F1:已過進場時段 13:30")
+
     def test_bid_and_no_ask_mode_requires_bid_lock_without_asks(self):
         cfg = TradingConfig(
             f1_enabled=False,
@@ -307,6 +384,7 @@ class TestTradingEngineStrategyRules(unittest.TestCase):
             on_status=lambda _summary: None,
             on_decision_event=decision_events.append,
         )
+        engine._current_datetime = lambda: datetime(2026, 5, 19, 9, 30, 0)
         state = self._arm_entry_state(engine)
         state.ask_qty_at_limit = 120
         state.last_price = Decimal(str(state.info.limit_up))
