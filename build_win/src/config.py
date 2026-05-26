@@ -104,9 +104,9 @@ class TradingConfig:
     recording_record_raw: bool = True    # 是否錄製原始 SDK JSON 字串（吃較多空間）
 
     # ── 鎖漲停判斷模式 ──────────────────────────────────────────────────────
-    # 鎖板以「買一在漲停，且沒有委賣或賣一量=0」為預設，避免把
-    # 「只有最新成交打到漲停」或「漲停價仍有委賣排隊」誤判成真正鎖板。
-    limit_up_detection_mode: str = "bid_and_zero_ask"
+    # 鎖板預設採用較嚴格規則：API 明示最後成交價為漲停，且買一在漲停且有量，
+    # 同時無委賣、賣一量為 0，或賣一已高於漲停，才視為真正鎖板。
+    limit_up_detection_mode: str = "strict_lock_from_user_rule"
 
     # ── 帳號 ────────────────────────────────────────────────────────────────
     api_id: str = ""
@@ -121,11 +121,10 @@ class TradingConfig:
         if not isinstance(data, dict):
             raise ValueError("設定檔格式錯誤：JSON 根節點必須為物件")
         valid = {k: v for k, v in data.items() if k in cls.__dataclass_fields__}
-        # 相容舊版設定：昨天預設用 ask_or_bid_or_last，會把
-        # 「最新成交=漲停」或「賣一仍在漲停價但尚有委賣」提前視為鎖板。
-        # 目前需求已改為真正鎖板才算，因此沿用舊預設時自動升級。
-        if valid.get("limit_up_detection_mode") == "ask_or_bid_or_last":
-            valid["limit_up_detection_mode"] = "bid_and_zero_ask"
+        # 相容舊版設定：舊預設較容易把「觸板」誤判成「鎖板」。
+        # 若載入舊預設值，統一升級到目前新的嚴格預設。
+        if valid.get("limit_up_detection_mode") in {"ask_or_bid_or_last", "bid_and_zero_ask"}:
+            valid["limit_up_detection_mode"] = "strict_lock_from_user_rule"
         return cls(**valid)
 
     def save(self, path: str = ""):

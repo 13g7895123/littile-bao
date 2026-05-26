@@ -67,7 +67,14 @@ class TestTradingConfigJsonIO(unittest.TestCase):
             "limit_up_detection_mode": "ask_or_bid_or_last",
         })
 
-        self.assertEqual(cfg.limit_up_detection_mode, "bid_and_zero_ask")
+        self.assertEqual(cfg.limit_up_detection_mode, "strict_lock_from_user_rule")
+
+    def test_from_dict_migrates_previous_default_limitup_mode(self):
+        cfg = TradingConfig.from_dict({
+            "limit_up_detection_mode": "bid_and_zero_ask",
+        })
+
+        self.assertEqual(cfg.limit_up_detection_mode, "strict_lock_from_user_rule")
 
 
 if __name__ == "__main__":

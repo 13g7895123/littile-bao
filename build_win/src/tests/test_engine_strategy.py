@@ -339,6 +339,73 @@ class TestTradingEngineStrategyRules(unittest.TestCase):
         ))
         self.assertTrue(engine._states["2330"].is_at_limit_up)
 
+    def test_strict_lock_from_user_rule_matches_requested_condition(self):
+        cfg = TradingConfig(
+            f1_enabled=False,
+            f9_enabled=False,
+            f10_enabled=False,
+            limit_up_detection_mode="strict_lock_from_user_rule",
+        )
+        engine, _logs, _trades, _strategy_events = self._make_engine(cfg)
+
+        engine._on_book(BookEvent(
+            code="2330",
+            time=datetime(2026, 5, 19, 9, 1),
+            ask=[SimpleNamespace(price=Decimal("1100"), volume=3)],
+            bid=[SimpleNamespace(price=Decimal("1100"), volume=99)],
+        ))
+        engine._on_tick(TickEvent(
+            code="2330",
+            time=datetime(2026, 5, 19, 9, 1, 1),
+            price=Decimal("1100"),
+            volume=10,
+            cum_volume=100,
+            is_limit_up_price=True,
+        ))
+        self.assertFalse(engine._states["2330"].is_at_limit_up)
+
+        engine._on_book(BookEvent(
+            code="2330",
+            time=datetime(2026, 5, 19, 9, 2),
+            ask=[],
+            bid=[SimpleNamespace(price=Decimal("1100"), volume=99)],
+        ))
+        self.assertTrue(engine._states["2330"].is_at_limit_up)
+
+        engine2, _logs2, _trades2, _strategy_events2 = self._make_engine(cfg)
+        engine2._on_book(BookEvent(
+            code="2330",
+            time=datetime(2026, 5, 19, 9, 3),
+            ask=[],
+            bid=[SimpleNamespace(price=Decimal("1100"), volume=0)],
+        ))
+        engine2._on_tick(TickEvent(
+            code="2330",
+            time=datetime(2026, 5, 19, 9, 3, 1),
+            price=Decimal("1100"),
+            volume=10,
+            cum_volume=100,
+            is_limit_up_price=True,
+        ))
+        self.assertFalse(engine2._states["2330"].is_at_limit_up)
+
+        engine3, _logs3, _trades3, _strategy_events3 = self._make_engine(cfg)
+        engine3._on_book(BookEvent(
+            code="2330",
+            time=datetime(2026, 5, 19, 9, 4),
+            ask=[],
+            bid=[SimpleNamespace(price=Decimal("1100"), volume=99)],
+        ))
+        engine3._on_tick(TickEvent(
+            code="2330",
+            time=datetime(2026, 5, 19, 9, 4, 1),
+            price=Decimal("1100"),
+            volume=10,
+            cum_volume=100,
+            is_limit_up_price=False,
+        ))
+        self.assertFalse(engine3._states["2330"].is_at_limit_up)
+
     def test_update_limitup_mode_refreshes_state_and_summary_signals(self):
         cfg = TradingConfig(
             f1_enabled=False,

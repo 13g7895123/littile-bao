@@ -15,11 +15,12 @@ LIMIT_UP_DETECTION_MODES: Dict[str, str] = {
     "bid_and_last": "bid1=漲停 且 最新成交=漲停",
     "bid_and_no_ask": "bid1=漲停 且 沒有任何委賣檔",
     "bid_and_zero_ask": "bid1=漲停 且 沒有委賣或賣一量=0",
+    "strict_lock_from_user_rule": "isLimitUpPrice=true 且 bid1=漲停且有量，且無委賣/賣一量=0/賣一高於漲停",
     "trade_price_only": "只有最新成交=漲停 才算觸板/封板",
     "trade_flag_only": "只有 API 漲停旗標為真才算",
 }
 
-DEFAULT_LIMIT_UP_DETECTION_MODE = "bid_and_zero_ask"
+DEFAULT_LIMIT_UP_DETECTION_MODE = "strict_lock_from_user_rule"
 
 
 def _to_decimal(value: Optional[Decimal]) -> Optional[Decimal]:
@@ -60,6 +61,7 @@ def evaluate_limit_up_state(
     bid_empty = not has_bid_levels
     ask_qty_zero = ask_empty or int(ask0_volume or 0) <= 0
     bid_qty_positive = (not bid_empty) and int(bid0_volume or 0) > 0
+    ask_price_above_limit = ask0_price is not None and ask0_price > limit_up
     trade_flag_price = bool(is_limit_up_price)
     trade_flag_bid = bool(is_limit_up_bid)
     trade_flag_ask = bool(is_limit_up_ask)
@@ -82,6 +84,12 @@ def evaluate_limit_up_state(
         "bid_and_last": bid_at_limit and last_at_limit,
         "bid_and_no_ask": bid_at_limit and ask_empty,
         "bid_and_zero_ask": bid_at_limit and ask_qty_zero,
+        "strict_lock_from_user_rule": (
+            trade_flag_price
+            and bid_at_limit
+            and bid_qty_positive
+            and (ask_empty or ask_qty_zero or ask_price_above_limit)
+        ),
         "trade_price_only": last_at_limit or trade_flag_price,
         "trade_flag_only": trade_flag_price or trade_flag_bid or trade_flag_ask,
     }
@@ -103,6 +111,7 @@ def evaluate_limit_up_state(
             "bid_empty": bid_empty,
             "ask_qty_zero": ask_qty_zero,
             "bid_qty_positive": bid_qty_positive,
+            "ask_price_above_limit": ask_price_above_limit,
         },
         "candidates": candidates,
     }
