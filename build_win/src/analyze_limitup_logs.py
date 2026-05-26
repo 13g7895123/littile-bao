@@ -76,7 +76,7 @@ def _iter_lines(path: Path) -> Iterable[dict]:
 
 
 def _event_time(row: dict) -> str:
-    return str(row.get("time") or row.get("t") or "")
+    return str(row.get("api_time") or row.get("time") or row.get("t") or "")
 
 
 def _apply_event(state: SymbolState, row: dict) -> None:

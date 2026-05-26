@@ -63,6 +63,8 @@ class TickEvent:
     time: datetime
     price: Decimal
     volume: int
+    api_time: Optional[datetime] = None
+    recv_time: Optional[datetime] = None
     cum_volume: int = 0
     prev_close: Optional[Decimal] = None
     bid: Optional[Decimal] = None
@@ -85,6 +87,8 @@ class BookEvent:
     time: datetime
     ask: List[BookLevel] = field(default_factory=list)
     bid: List[BookLevel] = field(default_factory=list)
+    api_time: Optional[datetime] = None
+    recv_time: Optional[datetime] = None
 
 
 class OrderSide(str, Enum):

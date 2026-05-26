@@ -187,6 +187,7 @@ class MockRealtimeFeed(RealtimeFeed):
                 time.sleep(0.5)
 
     def _gen_tick(self, code: str, meta: SymbolMeta) -> None:
+        now = datetime.now()
         # 是否進入 / 維持漲停（沿用舊 engine 的概率 0.75 / 0.85）
         at_limit = self._at_limit.get(code, False)
         if not at_limit:
@@ -208,15 +209,18 @@ class MockRealtimeFeed(RealtimeFeed):
         self._cum_volume[code] = self._cum_volume.get(code, 0) + vol
         ev = TickEvent(
             code=code,
-            time=datetime.now(),
+            time=now,
             price=price,
             volume=vol,
+            api_time=now,
+            recv_time=now,
             cum_volume=self._cum_volume[code],
             prev_close=meta.prev_close,
         )
         self._emit_tick(ev)
 
     def _gen_book(self, code: str, meta: SymbolMeta) -> None:
+        now = datetime.now()
         at_limit = self._at_limit.get(code, False)
         ask: List[BookLevel] = []
         bid: List[BookLevel] = []
@@ -239,7 +243,7 @@ class MockRealtimeFeed(RealtimeFeed):
                 price=meta.limit_up - Decimal("1"),
                 volume=random.randint(20, 200),
             ))
-        ev = BookEvent(code=code, time=datetime.now(), ask=ask, bid=bid)
+        ev = BookEvent(code=code, time=now, ask=ask, bid=bid, api_time=now, recv_time=now)
         self._emit_book(ev)
 
 
@@ -750,7 +754,45 @@ class FubonRealtimeFeed(RealtimeFeed):
             )
 
     @staticmethod
+    def _parse_api_datetime(value: Any) -> Optional[datetime]:
+        if value in (None, ""):
+            return None
+        if isinstance(value, datetime):
+            return value
+        if isinstance(value, (int, float)):
+            raw = float(value)
+        else:
+            text = str(value).strip()
+            if not text:
+                return None
+            try:
+                return datetime.fromisoformat(text.replace("Z", "+00:00")).replace(tzinfo=None)
+            except ValueError:
+                try:
+                    raw = float(text)
+                except ValueError:
+                    return None
+
+        abs_raw = abs(raw)
+        if abs_raw >= 1_000_000_000_000_000_000:
+            seconds = raw / 1_000_000_000
+        elif abs_raw >= 1_000_000_000_000_000:
+            seconds = raw / 1_000_000
+        elif abs_raw >= 1_000_000_000_000:
+            seconds = raw / 1_000
+        else:
+            seconds = raw
+        try:
+            return datetime.fromtimestamp(seconds)
+        except (OverflowError, OSError, ValueError):
+            return None
+
+    @staticmethod
     def _to_tick(p: dict) -> TickEvent:
+        recv_time = datetime.now()
+        api_time = FubonRealtimeFeed._parse_api_datetime(
+            p.get("time") or p.get("timestamp") or p.get("matchTime") or p.get("tradeTime")
+        )
         # 價格容錯：price / lastPrice / closePrice / matchPrice
         price_raw = (p.get("price") or p.get("lastPrice")
                      or p.get("closePrice") or p.get("matchPrice") or 0)
@@ -765,9 +807,11 @@ class FubonRealtimeFeed(RealtimeFeed):
         ask_raw = p.get("ask")
         return TickEvent(
             code=str(p.get("symbol") or p.get("code") or ""),
-            time=datetime.now(),
+            time=api_time or recv_time,
             price=Decimal(str(price_raw or 0)),
             volume=int(vol_raw or 0),
+            api_time=api_time,
+            recv_time=recv_time,
             cum_volume=int(cum_raw or 0),
             prev_close=Decimal(str(prev)) if prev else None,
             bid=Decimal(str(bid_raw)) if bid_raw not in (None, "") else None,
@@ -789,6 +833,11 @@ class FubonRealtimeFeed(RealtimeFeed):
 
     @staticmethod
     def _to_book(p: dict) -> BookEvent:
+        recv_time = datetime.now()
+        api_time = FubonRealtimeFeed._parse_api_datetime(
+            p.get("time") or p.get("timestamp") or p.get("matchTime") or p.get("tradeTime")
+        )
+
         def _levels(items) -> List[BookLevel]:
             out: List[BookLevel] = []
             for it in items or []:
@@ -821,7 +870,9 @@ class FubonRealtimeFeed(RealtimeFeed):
 
         return BookEvent(
             code=str(p.get("symbol") or p.get("code") or ""),
-            time=datetime.now(),
+            time=api_time or recv_time,
             ask=ask_levels,
             bid=bid_levels,
+            api_time=api_time,
+            recv_time=recv_time,
         )

@@ -55,6 +55,15 @@ def _dumps(obj: dict) -> str:
     return json.dumps(obj, ensure_ascii=False, default=_json_default)
 
 
+def _latency_ms(api_time: Optional[datetime], recv_time: Optional[datetime]) -> Optional[float]:
+    if api_time is None or recv_time is None:
+        return None
+    try:
+        return round((recv_time - api_time).total_seconds() * 1000, 3)
+    except Exception:
+        return None
+
+
 # ─────────────────────────────────────────────────────────
 #  RecordingWriter
 # ─────────────────────────────────────────────────────────
@@ -163,6 +172,9 @@ class RecordingWriter:
                 "kind": "tick",
                 "code": ev.code,
                 "time": ev.time.isoformat() if ev.time else None,
+                "api_time": ev.api_time.isoformat() if getattr(ev, "api_time", None) else None,
+                "recv_time": ev.recv_time.isoformat() if getattr(ev, "recv_time", None) else None,
+                "latency_ms": _latency_ms(getattr(ev, "api_time", None), getattr(ev, "recv_time", None)),
                 "price": str(ev.price) if ev.price is not None else None,
                 "volume": int(ev.volume or 0),
                 "cum_volume": int(getattr(ev, "cum_volume", 0) or 0),
@@ -189,6 +201,9 @@ class RecordingWriter:
                 "kind": "book",
                 "code": ev.code,
                 "time": ev.time.isoformat() if ev.time else None,
+                "api_time": ev.api_time.isoformat() if getattr(ev, "api_time", None) else None,
+                "recv_time": ev.recv_time.isoformat() if getattr(ev, "recv_time", None) else None,
+                "latency_ms": _latency_ms(getattr(ev, "api_time", None), getattr(ev, "recv_time", None)),
                 "ask": [{"price": str(l.price), "volume": int(l.volume)} for l in (ev.ask or [])],
                 "bid": [{"price": str(l.price), "volume": int(l.volume)} for l in (ev.bid or [])],
             })

@@ -6,6 +6,7 @@ import sys
 import threading
 import time
 import unittest
+from datetime import datetime
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -113,6 +114,44 @@ class TestEngineWithMockFeed(unittest.TestCase):
 
 
 class TestFubonRealtimeFeedSkeleton(unittest.TestCase):
+    def test_to_tick_prefers_api_time_and_keeps_recv_time(self):
+        payload = {
+            "symbol": "2330",
+            "price": 1100,
+            "size": 5,
+            "volume": 100,
+            "time": 1779762837138002,
+            "isLimitUpPrice": True,
+        }
+
+        tick = FubonRealtimeFeed._to_tick(payload)
+
+        self.assertEqual(tick.code, "2330")
+        self.assertEqual(tick.time, tick.api_time)
+        self.assertIsNotNone(tick.api_time)
+        self.assertIsNotNone(tick.recv_time)
+        self.assertLess(tick.api_time, tick.recv_time)
+        self.assertEqual(tick.api_time, datetime.fromtimestamp(1779762837.138002))
+        self.assertTrue(tick.is_limit_up_price)
+
+    def test_to_book_prefers_api_time_and_keeps_recv_time(self):
+        payload = {
+            "symbol": "2330",
+            "time": 1779762837138002,
+            "asks": [{"price": 1100, "size": 0}],
+            "bids": [{"price": 1100, "size": 99}],
+        }
+
+        book = FubonRealtimeFeed._to_book(payload)
+
+        self.assertEqual(book.code, "2330")
+        self.assertEqual(book.time, book.api_time)
+        self.assertIsNotNone(book.api_time)
+        self.assertIsNotNone(book.recv_time)
+        self.assertLess(book.api_time, book.recv_time)
+        self.assertEqual(book.api_time, datetime.fromtimestamp(1779762837.138002))
+        self.assertEqual(book.bid[0].volume, 99)
+
     def test_subscribe_caps_symbols_to_five_connection_limit(self):
         feed = FubonRealtimeFeed(SimpleNamespace())
         codes = [f"{i:04d}" for i in range(FUBON_REALTIME_SYMBOL_LIMIT + 25)]
