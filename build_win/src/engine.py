@@ -733,6 +733,7 @@ class TradingEngine:
         apply_f1 = cfg.f1_enabled and not (
             consume_enabled and bool(getattr(cfg, "consume_mutex_with_f1", True))
         )
+        f1_lock_bypass = False
         if apply_f1:
             now_time = self._current_datetime().time()
             start_time = self._parse_config_time(getattr(cfg, "start_time", "09:00"), dtime(9, 0))
@@ -746,7 +747,14 @@ class TradingEngine:
             if now_time >= cutoff:
                 self._skip_entry(state, f"F1:已過進場時段 {cutoff.strftime('%H:%M')}")
                 return
-            if ask_qty >= cfg.ask_queue_threshold:
+            if state.is_at_limit_up:
+                f1_lock_bypass = True
+                self.on_log(
+                    "INFO",
+                    f"[{info.code} {info.name}] 已鎖漲停，忽略 F1 委賣張數限制"
+                    f"（委賣 {ask_qty} 張 / 門檻 {cfg.ask_queue_threshold} 張）",
+                )
+            elif ask_qty >= cfg.ask_queue_threshold:
                 self._skip_entry(
                     state,
                     f"F1:委賣 {ask_qty} ≥ {cfg.ask_queue_threshold} 張",
@@ -765,26 +773,35 @@ class TradingEngine:
             entry_strategy_ids.append("F7")
 
         # 功能 10：委賣價 + 即時量（進場確認）
+        f10_lock_bypass = False
         if cfg.f10_enabled:
-            # F10-①：委賣價資料是否已到位
-            if state.ask0_price is None:
-                self._skip_entry(state, "F10:尚無委賣價資料")
-                return
-            # F10-②：委賣價需 ≥ 漲停價 × ask_price_ratio（確認掛在板上）
-            min_ask_price = Decimal(str(info.limit_up)) * Decimal(str(cfg.ask_price_ratio))
-            if state.ask0_price < min_ask_price:
-                self._skip_entry(
-                    state,
-                    f"F10:委賣價 {state.ask0_price} < 漲停 × {cfg.ask_price_ratio}",
+            if state.is_at_limit_up:
+                f10_lock_bypass = True
+                self.on_log(
+                    "INFO",
+                    f"[{info.code} {info.name}] 已鎖漲停，忽略 F10 進場確認"
+                    f"（委賣價/委賣價倍率/1 秒量皆不檢查）",
                 )
-                return
-            # F10-③：1秒成交量需 ≥ entry_volume_confirm 張（確認買壓足夠，非假鎖板）
-            if state.last_1s_vol < cfg.entry_volume_confirm:
-                self._skip_entry(
-                    state,
-                    f"F10:1秒量 {state.last_1s_vol} < {cfg.entry_volume_confirm} 張",
-                )
-                return
+            else:
+                # F10-①：委賣價資料是否已到位
+                if state.ask0_price is None:
+                    self._skip_entry(state, "F10:尚無委賣價資料")
+                    return
+                # F10-②：委賣價需 ≥ 漲停價 × ask_price_ratio（確認掛在板上）
+                min_ask_price = Decimal(str(info.limit_up)) * Decimal(str(cfg.ask_price_ratio))
+                if state.ask0_price < min_ask_price:
+                    self._skip_entry(
+                        state,
+                        f"F10:委賣價 {state.ask0_price} < 漲停 × {cfg.ask_price_ratio}",
+                    )
+                    return
+                # F10-③：1秒成交量需 ≥ entry_volume_confirm 張（確認買壓足夠，非假鎖板）
+                if state.last_1s_vol < cfg.entry_volume_confirm:
+                    self._skip_entry(
+                        state,
+                        f"F10:1秒量 {state.last_1s_vol} < {cfg.entry_volume_confirm} 張",
+                    )
+                    return
             entry_strategy_ids.append("F10")
 
         # 走到這裡：所有過濾條件皆通過，清掉上一次的略過訊息
@@ -830,15 +847,30 @@ class TradingEngine:
             },
         )
         if apply_f1:
-            entry_note = f"委賣 {ask_qty} 張 < {cfg.ask_queue_threshold} 張"
+            if f1_lock_bypass:
+                entry_note = (
+                    f"鎖漲停忽略 F1（委賣 {ask_qty} 張 / 門檻 "
+                    f"{cfg.ask_queue_threshold} 張）"
+                )
+            else:
+                entry_note = f"委賣 {ask_qty} 張 < {cfg.ask_queue_threshold} 張"
         elif consume_enabled:
             entry_note = (f"漲停消化量 {state.limit_up_consumed_qty} 張 >= "
                           f"{getattr(cfg, 'consume_qty_threshold', 0)} 張")
         else:
             entry_note = "基礎條件符合"
+        bypass_tags: List[str] = []
+        if f1_lock_bypass:
+            bypass_tags.append("F1")
+        if f10_lock_bypass:
+            bypass_tags.append("F10")
+        bypass_note = (
+            f"；鎖漲停忽略 {'、'.join(bypass_tags)}" if bypass_tags else ""
+        )
         self.on_log("TRADE",
             f"[{info.code}] 進場委託 {qty} 張 @ "
-            f"{info.limit_up:,.0f}（{entry_note}，第 {state.candle_index} 根）")
+            f"{info.limit_up:,.0f}（{entry_note}，第 {state.candle_index} 根"
+            f"{bypass_note}）")
 
         # ── Milestone 5：透過 broker 下單；無 broker 時退回模擬 ──
         if self.broker is not None and OrderRequest is not None:
