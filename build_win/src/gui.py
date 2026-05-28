@@ -307,8 +307,8 @@ class App(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("打板策略系統")
-        self.resize(1340, 860)
-        self.setMinimumSize(1100, 680)
+        self.resize(1440, 860)
+        self.setMinimumSize(1200, 680)
         self.setStyleSheet(f"background-color: {C['bg']};")
 
         self.cfg = TradingConfig.load()
@@ -1124,7 +1124,7 @@ class App(QMainWindow):
         monitor_header.setMinimumSectionSize(44)
         monitor_header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         self.monitor_table.verticalHeader().setDefaultSectionSize(28)
-        for i, w in enumerate([52, 70, 66, 62, 72, 78, 86, 70, 78, 86]):
+        for i, w in enumerate([52, 70, 66, 62, 72, 78, 86, 70, 102, 86]):
             self.monitor_table.setColumnWidth(i, w)
         ml.addWidget(self.monitor_table, 1)
         rl.addWidget(mon, 3)
@@ -4475,7 +4475,7 @@ class App(QMainWindow):
     def _autosize_monitor_columns(self) -> None:
         if not hasattr(self, "monitor_table"):
             return
-        min_widths = [52, 70, 66, 62, 72, 78, 86, 70, 78, 86]
+        min_widths = [52, 70, 66, 62, 72, 78, 86, 70, 102, 86]
         self.monitor_table.resizeColumnsToContents()
         for col, min_width in enumerate(min_widths):
             width = max(self.monitor_table.columnWidth(col) + 10, min_width)
