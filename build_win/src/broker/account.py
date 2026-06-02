@@ -103,6 +103,29 @@ class FubonAccountService(AccountService):
     def __init__(self, adapter) -> None:
         self.adapter = adapter
 
+    @staticmethod
+    def _int_attr(item, name: str) -> int:
+        value = getattr(item, name, 0) or 0
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return 0
+
+    @classmethod
+    def _inventory_qty_shares(cls, item) -> int:
+        today_qty = cls._int_attr(item, "today_qty")
+        if today_qty > 0:
+            return today_qty
+
+        tradable_qty = cls._int_attr(item, "tradable_qty")
+        if tradable_qty > 0:
+            return tradable_qty
+
+        lastday_qty = cls._int_attr(item, "lastday_qty")
+        buy_filled_qty = cls._int_attr(item, "buy_filled_qty")
+        sell_filled_qty = cls._int_attr(item, "sell_filled_qty")
+        return max(0, lastday_qty + buy_filled_qty - sell_filled_qty)
+
     def snapshot(self) -> AccountSnapshot:
         if self.adapter.state.value != "connected":
             raise FubonNotLoggedInError("尚未登入券商")
@@ -114,12 +137,12 @@ class FubonAccountService(AccountService):
         snap = AccountSnapshot()
         # 庫存
         try:
-            inv_res = sdk.stock.inventories(acc)  # type: ignore[attr-defined]
+            inv_res = sdk.accounting.inventories(acc)  # type: ignore[attr-defined]
             data = getattr(inv_res, "data", []) or []
             positions: List[Position] = []
             for item in data:
                 code = str(getattr(item, "stock_no", "") or "")
-                qty_shares = int(getattr(item, "today_qty", 0) or 0)
+                qty_shares = self._inventory_qty_shares(item)
                 qty_lots = qty_shares // 1000
                 if qty_lots <= 0:
                     continue

@@ -20,11 +20,11 @@
    - `pending=False`、`position_qty += qty`、`entry_blocked_reason=""`。
    - 平均成本更新：第一次以 `ev.price` 為基準；加碼以加權平均。
    - 維護 `_daily_trade_codes / _daily_trade_count`。
-   - `on_log("INFO")` + `on_trade({action:"BUY",...})` + `_emit_decision_event("FILL", state, "買進成交", "BUY", {...})`。
+   - `on_log("INFO")` + `on_trade({action:"BUY", time, detail_time, ...})` + `_emit_decision_event("FILL", state, "買進成交", "BUY", {...})`。
 4. **SELL**：
    - 計算 `realized_pnl(entry_price, ev.price, qty, day_trade=True)`；累加 `_today_realized_pnl`。
    - `position_qty -= qty`；歸零時設 `entry_blocked / entry_blocked_reason="已賣出" / sold_today=True / entry_price=None`。
-   - `on_trade({action:"SELL", pnl, realized_total, note})`、`_emit_decision_event("FILL", state, "賣出成交", note, {...})`。
+   - `on_trade({action:"SELL", time, detail_time, pnl, realized_total, note})`、`_emit_decision_event("FILL", state, "賣出成交", note, {...})`。
 
 ## 注意事項
 - 與 `_do_sell` 的「無 broker」路徑不同：有 broker 時 PnL 結算只在這裡發生，不在送單時。

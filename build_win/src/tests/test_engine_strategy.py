@@ -65,6 +65,7 @@ class TestTradingEngineStrategyRules(unittest.TestCase):
 
         self.assertEqual(state.position_qty, 0)
         self.assertEqual(trades[-1]["action"], "SELL")
+        self.assertIn("detail_time", trades[-1])
         self.assertTrue(any("策略=F4" in msg for _level, msg in logs))
         self.assertEqual(strategy_events[-1]["strategy"], "F4")
 
@@ -85,6 +86,29 @@ class TestTradingEngineStrategyRules(unittest.TestCase):
 
         self.assertEqual(state.position_qty, 1)
         self.assertEqual(trades, [])
+
+    def test_f4_treats_non_limit_state_without_ask_as_open_board(self):
+        cfg = TradingConfig(
+            f9_enabled=False,
+            f5_enabled=False,
+            f4_open_ticks_to_sell=1,
+            f4_require_today_limitup=True,
+        )
+        engine, logs, trades, strategy_events = self._make_engine(cfg)
+        state = engine._states["2330"]
+        state.position_qty = 1
+        state.entry_price = Decimal("1100")
+        state.touched_limit_up_today = True
+        state.last_price = Decimal("1099")
+        state.is_at_limit_up = False
+        state.ask0_price = None
+
+        engine._tick(state, time.time())
+
+        self.assertEqual(state.position_qty, 0)
+        self.assertEqual(trades[-1]["action"], "SELL")
+        self.assertTrue(any("策略=F4" in msg for _level, msg in logs))
+        self.assertEqual(strategy_events[-1]["strategy"], "F4")
 
     def test_open_limitup_entry_toggle_blocks_entry(self):
         cfg = TradingConfig(

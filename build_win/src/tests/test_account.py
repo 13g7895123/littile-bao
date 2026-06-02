@@ -6,11 +6,12 @@ import sys
 import time
 import unittest
 from decimal import Decimal
+from types import SimpleNamespace
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from broker import (  # noqa: E402
-    DEFAULT_MOCK_INFOS, MockAccountService, MockAdapter,
+    DEFAULT_MOCK_INFOS, FubonAccountService, MockAccountService, MockAdapter,
     OrderRequest, OrderSide, Position, ScanCriteria, scan_daily,
 )
 
@@ -102,6 +103,60 @@ class TestMockAdapterAccountSync(unittest.TestCase):
         self.assertEqual(len(snap.positions), 1)
         self.assertEqual(snap.positions[0].code, "2330")
         self.assertEqual(snap.positions[0].qty, 1)
+
+
+class TestFubonAccountService(unittest.TestCase):
+    def _make_adapter(self, inventory_items, bank_data=None):
+        accounting = SimpleNamespace(
+            inventories=lambda _acc: SimpleNamespace(data=inventory_items),
+            bank_remain=lambda _acc: SimpleNamespace(data=bank_data),
+        )
+        sdk = SimpleNamespace(accounting=accounting)
+        return SimpleNamespace(
+            state=SimpleNamespace(value="connected"),
+            sdk=sdk,
+            account=SimpleNamespace(branch_no="0000", account_no="0000000"),
+        )
+
+    def test_snapshot_reads_accounting_inventories(self):
+        item = SimpleNamespace(
+            stock_no="2330",
+            stock_name="台積電",
+            today_qty=2000,
+            cost_price="1000",
+            last_price="1010",
+        )
+        bank = SimpleNamespace(balance="900000", available="880000")
+        svc = FubonAccountService(self._make_adapter([item], bank))
+
+        snap = svc.snapshot()
+
+        self.assertEqual(len(snap.positions), 1)
+        self.assertEqual(snap.positions[0].code, "2330")
+        self.assertEqual(snap.positions[0].qty, 2)
+        self.assertEqual(snap.cash, Decimal("900000"))
+        self.assertEqual(snap.buying_power, Decimal("880000"))
+
+    def test_snapshot_keeps_overnight_position_when_today_qty_missing(self):
+        item = SimpleNamespace(
+            stock_no="2317",
+            stock_name="鴻海",
+            today_qty=0,
+            tradable_qty=2000,
+            lastday_qty=2000,
+            buy_filled_qty=0,
+            sell_filled_qty=0,
+            cost_price="150",
+            last_price="152",
+        )
+        svc = FubonAccountService(self._make_adapter([item]))
+
+        snap = svc.snapshot()
+
+        self.assertEqual(len(snap.positions), 1)
+        self.assertEqual(snap.positions[0].code, "2317")
+        self.assertEqual(snap.positions[0].qty, 2)
+        self.assertEqual(snap.total_unrealized_pnl, Decimal("4000"))
 
 
 if __name__ == "__main__":

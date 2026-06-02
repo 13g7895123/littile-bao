@@ -915,8 +915,10 @@ class TradingEngine:
                         self._daily_trade_count = len(self._daily_trade_codes)
                     self.on_log("INFO", f"[{code}] 成交 {qty} 張 @ {info.limit_up:,.0f}，"
                                         f"今日第 {self._daily_trade_count} 檔")
+                    trade_time = datetime.now()
                     self.on_trade({
-                        "time": datetime.now().strftime("%H:%M:%S"),
+                        "time": trade_time.strftime("%H:%M:%S"),
+                        "detail_time": trade_time.isoformat(timespec="seconds"),
                         "code": code,
                         "name": info.name,
                         "action": "BUY",
@@ -985,20 +987,28 @@ class TradingEngine:
             pnl = realized_pnl(state.entry_price, sell_price_dec, qty, day_trade=True)
             pnl_net = float(pnl.net)
             self._today_realized_pnl += pnl.net
+        cost_basis = (
+            float(state.entry_price * Decimal(qty) * Decimal("1000"))
+            if state.entry_price is not None and qty > 0
+            else 0.0
+        )
 
         state.position_qty = 0
         state.entry_blocked = True
         state.entry_blocked_reason = "已賣出"
         state.sold_today = True   # 功能 12：標記當天已賣過
         state.entry_price = None
+        trade_time = datetime.now()
         self.on_trade({
-            "time": datetime.now().strftime("%H:%M:%S"),
+            "time": trade_time.strftime("%H:%M:%S"),
+            "detail_time": trade_time.isoformat(timespec="seconds"),
             "code": info.code,
             "name": info.name,
             "action": "SELL",
             "price": sell_price,
             "qty": qty,
             "pnl": pnl_net,
+            "cost_basis": cost_basis,
             "realized_total": float(self._today_realized_pnl),
             "note": note,
         })
@@ -1023,14 +1033,17 @@ class TradingEngine:
         return sold
 
     def _open_ticks_from_limit(self, state: StockState) -> int:
-        if state.ask0_price is None:
+        # F4 應以「目前已不屬鎖板」視為開板；若有 ask0 價格再換算實際打開幾檔。
+        if state.is_at_limit_up:
             return 0
         limit_up = Decimal(str(state.info.limit_up))
+        if state.ask0_price is None:
+            return 1
         if state.ask0_price >= limit_up:
-            return 0
+            return 1
         tick = self._tick_size(limit_up)
         if tick <= 0:
-            return 0
+            return 1
         return max(1, int((limit_up - state.ask0_price) / tick))
 
     def _block_entry(self, state: StockState, reason: str, level: str, message: str) -> None:
@@ -1295,6 +1308,7 @@ class TradingEngine:
                     f"累計持倉 {state.position_qty} 張，今日第 {self._daily_trade_count} 檔")
                 self.on_trade({
                     "time": ev.time.strftime("%H:%M:%S"),
+                    "detail_time": ev.time.isoformat(timespec="seconds"),
                     "code": ev.code,
                     "name": info.name,
                     "action": "BUY",
@@ -1322,6 +1336,11 @@ class TradingEngine:
                     pnl = realized_pnl(state.entry_price, ev.price, qty, day_trade=True)
                     pnl_net = float(pnl.net)
                     self._today_realized_pnl += pnl.net
+                cost_basis = (
+                    float(state.entry_price * Decimal(qty) * Decimal("1000"))
+                    if state.entry_price is not None and qty > 0
+                    else 0.0
+                )
                 note = getattr(state, "_sell_note", "出場")
                 # 部分賣出時 position_qty 應該扣掉，而不是直接歸零
                 state.position_qty = max(0, int(state.position_qty) - qty)
@@ -1336,12 +1355,14 @@ class TradingEngine:
                     f"剩餘持倉 {state.position_qty} 張，損益 {pnl_net:+,.0f}")
                 self.on_trade({
                     "time": ev.time.strftime("%H:%M:%S"),
+                    "detail_time": ev.time.isoformat(timespec="seconds"),
                     "code": ev.code,
                     "name": info.name,
                     "action": "SELL",
                     "price": float(ev.price),
                     "qty": qty,
                     "pnl": pnl_net,
+                    "cost_basis": cost_basis,
                     "realized_total": float(self._today_realized_pnl),
                     "note": note,
                 })
@@ -1355,6 +1376,7 @@ class TradingEngine:
                         "qty": qty,
                         "price": ev.price,
                         "pnl": pnl_net,
+                        "cost_basis": cost_basis,
                         "realized_total": float(self._today_realized_pnl),
                     },
                     event_time=ev.time,

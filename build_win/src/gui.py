@@ -324,6 +324,9 @@ class App(QMainWindow):
         self._sell_count = 0
         self._daily_trade_codes = set()
         self._realized_pnl = 0.0   # M4：今日已實現損益累計
+        self._realized_cost_basis = 0.0
+        self._unrealized_pnl = 0.0
+        self._positions_cost = 0.0
         self._log_lines = 0
         self._log_entries = []
         self._log_filter = "strategy"
@@ -1246,7 +1249,7 @@ class App(QMainWindow):
         th.addWidget(_label("成交記錄", C["text"], 10, bold=True))
         th.addStretch()
         tl.addLayout(th)
-        trd_cols = ["時間", "代碼", "名稱", "類別", "價格", "數量", "損益"]
+        trd_cols = ["時間", "代碼", "名稱", "類別", "價格", "數量", "明細", "損益"]
         self.trades_table = QTableWidget(0, len(trd_cols))
         self.trades_table.setHorizontalHeaderLabels(trd_cols)
         self.trades_table.setStyleSheet(_table_style())
@@ -1255,7 +1258,7 @@ class App(QMainWindow):
         self.trades_table.setShowGrid(True)
         self.trades_table.horizontalHeader().setStretchLastSection(True)
         self.trades_table.verticalHeader().setDefaultSectionSize(26)
-        for i, w in enumerate([60, 48, 55, 44, 55, 44, 55]):
+        for i, w in enumerate([60, 48, 55, 44, 55, 44, 180, 55]):
             self.trades_table.setColumnWidth(i, w)
         tl.addWidget(self.trades_table, 1)
         self.trd_summary_lbl = _label("小計", C["subtext"], 9)
@@ -1333,7 +1336,7 @@ class App(QMainWindow):
         th.addWidget(_label("成交記錄", C["text"], 10, bold=True))
         th.addStretch()
         tl.addLayout(th)
-        trd_cols = ["時間", "代碼", "名稱", "類別", "價格", "數量", "損益"]
+        trd_cols = ["時間", "代碼", "名稱", "類別", "價格", "數量", "明細", "損益"]
         self.trades_full_table = QTableWidget(0, len(trd_cols))
         self.trades_full_table.setHorizontalHeaderLabels(trd_cols)
         self.trades_full_table.setStyleSheet(_table_style())
@@ -1343,7 +1346,7 @@ class App(QMainWindow):
         self.trades_full_table.setShowGrid(True)
         self.trades_full_table.horizontalHeader().setStretchLastSection(True)
         self.trades_full_table.verticalHeader().setDefaultSectionSize(28)
-        for i, w in enumerate([72, 60, 80, 55, 72, 55, 72]):
+        for i, w in enumerate([72, 60, 80, 55, 72, 55, 220, 72]):
             self.trades_full_table.setColumnWidth(i, w)
         tl.addWidget(self.trades_full_table, 1)
         self.trades_full_pnl_lbl = _label("+0", C["green"], 9, bold=True)
@@ -3170,6 +3173,9 @@ class App(QMainWindow):
         token = self._strategy_start_token
 
         self._realized_pnl = 0.0
+        self._realized_cost_basis = 0.0
+        self._unrealized_pnl = 0.0
+        self._positions_cost = 0.0
         self._trade_count = 0
         self._buy_count = 0
         self._sell_count = 0
@@ -3737,10 +3743,11 @@ class App(QMainWindow):
         self.stat_positions.setText(str(len(snap.positions)))
         bp = float(snap.buying_power)
         self.stat_available.setText(f"{bp:,.0f}")
-        sign = "+" if total_unr >= 0 else ""
         rate = (total_unr / total_cost * 100) if total_cost > 0 else 0.0
         summary_txt = f"小計 ({len(snap.positions)})"
-        pnl_txt = f"{sign}{total_unr:,.0f}  {sign}{rate:.2f}%"
+        sign = "+" if total_unr >= 0 else ""
+        rate_sign = "+" if rate >= 0 else ""
+        pnl_txt = f"{sign}{total_unr:,.0f}  {rate_sign}{rate:.2f}%"
         pnl_color = C["red"] if total_unr >= 0 else C["green"]
         self.pos_summary_lbl.setText(summary_txt)
         self.pos_pnl_lbl.setText(pnl_txt)
@@ -3749,6 +3756,31 @@ class App(QMainWindow):
             self.pos_full_summary_lbl.setText(summary_txt)
             self.pos_full_pnl_lbl.setText(pnl_txt)
             self.pos_full_pnl_lbl.setStyleSheet(f"color:{pnl_color};")
+        self._unrealized_pnl = total_unr
+        self._positions_cost = total_cost
+        self._update_pnl_stats()
+
+    def _update_pnl_stats(self) -> None:
+        realized = float(self._realized_pnl)
+        unrealized = float(self._unrealized_pnl)
+        total = realized + unrealized
+        invested = float(self._positions_cost) + float(self._realized_cost_basis)
+        total_rate = (total / invested * 100) if invested > 0 else 0.0
+
+        realized_sign = "+" if realized >= 0 else ""
+        realized_text = f"{realized_sign}{realized:,.0f}"
+        realized_color = C["red"] if realized >= 0 else C["green"]
+        self.stat_realized.setText(realized_text)
+        self.stat_realized.setStyleSheet(f"color:{realized_color};")
+
+        total_sign = "+" if total >= 0 else ""
+        total_rate_sign = "+" if total_rate >= 0 else ""
+        total_text = f"{total_sign}{total:,.0f}"
+        total_color = C["red"] if total >= 0 else C["green"]
+        self.stat_pnl_today.setText(total_text)
+        self.stat_pnl_today.setStyleSheet(f"color:{total_color};")
+        self.stat_return.setText(f"{total_rate_sign}{total_rate:.2f}%")
+        self.stat_return.setStyleSheet(f"color:{total_color};")
 
     def _on_order_event(self, ev) -> None:
         """從 broker 執行緒接收 OrderEvent，丟回 GUI 主執行緒繪製。"""
@@ -4148,6 +4180,7 @@ class App(QMainWindow):
         else:
             self._sell_count += 1
             self._realized_pnl += float(d.get("pnl", 0.0))
+            self._realized_cost_basis += float(d.get("cost_basis", 0.0))
 
         action_color = C["green"] if d["action"] == "BUY" else C["red"]
         label_txt = "買進" if d["action"] == "BUY" else "賣出"
@@ -4161,6 +4194,9 @@ class App(QMainWindow):
             pnl_text = "—"
             pnl_color = C["subtext"]
 
+        detail_time = str(d.get("detail_time") or d.get("time") or "")
+        detail_txt = f"時間={detail_time}；數量={d['qty']}"
+
         row = 0
         self.trades_table.insertRow(row)
         cells = [
@@ -4170,6 +4206,7 @@ class App(QMainWindow):
             (label_txt, action_color),
             (f"{d['price']:,.2f}", action_color),
             (str(d["qty"]), action_color),
+            (detail_txt, C["subtext"]),
             (pnl_text, pnl_color),
         ]
         for col, (val, color) in enumerate(cells):
@@ -4197,10 +4234,7 @@ class App(QMainWindow):
             self.trades_full_summary_lbl.setText(f"成交總計 ({self._trade_count})")
             self.trades_full_pnl_lbl.setText(rp_text)
             self.trades_full_pnl_lbl.setStyleSheet(f"color:{rp_color};")
-        self.stat_realized.setText(rp_text)
-        self.stat_realized.setStyleSheet(f"color:{rp_color};")
-        self.stat_pnl_today.setText(rp_text)
-        self.stat_pnl_today.setStyleSheet(f"color:{rp_color};")
+        self._update_pnl_stats()
         self._update_trade_count_stat()
 
     def _update_trade_count_stat(self) -> None:

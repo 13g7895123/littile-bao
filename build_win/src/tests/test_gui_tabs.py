@@ -229,6 +229,7 @@ class TestGuiTabLayout(unittest.TestCase):
 
         self.win._append_trade({
             "time": "09:01:00",
+            "detail_time": "2026-05-20T09:01:00",
             "code": "2330",
             "name": "台積電",
             "action": "BUY",
@@ -237,6 +238,7 @@ class TestGuiTabLayout(unittest.TestCase):
         })
         self.win._append_trade({
             "time": "09:03:00",
+            "detail_time": "2026-05-20T09:03:00",
             "code": "2330",
             "name": "台積電",
             "action": "SELL",
@@ -246,12 +248,48 @@ class TestGuiTabLayout(unittest.TestCase):
         })
         self.assertEqual(self.win.trades_table.rowCount(), 2)
         self.assertEqual(self.win.trades_full_table.rowCount(), 2)
+        self.assertIn("時間=2026-05-20T09:03:00", self.win.trades_table.item(0, 6).text())
+        self.assertIn("數量=1", self.win.trades_full_table.item(0, 6).text())
+        self.assertEqual(self.win.trades_table.item(0, 7).text(), "+500")
         self.assertEqual(self.win.stat_trade_cnt.text(), "1 / 5")
 
         self.win._set_log_filter("all")
         self.win._append_log("INFO", "tab log smoke")
         self.assertIn("tab log smoke", self.win.event_log.toPlainText())
         self.assertIn("tab log smoke", self.win.events_full_log.toPlainText())
+
+    def test_return_rate_uses_realized_and_unrealized_pnl(self):
+        self.win._append_trade({
+            "time": "09:03:00",
+            "detail_time": "2026-05-20T09:03:00",
+            "code": "2330",
+            "name": "台積電",
+            "action": "SELL",
+            "price": 101.0,
+            "qty": 1,
+            "pnl": 500.0,
+            "cost_basis": 100000.0,
+        })
+
+        snap = SimpleNamespace(
+            positions=[
+                SimpleNamespace(
+                    code="2317",
+                    name="鴻海",
+                    qty=1,
+                    avg_cost=Decimal("50"),
+                    last_price=Decimal("50.3"),
+                    unrealized_pnl=Decimal("300"),
+                    unrealized_pnl_pct=Decimal("0.6"),
+                )
+            ],
+            buying_power=Decimal("250000"),
+        )
+        self.win._render_account(snap)
+
+        self.assertEqual(self.win.stat_realized.text(), "+500")
+        self.assertEqual(self.win.stat_pnl_today.text(), "+800")
+        self.assertEqual(self.win.stat_return.text(), "+0.53%")
 
     def test_event_log_defaults_to_strategy_filter_and_hides_non_strategy_logs(self):
         self.assertEqual(self.win._log_filter, "strategy")
