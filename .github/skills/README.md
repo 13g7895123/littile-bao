@@ -22,6 +22,7 @@
 | 技能 | 主題 |
 |---|---|
 | [stock-order-api](stock-order-api/SKILL.md) | Fubon Neo 串接（下單 / 帳務 / 行情） |
+| [daily-trade-summary](daily-trade-summary/SKILL.md) | 盤後交易整理（日報、損益、未平倉、盤中事件） |
 
 ## 關聯文件
 - 邏輯衝突分析：[策略邏輯問題分析.md](../../策略邏輯問題分析.md)

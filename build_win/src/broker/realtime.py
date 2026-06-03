@@ -281,6 +281,13 @@ class FubonRealtimeFeed(RealtimeFeed):
         self._unknown_msg_count: int = 0    # 無法識別的訊息數
         self._empty_code_count: int = 0     # code 解析為空字串的次數
         self._event_name_stats: Dict[str, int] = {}  # event 名稱頻率統計
+        # ── 連線計時（量測從 start() 到第一筆資料的延遲）──
+        self._t_start_once: Optional[float] = None       # _start_once() 進入時
+        self._t_connect_done: Dict[int, float] = {}      # ws#{n} connect() 返回時
+        self._t_subscribe_done: Optional[float] = None   # _do_subscribe() 全部送出後
+        self._t_first_raw: Optional[float] = None        # 第一筆原始訊息到達時
+        self._t_first_tick: Optional[float] = None       # 第一筆有效 tick emit 時
+        self._t_first_book: Optional[float] = None       # 第一筆有效 book emit 時
         # ── Phase 1：盤中行情錄製 ──────────────────────
         # 透過 attach_recorder() 注入，未注入時零成本（None 判斷）
         self._recorder: Optional[Any] = None
@@ -362,18 +369,22 @@ class FubonRealtimeFeed(RealtimeFeed):
         except FubonNotLoggedInError:
             raise
         try:
-            self._log("INFO", f"[FubonFeed] 啟動中，模式={self._mode}，channels={self._channels}")
+            self._t_start_once = time.perf_counter()
+            t0_wall = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+            self._log("INFO", f"[FubonFeed] 啟動中，模式={self._mode}，channels={self._channels}，時刻={t0_wall}")
             init_rt = getattr(sdk, "init_realtime", None)
             if callable(init_rt):
+                t_init = time.perf_counter()
                 try:
                     init_rt(self._resolve_mode())
                 except ImportError:
                     init_rt()
-                self._log("INFO", "[FubonFeed] init_realtime() 完成")
+                self._log("INFO", f"[FubonFeed] init_realtime() 完成，耗時 {(time.perf_counter()-t_init)*1000:.0f} ms")
 
             self._ensure_ws_clients(sdk, self._required_connection_count())
             self._started = True
-            self._log("INFO", f"[FubonFeed] WebSocket clients 建立完成，共 {len(self._ws_clients)} 條連線")
+            elapsed = (time.perf_counter() - self._t_start_once) * 1000
+            self._log("INFO", f"[FubonFeed] WebSocket clients 建立完成，共 {len(self._ws_clients)} 條連線，至此累計 {elapsed:.0f} ms")
             if self._subscribed:
                 self._do_subscribe()
         except FubonNetworkError:
@@ -470,10 +481,15 @@ class FubonRealtimeFeed(RealtimeFeed):
                 )
             except Exception as e:  # noqa: BLE001
                 self._log("ERROR", f"[FubonFeed] subscribe error ws=#{index + 1} chunk={chunk[:3]}…: {e}")
+        self._t_subscribe_done = time.perf_counter()
+        elapsed_sub = (self._t_subscribe_done - self._t_start_once) * 1000 if self._t_start_once else 0
+        t_wall = datetime.now().strftime("%H:%M:%S.%f")[:-3]
         self._log(
             "INFO",
             f"[FubonFeed] 訂閱完成：{len(self._subscribed)} 支 × {len(self._channels)} channels"
             f"，{ok_chunks}/{len(chunks)} 條連線成功"
+            f"，時刻={t_wall}，從 start 累計={elapsed_sub:.0f} ms"
+            f"（等待伺服器開始推送行情…）"
         )
 
     def _symbols_per_connection(self) -> int:
@@ -499,8 +515,18 @@ class FubonRealtimeFeed(RealtimeFeed):
             self._register_ws_handlers(ws, index)
             connect = getattr(ws, "connect", None)
             if callable(connect):
+                t_conn = time.perf_counter()
+                t_wall = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+                self._log("INFO", f"[FubonFeed] ws#{index+1} connect() 開始，時刻={t_wall}")
                 connect()
-                self._log("INFO", f"[FubonFeed] ws#{index+1} connect() 已呼叫")
+                elapsed_conn = (time.perf_counter() - t_conn) * 1000
+                elapsed_total = (time.perf_counter() - self._t_start_once) * 1000 if self._t_start_once else 0
+                t_wall2 = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+                self._t_connect_done[index] = time.perf_counter()
+                self._log("INFO",
+                    f"[FubonFeed] ws#{index+1} connect() 完成（含認證），"
+                    f"時刻={t_wall2}，connect 耗時={elapsed_conn:.0f} ms，"
+                    f"從 start 累計={elapsed_total:.0f} ms")
             self._ws_clients.append(ws)
             if self._ws is None:
                 self._ws = ws
@@ -575,6 +601,26 @@ class FubonRealtimeFeed(RealtimeFeed):
         """SDK 推送的訊息（多半是 JSON 字串），依 channel 分派到 tick / book callback。"""
         self._raw_msg_count += 1
         n = self._raw_msg_count
+
+        # ── 第一筆原始訊息：記錄到達時刻與延遲 ──
+        if n == 1:
+            self._t_first_raw = time.perf_counter()
+            t_wall = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+            delay_from_sub = (
+                (self._t_first_raw - self._t_subscribe_done) * 1000
+                if self._t_subscribe_done else None
+            )
+            delay_from_start = (
+                (self._t_first_raw - self._t_start_once) * 1000
+                if self._t_start_once else None
+            )
+            self._log(
+                "INFO",
+                f"[FubonFeed][計時] 第 1 筆原始訊息到達！"
+                f" 時刻={t_wall}"
+                + (f"，距訂閱送出={delay_from_sub:.0f} ms" if delay_from_sub is not None else "")
+                + (f"，距 start()={delay_from_start:.0f} ms" if delay_from_start is not None else "")
+            )
 
         # ── Phase 1：錄製原始訊息（不阻塞主流程，內部走 queue+thread） ──
         if self._recorder is not None and self._record_raw:
@@ -723,9 +769,24 @@ class FubonRealtimeFeed(RealtimeFeed):
             else:
                 self._tick_emit_count += 1
                 if self._tick_emit_count == 1:
-                    self._log("INFO",
-                        f"[FubonFeed] 第 1 筆 tick 成功 emit！"
-                        f" code={tick.code} price={tick.price} vol={tick.volume}")
+                    self._t_first_tick = time.perf_counter()
+                    t_wall = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+                    delay_from_sub = (
+                        (self._t_first_tick - self._t_subscribe_done) * 1000
+                        if self._t_subscribe_done else None
+                    )
+                    delay_from_start = (
+                        (self._t_first_tick - self._t_start_once) * 1000
+                        if self._t_start_once else None
+                    )
+                    self._log(
+                        "INFO",
+                        f"[FubonFeed][計時] 第 1 筆有效 tick emit！"
+                        f" 時刻={t_wall}"
+                        f" code={tick.code} price={tick.price} vol={tick.volume}"
+                        + (f"，距訂閱送出={delay_from_sub:.0f} ms" if delay_from_sub is not None else "")
+                        + (f"，距 start()={delay_from_start:.0f} ms" if delay_from_start is not None else "")
+                    )
                 elif self._tick_emit_count % 500 == 0:
                     self._log("DEBUG",
                         f"[FubonFeed] tick emit 累計 {self._tick_emit_count} 筆")
@@ -738,9 +799,24 @@ class FubonRealtimeFeed(RealtimeFeed):
             book = self._to_book(data)
             self._book_emit_count += 1
             if self._book_emit_count == 1:
-                self._log("INFO",
-                    f"[FubonFeed] 第 1 筆 book 成功 emit！"
-                    f" code={book.code} ask_len={len(book.ask)} bid_len={len(book.bid)}")
+                self._t_first_book = time.perf_counter()
+                t_wall = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+                delay_from_sub = (
+                    (self._t_first_book - self._t_subscribe_done) * 1000
+                    if self._t_subscribe_done else None
+                )
+                delay_from_start = (
+                    (self._t_first_book - self._t_start_once) * 1000
+                    if self._t_start_once else None
+                )
+                self._log(
+                    "INFO",
+                    f"[FubonFeed][計時] 第 1 筆有效 book emit！"
+                    f" 時刻={t_wall}"
+                    f" code={book.code} ask_len={len(book.ask)} bid_len={len(book.bid)}"
+                    + (f"，距訂閱送出={delay_from_sub:.0f} ms" if delay_from_sub is not None else "")
+                    + (f"，距 start()={delay_from_start:.0f} ms" if delay_from_start is not None else "")
+                )
             self._emit_book(book)
             return
 

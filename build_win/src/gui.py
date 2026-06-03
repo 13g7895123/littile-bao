@@ -316,6 +316,9 @@ class App(QMainWindow):
         self.engine: Optional[TradingEngine] = None
         self.broker = None  # type: ignore[assignment]  # broker.BrokerAdapter，由 main.py 注入
         self._recorder = None  # Phase 1：盤中行情錄製 writer（啟用時建立）
+        self._reserve_pool: Dict[str, object] = {}   # 動態換股：500 外的備用池
+        self._pool_swap_timer: Optional[QTimer] = None
+        self._pool_swap_warmup_done = False          # 第一次換股前等 30s 暖機
         self._running = False
         self._strategy_starting = False
         self._strategy_start_token = 0
@@ -2838,7 +2841,7 @@ class App(QMainWindow):
                 push_log("INFO",
                     "[Rescan] 開始重跑訂閱掃描（價格區間已變動）…",
                     include_traceback=False)
-                new_infos, _new_feed = self._load_trading_runtime(broker, cfg)
+                new_infos, _new_feed, _new_reserve = self._load_trading_runtime(broker, cfg)
                 if new_infos is None:
                     new_infos = {}
                 push_log("INFO",
@@ -2917,6 +2920,198 @@ class App(QMainWindow):
                     include_traceback=False)
 
         threading.Thread(target=_worker, daemon=True, name="Rescan-Universe").start()
+
+    # ────────────────────────────────────────────────────────
+    #  動態換股池（每 60 秒掃描一次，漲幅 8~10% 優先留池）
+    # ────────────────────────────────────────────────────────
+
+    _POOL_SWAP_PCT_LO = 8.0    # 目標漲幅下限（含）
+    _POOL_SWAP_PCT_HI = 10.0   # 目標漲幅上限（含）
+    _POOL_SWAP_INTERVAL_MS = 60_000   # 正常掃描間隔
+    _POOL_SWAP_WARMUP_MS   = 30_000   # 啟動後第一次掃描延遲
+
+    def _start_pool_swap_timer(self) -> None:
+        self._stop_pool_swap_timer()
+        if not self._reserve_pool:
+            return
+        t = QTimer(self)
+        t.setSingleShot(True)
+        t.timeout.connect(self._pool_swap_tick)
+        t.start(self._POOL_SWAP_WARMUP_MS)
+        self._pool_swap_timer = t
+        push_log("INFO",
+            f"[PoolSwap] 動態換股已啟用，備用池 {len(self._reserve_pool)} 支，"
+            f"首次掃描在 {self._POOL_SWAP_WARMUP_MS // 1000} 秒後",
+            include_traceback=False)
+
+    def _stop_pool_swap_timer(self) -> None:
+        if self._pool_swap_timer is not None:
+            try:
+                self._pool_swap_timer.stop()
+            except Exception:
+                pass
+            self._pool_swap_timer = None
+
+    def _pool_swap_tick(self) -> None:
+        """在主執行緒（QTimer callback）執行，將換股工作丟到背景 thread。"""
+        if not self._running or self.engine is None:
+            return
+        engine = self.engine
+        reserve_pool = dict(self._reserve_pool)
+        threading.Thread(
+            target=self._pool_swap_worker,
+            args=(engine, reserve_pool),
+            daemon=True,
+            name="PoolSwap",
+        ).start()
+        # 重排下一次定時
+        t = QTimer(self)
+        t.setSingleShot(True)
+        t.timeout.connect(self._pool_swap_tick)
+        t.start(self._POOL_SWAP_INTERVAL_MS)
+        self._pool_swap_timer = t
+
+    def _pool_swap_worker(self, engine: TradingEngine, reserve_pool: dict) -> None:
+        """背景執行緒：計算要換掉誰、補進誰，然後呼叫 replace_universe + resubscribe。
+
+        兩階段邏輯：
+          第一階段（本輪）— 主池篩出不在 8~10% 的股票、從備用池用昨量排序補入候選。
+          第二階段（下輪，60 秒後）— 補入的股票已有行情，再次以真實漲幅排除。
+        備用池股票無行情，無法即時確認漲幅，因此先用靜態指標（昨量）排序補入，
+        等有行情後由下一輪掃描決定去留。
+        """
+        try:
+            lo, hi = self._POOL_SWAP_PCT_LO, self._POOL_SWAP_PCT_HI
+            summary = engine.get_summary()
+
+            # ── 目前訂閱池的漲幅狀況 ──
+            # 分三類：在範圍 / 不在範圍（可替換）/ 無行情（暫不動）
+            in_range:  list[dict] = []
+            out_range: list[dict] = []   # 有行情且不在 8~10%，且無持倉/委託/進場紀錄
+            no_price:  list[dict] = []   # 尚未收到行情，本輪跳過
+
+            for row in summary:
+                pct = row.get("change_pct")
+                protected = (row.get("qty", 0) > 0
+                             or row.get("pending", False)
+                             or row.get("candle", 0) > 0)
+                if pct is None:
+                    no_price.append(row)
+                elif lo <= pct <= hi:
+                    in_range.append(row)
+                elif not protected:
+                    out_range.append(row)
+                # protected 且不在範圍 → 強制保留，不動
+
+            push_log("INFO",
+                f"[PoolSwap] 掃描：池內 {len(summary)} 支，"
+                f"在範圍({lo}~{hi}%) {len(in_range)} 支，"
+                f"待替換 {len(out_range)} 支，無行情 {len(no_price)} 支",
+                include_traceback=False)
+
+            if not out_range:
+                return
+
+            # ── 備用池候選：尚未訂閱，無即時行情 ──
+            # 用昨量（prev_volume）降序排列，量大的流動性好，較容易出現漲幅機會
+            subscribed = {row["code"] for row in summary}
+            reserve_candidates: list[tuple[int, str]] = [
+                (getattr(si, "prev_volume", 0) or 0, code)
+                for code, si in reserve_pool.items()
+                if code not in subscribed
+            ]
+            reserve_candidates.sort(reverse=True)   # 昨量大的優先
+
+            if not reserve_candidates:
+                push_log("INFO",
+                    "[PoolSwap] 備用池已空，無法補入新股票",
+                    include_traceback=False)
+                return
+
+            # ── 決定換掉誰 ──
+            # out_range 按「與 8~10% 中心的偏離度」降序排（最偏離的先換）
+            mid = (lo + hi) / 2
+
+            def _deviation(row):
+                pct = row.get("change_pct") or 0.0
+                return abs(pct - mid)
+
+            out_range.sort(key=_deviation, reverse=True)
+            swap_count = min(len(out_range), len(reserve_candidates))
+            to_remove  = [row["code"] for row in out_range[:swap_count]]
+            to_add     = [code for _, code in reserve_candidates[:swap_count]]
+
+            def _fmt(codes, n=5):
+                head = "、".join(codes[:n])
+                return head + (f" 等 {len(codes)} 支" if len(codes) > n else "")
+
+            push_log("INFO",
+                f"[PoolSwap] 準備換股：移除 {_fmt(to_remove)} → 補入 {_fmt(to_add)}",
+                include_traceback=False)
+
+            # ── 建立新的 symbol_infos（目前池 - 移除 + 加入）──
+            remove_set = set(to_remove)
+            with engine._lock:
+                new_infos = {
+                    code: st.info
+                    for code, st in engine._states.items()
+                    if code not in remove_set
+                }
+            for code in to_add:
+                if code in reserve_pool:
+                    new_infos[code] = reserve_pool[code]
+
+            # replace_universe 會刪掉 _states 裡被移除的 code，先備份它們的 si
+            with engine._lock:
+                evicted_infos = {
+                    code: engine._states[code].info
+                    for code in remove_set
+                    if code in engine._states
+                }
+
+            # ── 停 feed → replace → resubscribe ──
+            if engine.feed is not None:
+                try:
+                    engine.feed.stop()
+                except Exception as e:
+                    push_log("WARN", f"[PoolSwap] 停止 feed 時警告：{e}")
+
+            diff = engine.replace_universe(new_infos)
+
+            try:
+                engine.resubscribe_feed()
+            except Exception as e:
+                push_log("ERROR", f"[PoolSwap] 重新訂閱失敗：{e}")
+                return
+
+            # 更新備用池：換進來的從備用池移除；換出去的（evicted）加回備用池
+            actual_removed = set(diff["removed"])
+            actual_added   = set(diff["added"])
+            self._dispatch_ui(lambda r=actual_removed, a=actual_added, ev=evicted_infos:
+                self._update_reserve_pool(r, a, ev))
+
+            push_log("INFO",
+                f"[PoolSwap] 換股完成：新增 {len(diff['added'])} 支、"
+                f"移除 {len(diff['removed'])} 支、"
+                f"保留（在新範圍）{len(diff['kept_in_new'])} 支、"
+                f"保留（有持倉/委託）{len(diff['kept_protected'])} 支",
+                include_traceback=False)
+
+        except Exception as e:
+            push_log("ERROR", f"[PoolSwap] 換股掃描發生例外：{e}")
+
+    def _update_reserve_pool(self, removed_from_main: set, added_to_main: set,
+                             evicted_infos: "Dict[str, object] | None" = None) -> None:
+        """在主執行緒更新 _reserve_pool（避免 thread race）。"""
+        # 換進主池的從備用池移除
+        for code in added_to_main:
+            self._reserve_pool.pop(code, None)
+        # 換出主池的加回備用池（用 evicted_infos 裡 replace 前備份的 si）
+        if evicted_infos:
+            for code in removed_from_main:
+                si = evicted_infos.get(code)
+                if si is not None:
+                    self._reserve_pool[code] = si
 
     def _sell_all_strategy_positions(self):
         if self.engine is None or not self._running:
@@ -3193,7 +3388,7 @@ class App(QMainWindow):
 
     def _start_trading_worker(self, token: int, cfg: TradingConfig, broker) -> None:
         try:
-            symbol_infos, feed = self._load_trading_runtime(broker, cfg)
+            symbol_infos, feed, reserve_pool = self._load_trading_runtime(broker, cfg)
             if not self._is_start_token_current(token):
                 return
 
@@ -3223,7 +3418,8 @@ class App(QMainWindow):
                 return
 
             self._dispatch_ui(
-                lambda token=token, engine=engine: self._finish_start_trading(token, engine))
+                lambda token=token, engine=engine, rp=reserve_pool:
+                    self._finish_start_trading(token, engine, rp))
         except Exception as e:
             # 啟動過程中失敗 → 同步收掉 recorder，避免殘留
             self._stop_recorder()
@@ -3320,10 +3516,13 @@ class App(QMainWindow):
         threading.Thread(target=_do_close, daemon=True, name="Recording-Close").start()
 
     def _load_trading_runtime(self, broker, cfg: TradingConfig):
-
+        """回傳 (symbol_infos, feed, reserve_pool)。
+        reserve_pool 是通過靜態篩選但超出訂閱上限的備用股，供動態換股使用。
+        """
         # ── 載入 SymbolInfo（昨收 / 漲停 / 特殊股）──────────────
         symbol_infos = None
         feed = None
+        reserve_pool: Dict[str, object] = {}
         if broker:
             try:
                 from broker import FUBON_REALTIME_SYMBOL_LIMIT, ScanCriteria, scan_daily
@@ -3436,11 +3635,19 @@ class App(QMainWindow):
                         candidates = self._confirm_fubon_special_candidates(
                             loader, candidates, cfg)
                         symbol_infos = {si.code: si for si in candidates}
+                        # ── 備用池：通過靜態篩選但超出訂閱上限的股票，供動態換股使用 ──
+                        subscribed_codes = set(symbol_infos.keys())
+                        reserve_pool = {
+                            si.code: si
+                            for si in all_infos.values()
+                            if si.code not in subscribed_codes
+                        }
                         push_log("INFO",
                             f"篩選後候選 {len(symbol_infos)} 支"
                             f"（價格 {crit.price_min}~{crit.price_max} 元"
                             f"，昨量 ≥ {crit.min_prev_volume} 張"
-                            f"，日漲停序列 ≤ {max_prior_streak + 1 if max_prior_streak is not None else '不限'} 根）",
+                            f"，日漲停序列 ≤ {max_prior_streak + 1 if max_prior_streak is not None else '不限'} 根）"
+                            f"，備用池 {len(reserve_pool)} 支",
                             include_traceback=False)
                     elif api_loaded:
                         symbol_infos = {}
@@ -3469,7 +3676,7 @@ class App(QMainWindow):
 
             except Exception as e:
                 push_log("WARN", f"載入個股基本資料失敗：{e}")
-        return symbol_infos, feed
+        return symbol_infos, feed, reserve_pool
 
     def _confirm_fubon_special_candidates(self, loader, candidates: list, cfg: TradingConfig) -> list:
         if not cfg.f11_enabled or not candidates:
@@ -3536,7 +3743,8 @@ class App(QMainWindow):
             reasons.append("禁當沖")
         return reasons
 
-    def _finish_start_trading(self, token: int, engine: TradingEngine) -> None:
+    def _finish_start_trading(self, token: int, engine: TradingEngine,
+                              reserve_pool: "Dict[str, object] | None" = None) -> None:
         if not self._is_start_token_current(token):
             try:
                 engine.stop()
@@ -3544,12 +3752,15 @@ class App(QMainWindow):
                 pass
             return
         self.engine = engine
+        self._reserve_pool = reserve_pool or {}
+        self._pool_swap_warmup_done = False
         self._strategy_starting = False
         self._running = True
         self._set_badge_active(True)
         started_at = getattr(engine, "_started_at", None)
         started_txt = started_at.strftime("%H:%M:%S") if started_at else datetime.now().strftime("%H:%M:%S")
         self._set_strategy_status(f"運行中（{started_txt} 啟用）", C["green"])
+        self._start_pool_swap_timer()
 
     def _fail_start_trading(self, token: int, error: Exception) -> None:
         if not self._is_start_token_current(token):
@@ -3569,6 +3780,8 @@ class App(QMainWindow):
             threading.Thread(target=self.engine.stop, daemon=True).start()
         # Phase 1：停止盤中錄製並 flush 檔案
         self._stop_recorder()
+        self._stop_pool_swap_timer()
+        self._reserve_pool = {}
         self._running = False
         self._set_badge_active(False)
         self._set_strategy_status("已停止", C["subtext"])

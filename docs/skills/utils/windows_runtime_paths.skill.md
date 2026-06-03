@@ -3,6 +3,16 @@
 ## 用途
 - 查找這個專案在 Windows 執行檔環境中的 `config`、`log`、`recordings`、`dry-run audit` 實際位置。
 - 在 WSL / Linux 工作區分析檔案時，快速把 Windows 路徑換成可讀取的 `/mnt/c/...` 路徑。
+- 只要任務是「找交易紀錄 / 委託紀錄 / 成交紀錄 / 當日執行紀錄」，預設先查 Windows `build_win/dist`；repo 內的 `build_win/src/log` 與工作區 `log/` 只當 fallback 或歷史樣本。
+
+## 預設查找順序
+1. 先查 `C:\Jarvis\15_bonus\01_littile-bao\build_win\dist`（WSL: `/mnt/c/Jarvis/15_bonus/01_littile-bao/build_win/dist`）。
+2. 若使用者提到「交易紀錄」：
+   - 先找 `dry_run_audit_YYYYMMDD.jsonl`
+   - 再交叉看 `log/program.log.YYYYMMDD`
+   - 必要時補 `log/client.log.YYYYMMDD`、`log/notify.log.YYYYMMDD`
+3. 若 `dist` 沒有檔案，再退回 repo 內 `build_win/src/log/` 或工作區 `log/`。
+4. 回覆使用者時，明確標示資料來自 Windows 路徑還是 fallback 路徑。
 
 ## 常用對照
 | 用途 | Windows 路徑 | WSL 路徑 |
@@ -31,3 +41,4 @@
   - `program.log.YYYYMMDD`
   - `dry_run_audit_YYYYMMDD.jsonl`
   - `log/recordings/YYYYMMDD/session_*.ticks.ndjson.gz`
+- 若使用者只說「今天的交易紀錄」，不要先假設 repo 內 `log/` 是最新資料；先去 Windows `build_win/dist` 找當天檔案，再回頭檢查工作區是否只是舊備份。

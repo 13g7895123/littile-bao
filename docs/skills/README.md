@@ -18,7 +18,7 @@
 | GUI 介面 | `build_win/src/gui.py` | [`gui/`](./gui/) |
 | 券商適配層（含 Mock / Fubon） | `build_win/src/broker/*` | [`broker/`](./broker/) |
 | 工具腳本（verify / 分析） | `build_win/src/verify_*.py`、`analyze_limitup_logs.py` | [`utils/`](./utils/) |
-| Windows 執行路徑對照 | `build_win/dist/*`、`build_win/dist/log/*` | [`utils/windows_runtime_paths.skill.md`](./utils/windows_runtime_paths.skill.md) |
+| Windows 執行路徑對照 / 交易紀錄查找 | `build_win/dist/*`、`build_win/dist/log/*`、`dry_run_audit_YYYYMMDD.jsonl` | [`utils/windows_runtime_paths.skill.md`](./utils/windows_runtime_paths.skill.md) |
 
 ## broker 子模組
 | 子模組 | skill |

@@ -185,15 +185,17 @@ class TradingEngine:
 
     @staticmethod
     def _stock_info_from_symbol_info(si: object) -> StockInfo:
+        # limit_up_price（SymbolInfo）或 limit_up（StockInfo）都接受
+        limit_up = getattr(si, "limit_up_price", None) or getattr(si, "limit_up", None)
         return StockInfo(
             code=si.code,
             name=si.name,
-            limit_up=float(si.limit_up_price),
+            limit_up=float(limit_up),
             market=si.market,
-            is_disposal=si.is_disposal,
-            is_attention=si.is_attention,
-            is_day_trade_restricted=si.is_day_trade_restricted,
-            open_limit_up=si.open_limit_up,
+            is_disposal=getattr(si, "is_disposal", False),
+            is_attention=getattr(si, "is_attention", False),
+            is_day_trade_restricted=getattr(si, "is_day_trade_restricted", False),
+            open_limit_up=getattr(si, "open_limit_up", False),
             prev_close=float(si.prev_close),
             prior_limit_up_streak=getattr(si, "prior_limit_up_streak", None),
         )
