@@ -102,6 +102,10 @@ class StockState:
         self.special_check_completed: bool = False
         self.initial_limit_up_checked: bool = False
         self.startup_limitup_blocked: bool = False
+        self.f4_first_trigger_at: Optional[float] = None
+        self.f5_first_trigger_at: Optional[float] = None
+        self.f4_trigger_snapshot: Optional[dict] = None
+        self.f5_trigger_snapshot: Optional[dict] = None
         # ── Milestone 4：損益追蹤 ────────────────────
         self.entry_price: Optional[Decimal] = None  # 進場成交均價
 
@@ -157,6 +161,7 @@ class TradingEngine:
         self._today_realized_pnl: Decimal = Decimal("0")  # M4：當日已實現損益
         self._trading_date: date = date.today()  # 跨日重置使用
         self._processed_fill_keys: set = set()   # 避免同一筆成交被重複處理
+        self._broker_callbacks_registered = False
         self._limit_up_mode: str = resolve_limit_up_mode(
             getattr(config, "limit_up_detection_mode", DEFAULT_LIMIT_UP_DETECTION_MODE)
         )
@@ -246,11 +251,7 @@ class TradingEngine:
         # ── Milestone 5：訂閱券商委託 / 成交回報 ─────────
         if self.broker is not None:
             try:
-                if hasattr(self.broker, "on_filled"):
-                    self.broker.on_filled(self._on_broker_fill)
-                if hasattr(self.broker, "on_order"):
-                    self.broker.on_order(self._on_broker_order)
-                self.on_log("INFO", "已訂閱券商委託 / 成交回報")
+                self._attach_broker_callbacks()
             except Exception as e:  # noqa: BLE001
                 self.on_log("WARN", f"訂閱券商回報失敗：{e}")
 
@@ -280,7 +281,30 @@ class TradingEngine:
                 self.feed.stop()
             except Exception as e:  # noqa: BLE001
                 self.on_log("WARN", f"停止行情訂閱時發生錯誤：{e}")
+        try:
+            self._detach_broker_callbacks()
+        except Exception as e:  # noqa: BLE001
+            self.on_log("WARN", f"解除券商回報訂閱時發生錯誤：{e}")
         self.on_log("INFO", "引擎已停止，登出完成")
+
+    def _attach_broker_callbacks(self) -> None:
+        if self.broker is None or self._broker_callbacks_registered:
+            return
+        if hasattr(self.broker, "on_filled"):
+            self.broker.on_filled(self._on_broker_fill)
+        if hasattr(self.broker, "on_order"):
+            self.broker.on_order(self._on_broker_order)
+        self._broker_callbacks_registered = True
+        self.on_log("INFO", "已訂閱券商委託 / 成交回報")
+
+    def _detach_broker_callbacks(self) -> None:
+        if self.broker is None or not self._broker_callbacks_registered:
+            return
+        if hasattr(self.broker, "off_filled"):
+            self.broker.off_filled(self._on_broker_fill)
+        if hasattr(self.broker, "off_order"):
+            self.broker.off_order(self._on_broker_order)
+        self._broker_callbacks_registered = False
 
     # ─────────────────────────────────────────
     #  熱替換訂閱清單（盤中改價格區間用）
@@ -429,6 +453,11 @@ class TradingEngine:
             if ev.price >= limit_up:
                 state.limit_up_consumed_qty += int(ev.volume)
             self._refresh_limit_up_state(state, source="tick", now=now, event_time=ev.time)
+            if state.position_qty > 0 and not state.pending:
+                self._record_sell_trigger_candidates(
+                    state,
+                    self._event_time_to_ts(ev.time, now),
+                )
 
     def _on_book(self, ev) -> None:
         """RealtimeFeed 五檔推送。"""
@@ -450,7 +479,13 @@ class TradingEngine:
                 state.bid0_price = None
                 state.bid0_volume = 0
             state.has_bid_levels = bool(ev.bid)
-            self._refresh_limit_up_state(state, source="book", now=time.time(), event_time=ev.time)
+            now = time.time()
+            self._refresh_limit_up_state(state, source="book", now=now, event_time=ev.time)
+            if state.position_qty > 0 and not state.pending:
+                self._record_sell_trigger_candidates(
+                    state,
+                    self._event_time_to_ts(ev.time, now),
+                )
 
     def _refresh_limit_up_state(self, state: StockState, *, source: str, now: float, event_time=None) -> None:
         decision = evaluate_limit_up_state(
@@ -597,6 +632,7 @@ class TradingEngine:
             st.special_check_completed = False
             st.initial_limit_up_checked = False
             st.startup_limitup_blocked = False
+            self._reset_sell_trigger_state(st)
             # 注意：position_qty 不清空，避免影響真實持倉同步
         self._daily_trade_count = 0
         self._daily_trade_codes.clear()
@@ -650,46 +686,20 @@ class TradingEngine:
             # （否則 fill 未回前，下一個 tick 仍會觸發 F4/F5 再送一張）
             if state.pending:
                 return
-            reason = None
-
-            # 功能 4：板被打開（曾為漲停 → 目前 ask[0] 不再是漲停價）
-            # 必須當日曾達漲停（candle_index > 0）才生效，避免隔日庫存誤賣
-            has_been_at_limit_today = state.touched_limit_up_today or state.candle_index > 0
-            require_today_limit = getattr(cfg, "f4_require_today_limitup", True)
-            open_ticks = self._open_ticks_from_limit(state)
-            open_tick_threshold = max(1, int(getattr(cfg, "f4_open_ticks_to_sell", 1) or 1))
-            if (cfg.f4_enabled
-                    and (has_been_at_limit_today or not require_today_limit)
-                    and open_ticks >= open_tick_threshold
-                    and state.last_price is not None):
-                reason = f"漲停板打開 {open_ticks} 檔，達出場門檻 {open_tick_threshold} 檔"
+            self._record_sell_trigger_candidates(state, now)
+            sell_plan = self._pick_sell_strategy(state)
+            if sell_plan:
                 self._log_strategy_trigger(
-                    "SELL", state, "F4",
-                    {
-                        "open_ticks": open_ticks,
-                        "threshold": open_tick_threshold,
-                        "ask0_price": state.ask0_price,
-                        "limit_up": info.limit_up,
-                    },
+                    "SELL",
+                    state,
+                    sell_plan["strategy"],
+                    sell_plan["details"],
                 )
-
-            # 功能 5：1秒爆量
-            if cfg.f5_enabled and reason is None:
-                if state.last_1s_vol > cfg.volume_spike_sell_threshold:
-                    reason = (f"1秒量 {state.last_1s_vol} 張 > "
-                              f"{cfg.volume_spike_sell_threshold} 張，爆量出場")
-                    self._log_strategy_trigger(
-                        "SELL", state, "F5",
-                        {
-                            "last_1s_vol": state.last_1s_vol,
-                            "threshold": cfg.volume_spike_sell_threshold,
-                        },
-                    )
-
-            if reason:
-                self.on_log("WARN", f"[{info.code}] 出場觸發：{reason}")
-                self._do_sell(state, info, reason)
+                self.on_log("WARN", f"[{info.code}] 出場觸發：{sell_plan['reason']}")
+                self._do_sell(state, info, sell_plan["reason"])
             return
+
+        self._reset_sell_trigger_state(state)
 
         # ── 進場邏輯 ──────────────────────────────────────────────
         if state.pending or state.entry_blocked or state.candle_index == 0:
@@ -912,6 +922,7 @@ class TradingEngine:
                     st.position_qty += qty
                     st.entry_blocked_reason = ""
                     st.entry_price = Decimal(str(info.limit_up))
+                    self._reset_sell_trigger_state(st)
                     if code not in self._daily_trade_codes:
                         self._daily_trade_codes.add(code)
                         self._daily_trade_count = len(self._daily_trade_codes)
@@ -952,6 +963,7 @@ class TradingEngine:
                         state.entry_blocked = True
                         state.sold_today = True
                         state.entry_price = None
+                        self._reset_sell_trigger_state(state)
                         return
                     if broker_qty < qty:
                         self.on_log("WARN",
@@ -967,6 +979,7 @@ class TradingEngine:
             try:
                 state.pending = True   # 標記掛賣
                 state._sell_note = note  # type: ignore[attr-defined]
+                self._reset_sell_trigger_state(state)
                 req = OrderRequest(
                     code=info.code, name=info.name,
                     side=OrderSide.SELL,
@@ -1000,6 +1013,7 @@ class TradingEngine:
         state.entry_blocked_reason = "已賣出"
         state.sold_today = True   # 功能 12：標記當天已賣過
         state.entry_price = None
+        self._reset_sell_trigger_state(state)
         trade_time = datetime.now()
         self.on_trade({
             "time": trade_time.strftime("%H:%M:%S"),
@@ -1047,6 +1061,99 @@ class TradingEngine:
         if tick <= 0:
             return 1
         return max(1, int((limit_up - state.ask0_price) / tick))
+
+    @staticmethod
+    def _event_time_to_ts(event_time, fallback: float) -> float:
+        if event_time is not None and hasattr(event_time, "timestamp"):
+            try:
+                return float(event_time.timestamp())
+            except Exception:
+                return fallback
+        return fallback
+
+    @staticmethod
+    def _reset_sell_trigger_state(state: StockState) -> None:
+        state.f4_first_trigger_at = None
+        state.f5_first_trigger_at = None
+        state.f4_trigger_snapshot = None
+        state.f5_trigger_snapshot = None
+
+    def _record_sell_trigger_candidates(self, state: StockState, event_ts: float) -> None:
+        cfg = self.config
+        info = state.info
+        has_been_at_limit_today = state.touched_limit_up_today or state.candle_index > 0
+        require_today_limit = getattr(cfg, "f4_require_today_limitup", True)
+        open_ticks = self._open_ticks_from_limit(state)
+        open_tick_threshold = max(1, int(getattr(cfg, "f4_open_ticks_to_sell", 1) or 1))
+        f4_ready = (
+            cfg.f4_enabled
+            and (has_been_at_limit_today or not require_today_limit)
+            and open_ticks >= open_tick_threshold
+            and state.last_price is not None
+        )
+        if f4_ready and state.f4_first_trigger_at is None:
+            state.f4_first_trigger_at = event_ts
+            state.f4_trigger_snapshot = {
+                "open_ticks": open_ticks,
+                "threshold": open_tick_threshold,
+                "ask0_price": state.ask0_price,
+                "limit_up": info.limit_up,
+                "trigger_time": event_ts,
+            }
+
+        if cfg.f5_enabled and state.last_1s_vol >= cfg.volume_spike_sell_threshold:
+            if state.f5_first_trigger_at is None:
+                state.f5_first_trigger_at = event_ts
+                state.f5_trigger_snapshot = {
+                    "last_1s_vol": state.last_1s_vol,
+                    "threshold": cfg.volume_spike_sell_threshold,
+                    "trigger_time": event_ts,
+                }
+
+    def _pick_sell_strategy(self, state: StockState) -> Optional[dict]:
+        f4_at = state.f4_first_trigger_at
+        f5_at = state.f5_first_trigger_at
+        if f4_at is None and f5_at is None:
+            return None
+
+        def _detail_time(value: Optional[float]) -> Optional[str]:
+            if value is None:
+                return None
+            return datetime.fromtimestamp(value).isoformat(timespec="microseconds")
+
+        if f4_at is None:
+            winner = "F5"
+        elif f5_at is None:
+            winner = "F4"
+        elif f5_at <= f4_at:
+            winner = "F5"
+        else:
+            winner = "F4"
+
+        if winner == "F4":
+            snapshot = dict(state.f4_trigger_snapshot or {})
+            reason = (
+                f"漲停板打開 {snapshot.get('open_ticks')} 檔，"
+                f"達出場門檻 {snapshot.get('threshold')} 檔"
+            )
+        else:
+            snapshot = dict(state.f5_trigger_snapshot or {})
+            reason = (
+                f"1秒量 {snapshot.get('last_1s_vol')} 張 >= "
+                f"{snapshot.get('threshold')} 張，爆量出場"
+            )
+
+        details = {
+            **snapshot,
+            "winner_strategy": winner,
+            "first_f4_time": _detail_time(f4_at),
+            "first_f5_time": _detail_time(f5_at),
+        }
+        return {
+            "strategy": winner,
+            "reason": reason,
+            "details": details,
+        }
 
     def _block_entry(self, state: StockState, reason: str, level: str, message: str) -> None:
         state.entry_blocked = True
@@ -1290,6 +1397,7 @@ class TradingEngine:
                 state.pending = False
                 state.position_qty += qty
                 state.entry_blocked_reason = ""
+                self._reset_sell_trigger_state(state)
                 if state.entry_price is None:
                     state.entry_price = ev.price
                 else:
@@ -1352,6 +1460,7 @@ class TradingEngine:
                     state.entry_blocked_reason = "已賣出"
                     state.sold_today = True
                     state.entry_price = None
+                    self._reset_sell_trigger_state(state)
                 self.on_log("INFO",
                     f"[{ev.code}] 賣出成交 {qty} 張 @ {ev.price}，"
                     f"剩餘持倉 {state.position_qty} 張，損益 {pnl_net:+,.0f}")
@@ -1411,6 +1520,10 @@ class TradingEngine:
             "consume_qty": state.limit_up_consumed_qty,
             "pending": state.pending,
             "position_qty": state.position_qty,
+            "first_f4_time": state.f4_first_trigger_at,
+            "first_f5_time": state.f5_first_trigger_at,
+            "f4_trigger_snapshot": state.f4_trigger_snapshot,
+            "f5_trigger_snapshot": state.f5_trigger_snapshot,
             "blocked": state.entry_blocked,
             "blocked_reason": state.entry_blocked_reason,
             "sold_today": state.sold_today,

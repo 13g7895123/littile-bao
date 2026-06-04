@@ -29,6 +29,7 @@ _logger.setLevel(logging.DEBUG)  # 確保 DEBUG 訊息不被過濾（root handle
 
 TickCallback = Callable[[TickEvent], None]
 BookCallback = Callable[[BookEvent], None]
+DisconnectCallback = Callable[[str], None]
 
 FUBON_REALTIME_SUBSCRIPTION_LIMIT_PER_CONNECTION = 200
 FUBON_REALTIME_MAX_CONNECTIONS = 5
@@ -51,6 +52,7 @@ class RealtimeFeed(ABC):
         self._tick_cb: Optional[TickCallback] = None
         self._book_cb: Optional[BookCallback] = None
         self._log_cb: Optional[Callable[[str, str], None]] = None  # (level, msg)
+        self._disconnect_cb: Optional[DisconnectCallback] = None
 
     def on_tick(self, cb: TickCallback) -> None:
         self._tick_cb = cb
@@ -62,6 +64,10 @@ class RealtimeFeed(ABC):
         """注入 log callback（level, msg），供 GUI push_log 使用。"""
         self._log_cb = cb
 
+    def set_disconnect_callback(self, cb: DisconnectCallback) -> None:
+        """注入斷線 callback，供 GUI 執行停策略 / 提示 / 重啟。"""
+        self._disconnect_cb = cb
+
     def _log(self, level: str, msg: str) -> None:
         """同時送往 Python logger 與注入的 GUI callback。"""
         _logger.log(
@@ -72,6 +78,13 @@ class RealtimeFeed(ABC):
         if self._log_cb is not None:
             try:
                 self._log_cb(level, msg)
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _notify_disconnect(self, reason: str) -> None:
+        if self._disconnect_cb is not None:
+            try:
+                self._disconnect_cb(reason)
             except Exception:  # noqa: BLE001
                 pass
 
@@ -292,6 +305,8 @@ class FubonRealtimeFeed(RealtimeFeed):
         # 透過 attach_recorder() 注入，未注入時零成本（None 判斷）
         self._recorder: Optional[Any] = None
         self._record_raw: bool = True
+        self._stopping = False
+        self._disconnect_notified = False
 
     def attach_recorder(self, recorder: Any, *, record_raw: bool = True) -> None:
         """掛上 RecordingWriter；傳 None 可移除。"""
@@ -338,6 +353,8 @@ class FubonRealtimeFeed(RealtimeFeed):
     def start(self) -> None:
         if self._started:
             return
+        self._stopping = False
+        self._disconnect_notified = False
         try:
             self._start_once()
         except FubonNetworkError as e:
@@ -432,12 +449,14 @@ class FubonRealtimeFeed(RealtimeFeed):
         self._ws = None
         self._sdk_token = None
         self._started = False
+        self._disconnect_notified = False
         adapter.login()
         self._log("INFO", "[FubonFeed] 重新登入完成")
 
     def stop(self) -> None:
         if not self._ws_clients and self._ws is None:
             return
+        self._stopping = True
         try:
             clients = list(self._ws_clients) or ([self._ws] if self._ws is not None else [])
             for ws in clients:
@@ -449,6 +468,7 @@ class FubonRealtimeFeed(RealtimeFeed):
             self._ws = None
             self._sdk_token = None
             self._started = False
+            self._disconnect_notified = False
 
     # ── 內部 ────────────────────────────────
 
@@ -592,10 +612,54 @@ class FubonRealtimeFeed(RealtimeFeed):
         on_msg("connect", lambda *args, _index=index, **kwargs:
                self._log("INFO", f"[FubonFeed] websocket #{_index + 1} connected"))
         on_msg("disconnect", lambda *args, _index=index, **kwargs:
-               self._log("WARN", f"[FubonFeed] websocket #{_index + 1} disconnected args={args} kwargs={kwargs}"))
+               self._handle_ws_disconnect(_index, args, kwargs))
         on_msg("error", lambda *args, _index=index, **kwargs:
-               self._log("ERROR", f"[FubonFeed] websocket #{_index + 1} error args={args} kwargs={kwargs}"))
+               self._handle_ws_error(_index, args, kwargs))
         self._log("INFO", f"[FubonFeed] ws#{index+1} 事件處理器已掛載（message/connect/disconnect/error）")
+
+    def _handle_ws_disconnect(self, index: int, args: tuple, kwargs: dict) -> None:
+        msg = f"[FubonFeed] websocket #{index + 1} disconnected args={args} kwargs={kwargs}"
+        if self._stopping:
+            self._log("INFO", f"{msg} (ignored during stop)")
+            return
+        self._log("WARN", msg)
+        self._notify_disconnect_once(msg)
+
+    def _handle_ws_error(self, index: int, args: tuple, kwargs: dict) -> None:
+        msg = f"[FubonFeed] websocket #{index + 1} error args={args} kwargs={kwargs}"
+        self._log("ERROR", msg)
+        if self._stopping:
+            return
+        if self._is_disconnect_like_message(msg):
+            self._notify_disconnect_once(msg)
+
+    def _notify_disconnect_once(self, reason: str) -> None:
+        if self._disconnect_notified:
+            self._log("INFO", f"[FubonFeed] 已通知過斷線事件，略過重複上拋：{reason}")
+            return
+        self._disconnect_notified = True
+        self._notify_disconnect(reason)
+
+    @staticmethod
+    def _is_disconnect_like_message(text: object) -> bool:
+        msg = str(text).lower()
+        keywords = (
+            "disconnect",
+            "connection closed",
+            "connection is closed",
+            "channel closed",
+            "connection timed out",
+            "timed out",
+            "remote host was lost",
+            "forcibly closed",
+            "underlying connection is closed",
+            "not connected",
+            "強制關閉",
+            "連線已中斷",
+            "連線中斷",
+            "逾時",
+        )
+        return any(keyword in msg for keyword in keywords)
 
     def _on_raw_message(self, msg) -> None:
         """SDK 推送的訊息（多半是 JSON 字串），依 channel 分派到 tick / book callback。"""

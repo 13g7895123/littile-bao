@@ -9,6 +9,8 @@ import os
 import sys
 import tempfile
 import unittest
+from datetime import datetime
+from decimal import Decimal
 
 # 把 src 加入 path（與 main.py 同樣方式）
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -52,6 +54,56 @@ class TestMockAdapter(unittest.TestCase):
         m.logout()
         self.assertEqual(m.state, ConnectionState.DISCONNECTED)
         self.assertIsNone(m.account)
+
+    def test_off_callbacks_remove_only_target_subscriber(self):
+        adapter = MockAdapter()
+        orders = []
+        fills = []
+
+        def on_order_a(ev):
+            orders.append(("a", ev.order_id))
+
+        def on_order_b(ev):
+            orders.append(("b", ev.order_id))
+
+        def on_fill_a(ev):
+            fills.append(("a", ev.order_id))
+
+        def on_fill_b(ev):
+            fills.append(("b", ev.order_id))
+
+        adapter.on_order(on_order_a)
+        adapter.on_order(on_order_b)
+        adapter.on_filled(on_fill_a)
+        adapter.on_filled(on_fill_b)
+        adapter.off_order(on_order_a)
+        adapter.off_filled(on_fill_a)
+
+        from broker.models import FillEvent, OrderEvent, OrderSide, OrderStatus
+
+        adapter.dispatch_order(OrderEvent(
+            order_id="O1",
+            code="2330",
+            side=OrderSide.BUY,
+            qty=1,
+            price=Decimal("100"),
+            filled_qty=0,
+            status=OrderStatus.PENDING,
+            time=datetime(2026, 6, 4, 9, 0),
+            name="台積電",
+        ))
+        adapter.dispatch_fill(FillEvent(
+            order_id="F1",
+            code="2330",
+            name="台積電",
+            side=OrderSide.BUY,
+            qty=1,
+            price=Decimal("100"),
+            time=datetime(2026, 6, 4, 9, 0),
+        ))
+
+        self.assertEqual(orders, [("b", "O1")])
+        self.assertEqual(fills, [("b", "F1")])
 
 
 class TestFubonAdapterConfig(unittest.TestCase):

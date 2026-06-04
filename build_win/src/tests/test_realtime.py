@@ -226,6 +226,91 @@ class TestFubonRealtimeFeedSkeleton(unittest.TestCase):
         with self.assertRaises(FubonNotLoggedInError):
             feed.start()
 
+    def test_disconnect_event_notifies_callback(self):
+        clients: list[_FakeStockWebSocket] = []
+        events: list[str] = []
+
+        def factory(_adapter, _mode, _index):
+            client = _FakeStockWebSocket()
+            clients.append(client)
+            return client
+
+        feed = FubonRealtimeFeed(SimpleNamespace(sdk=SimpleNamespace()), ws_client_factory=factory)
+        feed.set_disconnect_callback(events.append)
+        feed.subscribe(["2330"], {})
+
+        feed.start()
+        try:
+            clients[0].handlers["disconnect"]("socket closed")
+        finally:
+            feed.stop()
+
+        self.assertEqual(len(events), 1)
+        self.assertIn("websocket #1 disconnected", events[0])
+
+    def test_manual_stop_does_not_notify_disconnect_callback(self):
+        clients: list[_FakeStockWebSocket] = []
+        events: list[str] = []
+
+        def factory(_adapter, _mode, _index):
+            client = _FakeStockWebSocket()
+            clients.append(client)
+            return client
+
+        feed = FubonRealtimeFeed(SimpleNamespace(sdk=SimpleNamespace()), ws_client_factory=factory)
+        feed.set_disconnect_callback(events.append)
+        feed.subscribe(["2330"], {})
+
+        feed.start()
+        feed.stop()
+        clients[0].handlers["disconnect"]("manual close")
+
+        self.assertEqual(events, [])
+
+    def test_error_event_with_timeout_notifies_disconnect_callback(self):
+        clients: list[_FakeStockWebSocket] = []
+        events: list[str] = []
+
+        def factory(_adapter, _mode, _index):
+            client = _FakeStockWebSocket()
+            clients.append(client)
+            return client
+
+        feed = FubonRealtimeFeed(SimpleNamespace(sdk=SimpleNamespace()), ws_client_factory=factory)
+        feed.set_disconnect_callback(events.append)
+        feed.subscribe(["2330"], {})
+
+        feed.start()
+        try:
+            clients[0].handlers["error"](RuntimeError("Connection timed out"))
+        finally:
+            feed.stop()
+
+        self.assertEqual(len(events), 1)
+        self.assertIn("websocket #1 error", events[0])
+
+    def test_disconnect_notification_only_fires_once_per_start(self):
+        clients: list[_FakeStockWebSocket] = []
+        events: list[str] = []
+
+        def factory(_adapter, _mode, _index):
+            client = _FakeStockWebSocket()
+            clients.append(client)
+            return client
+
+        feed = FubonRealtimeFeed(SimpleNamespace(sdk=SimpleNamespace()), ws_client_factory=factory)
+        feed.set_disconnect_callback(events.append)
+        feed.subscribe(["2330"], {})
+
+        feed.start()
+        try:
+            clients[0].handlers["error"](RuntimeError("Connection timed out"))
+            clients[0].handlers["disconnect"]("socket closed")
+        finally:
+            feed.stop()
+
+        self.assertEqual(len(events), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

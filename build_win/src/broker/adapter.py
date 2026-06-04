@@ -61,6 +61,16 @@ class BrokerAdapter(ABC):
         if callback not in self._fill_subs:
             self._fill_subs.append(callback)
 
+    def off_filled(self, callback: FillCallback) -> None:
+        """解除單一成交回報 callback。"""
+        subs = getattr(self, "_fill_subs", None)
+        if not subs:
+            return
+        try:
+            subs.remove(callback)
+        except ValueError:
+            return
+
     def dispatch_fill(self, ev: FillEvent) -> None:
         """由 SDK 回報或模擬流程觸發；對所有訂閱者廣播。"""
         for cb in getattr(self, "_fill_subs", []):
@@ -75,6 +85,15 @@ class BrokerAdapter(ABC):
             self._order_subs: List[OrderCallback] = []
         if callback not in self._order_subs:
             self._order_subs.append(callback)
+
+    def off_order(self, callback: OrderCallback) -> None:
+        subs = getattr(self, "_order_subs", None)
+        if not subs:
+            return
+        try:
+            subs.remove(callback)
+        except ValueError:
+            return
 
     def dispatch_order(self, ev: OrderEvent) -> None:
         for cb in getattr(self, "_order_subs", []):

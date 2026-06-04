@@ -21,7 +21,7 @@ from PyQt6.QtCore import Qt, QTimer, QPoint, pyqtSignal
 from PyQt6.QtGui import QPainter, QColor, QFont, QBrush
 
 from app_logging import compose_log_message, configure_runtime_logging, write_log_event
-from config import BROKER_SETTINGS_FILE, CONFIG_FILE, BrokerSettings, TradingConfig
+from config import BROKER_SETTINGS_FILE, CONFIG_FILE, AppState, BrokerSettings, TradingConfig
 from engine import TradingEngine
 from limitup_detection import LIMIT_UP_DETECTION_MODES, resolve_limit_up_mode
 
@@ -311,7 +311,8 @@ class App(QMainWindow):
         self.setMinimumSize(1200, 680)
         self.setStyleSheet(f"background-color: {C['bg']};")
 
-        self.cfg = TradingConfig.load()
+        self._app_state = AppState.load()
+        self.cfg = self._load_startup_trading_config()
         configure_runtime_logging(self.cfg.file_logging_enabled)
         self.engine: Optional[TradingEngine] = None
         self.broker = None  # type: ignore[assignment]  # broker.BrokerAdapter，由 main.py 注入
@@ -337,6 +338,13 @@ class App(QMainWindow):
         self._strategy_trigger_count = 0
         self._decision_detail_count = 0
         self._syncing_order_mode_control = False
+        self._socket_recovering = False
+        self._last_socket_disconnect_at: Optional[datetime] = None
+        self._last_socket_disconnect_reason = ""
+        self._last_socket_restart_requested_at: Optional[datetime] = None
+        self._last_socket_restart_result = "idle"
+        self._last_socket_restart_token = 0
+        self._broker_event_source = None
         self._current_tab = "dashboard"
         self._hidden_tabs = {"risk"}
         self._latest_monitor_summary = []
@@ -366,6 +374,7 @@ class App(QMainWindow):
 
         self._build_ui()
         self._apply_config(self.cfg)
+        self._log_startup_import_sources()
         self._start_polling()
 
     def _dispatch_ui(self, callback) -> None:
@@ -374,6 +383,80 @@ class App(QMainWindow):
     def _run_ui_dispatch(self, callback) -> None:
         if callable(callback):
             callback()
+
+    def _on_feed_disconnect(self, reason: str) -> None:
+        self._dispatch_ui(lambda reason=reason: self._handle_feed_disconnect_ui(reason))
+
+    def _handle_feed_disconnect_ui(self, reason: str) -> None:
+        if self._socket_recovering:
+            push_log("INFO", f"已在處理 socket 斷線重啟，略過重複事件：{reason}", include_traceback=False)
+            return
+        if not self._running and not self._strategy_starting:
+            push_log("INFO", f"收到 socket 斷線事件，但策略未運行，略過：{reason}", include_traceback=False)
+            return
+
+        self._last_socket_disconnect_at = datetime.now()
+        self._last_socket_disconnect_reason = reason
+        self._last_socket_restart_result = "received"
+        self._socket_recovering = True
+        push_log(
+            "WARN",
+            "偵測到 socket 中斷，將停止策略並自動重啟："
+            f"time={self._last_socket_disconnect_at.strftime('%Y-%m-%d %H:%M:%S')} reason={reason}",
+            include_traceback=False,
+        )
+        self._stop_trading()
+        self._last_socket_restart_result = "scheduled"
+        self._set_strategy_status("斷線重啟中…", C["yellow_l"])
+        QMessageBox.warning(
+            self,
+            "Socket 中斷",
+            f"即時行情連線已中斷，系統將自動停止策略並重新啟動。\n\n{reason}",
+        )
+        QTimer.singleShot(1200, self._restart_strategy_after_disconnect)
+
+    def _restart_strategy_after_disconnect(self) -> None:
+        try:
+            if not self._socket_recovering:
+                return
+            self._last_socket_restart_requested_at = datetime.now()
+            self._last_socket_restart_result = "starting"
+            if "strategy_enabled" in self._toggles:
+                self._toggles["strategy_enabled"].set(True)
+            self._start_trading()
+            self._last_socket_restart_token = self._strategy_start_token
+            push_log(
+                "INFO",
+                "socket 自動重啟已送出："
+                f"time={self._last_socket_restart_requested_at.strftime('%Y-%m-%d %H:%M:%S')} "
+                f"token={self._last_socket_restart_token}",
+                include_traceback=False,
+            )
+        finally:
+            self._socket_recovering = False
+
+    def _save_app_state(self) -> None:
+        try:
+            self._app_state.save()
+        except Exception as e:
+            push_log("WARN", f"儲存 app_state 失敗：{e}")
+
+    def _load_startup_trading_config(self) -> TradingConfig:
+        path = (self._app_state.last_trading_config_path or "").strip()
+        if path and os.path.exists(path):
+            try:
+                return TradingConfig.load_strict(path)
+            except Exception:
+                pass
+        return TradingConfig.load()
+
+    def _log_startup_import_sources(self) -> None:
+        cfg_path = (self._app_state.last_trading_config_path or "").strip()
+        if cfg_path:
+            if os.path.exists(cfg_path):
+                push_log("INFO", f"啟動時已自動套用上次匯入設定 JSON：{cfg_path}", include_traceback=False)
+            else:
+                push_log("WARN", f"上次匯入設定 JSON 不存在，已改用預設設定檔：{cfg_path}", include_traceback=False)
 
     # ══════════════════════════════════════════
     #  建立 UI
@@ -2092,6 +2175,18 @@ class App(QMainWindow):
         self._toggles["broker_dry_run"].set(settings.dry_run)
 
     def _broker_load_default_json(self):
+        last_path = (self._app_state.last_broker_settings_path or "").strip()
+        if last_path and os.path.exists(last_path):
+            try:
+                settings = BrokerSettings.load_strict(last_path)
+                self._broker_apply_settings(settings)
+                push_log("INFO", f"券商設定已自動套用上次匯入 JSON：{last_path}", include_traceback=False)
+                return
+            except Exception as e:
+                push_log("WARN", f"載入上次匯入券商設定 JSON 失敗，改用預設檔：{e}")
+        elif last_path:
+            push_log("WARN", f"上次匯入券商設定 JSON 不存在，改用預設檔：{last_path}", include_traceback=False)
+
         if not os.path.exists(BROKER_SETTINGS_FILE):
             return
         try:
@@ -2117,6 +2212,8 @@ class App(QMainWindow):
         try:
             settings = BrokerSettings.load_strict(path)
             self._broker_apply_settings(settings)
+            self._app_state.last_broker_settings_path = path
+            self._save_app_state()
             push_log("INFO", f"券商設定已自 JSON 匯入：{path}", include_traceback=False)
             QMessageBox.information(
                 self,
@@ -3183,6 +3280,8 @@ class App(QMainWindow):
             cfg = TradingConfig.load_strict(path)
             self.cfg = cfg
             self._apply_config(cfg)
+            self._app_state.last_trading_config_path = path
+            self._save_app_state()
             push_log("INFO", f"設定已自 JSON 匯入：{path}", include_traceback=False)
             QMessageBox.information(
                 self,
@@ -3673,6 +3772,8 @@ class App(QMainWindow):
                     push_log("INFO", f"Mock 模式，載入 {len(symbol_infos)} 支模擬股票", include_traceback=False)
 
                 feed = broker.create_realtime_feed()
+                if hasattr(feed, "set_disconnect_callback"):
+                    feed.set_disconnect_callback(self._on_feed_disconnect)
 
             except Exception as e:
                 push_log("WARN", f"載入個股基本資料失敗：{e}")
@@ -3760,6 +3861,14 @@ class App(QMainWindow):
         started_at = getattr(engine, "_started_at", None)
         started_txt = started_at.strftime("%H:%M:%S") if started_at else datetime.now().strftime("%H:%M:%S")
         self._set_strategy_status(f"運行中（{started_txt} 啟用）", C["green"])
+        if token == self._last_socket_restart_token:
+            self._last_socket_restart_result = "success"
+            push_log(
+                "INFO",
+                "socket 自動重啟成功："
+                f"token={token} last_disconnect={self._last_socket_disconnect_reason}",
+                include_traceback=False,
+            )
         self._start_pool_swap_timer()
 
     def _fail_start_trading(self, token: int, error: Exception) -> None:
@@ -3770,6 +3879,9 @@ class App(QMainWindow):
         self._toggles["strategy_enabled"].set(False)
         self._set_badge_active(False)
         self._set_strategy_status("啟動失敗", C["red"])
+        if token == self._last_socket_restart_token:
+            self._last_socket_restart_result = "failed"
+            push_log("ERROR", f"socket 自動重啟失敗：token={token} error={error}")
         push_log("ERROR", f"策略啟動失敗：{error}")
 
     def _stop_trading(self):
@@ -3797,6 +3909,7 @@ class App(QMainWindow):
 
     def set_broker(self, broker) -> None:
         """由 main.py 注入 broker 適配器，並更新狀態列。"""
+        self._detach_gui_broker_callbacks()
         self.broker = broker
         if broker is not None and hasattr(broker, "set_dry_run"):
             try:
@@ -3811,17 +3924,7 @@ class App(QMainWindow):
             self._toggles["mock_mode"].set(is_mock)
         self._update_mock_mode_label(is_mock)
 
-        # M5：訂閱委託回報，更新「委託狀態」表
-        if broker is not None and hasattr(broker, "on_order"):
-            try:
-                broker.on_order(self._on_order_event)
-            except Exception:  # noqa: BLE001
-                pass
-        if broker is not None and hasattr(broker, "on_filled"):
-            try:
-                broker.on_filled(self._on_fill_event)
-            except Exception:  # noqa: BLE001
-                pass
+        self._attach_gui_broker_callbacks(broker)
         # M6：啟動帳戶輪詢（10 秒一次）
         self._stop_account_polling()
         if broker is not None and hasattr(broker, "account_service"):
@@ -3845,6 +3948,37 @@ class App(QMainWindow):
             self._dashboard_preview_broker_key = ""
             self._render_monitor([])
             self._preload_dashboard_preview_async(broker)
+
+    def _attach_gui_broker_callbacks(self, broker) -> None:
+        if broker is None:
+            return
+        if hasattr(broker, "on_order"):
+            try:
+                broker.on_order(self._on_order_event)
+            except Exception:  # noqa: BLE001
+                pass
+        if hasattr(broker, "on_filled"):
+            try:
+                broker.on_filled(self._on_fill_event)
+            except Exception:  # noqa: BLE001
+                pass
+        self._broker_event_source = broker
+
+    def _detach_gui_broker_callbacks(self) -> None:
+        broker = self._broker_event_source
+        if broker is None:
+            return
+        if hasattr(broker, "off_order"):
+            try:
+                broker.off_order(self._on_order_event)
+            except Exception:  # noqa: BLE001
+                pass
+        if hasattr(broker, "off_filled"):
+            try:
+                broker.off_filled(self._on_fill_event)
+            except Exception:  # noqa: BLE001
+                pass
+        self._broker_event_source = None
 
     def _sync_order_mode_control(self) -> None:
         chk = self._checks.get("dry_run_mode")

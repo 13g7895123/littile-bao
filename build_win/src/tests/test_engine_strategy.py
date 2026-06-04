@@ -41,6 +41,19 @@ class TestTradingEngineStrategyRules(unittest.TestCase):
         state.last_1s_vol = 999
         return state
 
+    @staticmethod
+    def _arm_exit_state(engine: TradingEngine, code: str = "2330"):
+        state = engine._states[code]
+        state.position_qty = 1
+        state.entry_price = Decimal(str(state.info.limit_up))
+        state.candle_index = 1
+        state.touched_limit_up_today = True
+        state.is_at_limit_up = True
+        state.last_price = Decimal(str(state.info.limit_up))
+        state.ask0_price = Decimal(str(state.info.limit_up))
+        state.has_ask_levels = True
+        return state
+
     def test_f4_sells_only_after_configured_open_ticks(self):
         cfg = TradingConfig(
             f9_enabled=False,
@@ -109,6 +122,102 @@ class TestTradingEngineStrategyRules(unittest.TestCase):
         self.assertEqual(trades[-1]["action"], "SELL")
         self.assertTrue(any("策略=F4" in msg for _level, msg in logs))
         self.assertEqual(strategy_events[-1]["strategy"], "F4")
+
+    def test_f5_threshold_is_inclusive_at_499(self):
+        cfg = TradingConfig(
+            f9_enabled=False,
+            f4_enabled=False,
+            volume_spike_sell_threshold=499,
+        )
+        engine, logs, trades, strategy_events = self._make_engine(cfg)
+        state = self._arm_exit_state(engine)
+        now = time.time()
+        state.tick_vols.append((now, 499))
+
+        engine._tick(state, now)
+
+        self.assertEqual(state.position_qty, 0)
+        self.assertEqual(trades[-1]["action"], "SELL")
+        self.assertIn(">= 499", trades[-1]["note"])
+        self.assertTrue(any("策略=F5" in msg for _level, msg in logs))
+        self.assertEqual(strategy_events[-1]["strategy"], "F5")
+
+    def test_sell_prefers_f5_when_spike_occurs_before_open_board(self):
+        cfg = TradingConfig(
+            f9_enabled=False,
+            f4_open_ticks_to_sell=1,
+            volume_spike_sell_threshold=499,
+        )
+        engine, _logs, trades, strategy_events = self._make_engine(cfg)
+        state = self._arm_exit_state(engine)
+
+        engine._on_tick(TickEvent(
+            code="2330",
+            time=datetime(2026, 6, 3, 9, 46, 32, 118332),
+            price=Decimal("1100"),
+            volume=499,
+        ))
+        engine._on_book(BookEvent(
+            code="2330",
+            time=datetime(2026, 6, 3, 9, 46, 32, 148789),
+            ask=[SimpleNamespace(price=Decimal("1095"), volume=10)],
+            bid=[SimpleNamespace(price=Decimal("1100"), volume=50)],
+        ))
+
+        engine._tick(state, time.time())
+
+        self.assertEqual(strategy_events[-1]["strategy"], "F5")
+        self.assertEqual(trades[-1]["action"], "SELL")
+        self.assertIn(">= 499", trades[-1]["note"])
+        self.assertEqual(strategy_events[-1]["details"]["winner_strategy"], "F5")
+
+    def test_sell_prefers_f4_when_open_board_occurs_before_spike(self):
+        cfg = TradingConfig(
+            f9_enabled=False,
+            f4_open_ticks_to_sell=1,
+            volume_spike_sell_threshold=499,
+        )
+        engine, _logs, trades, strategy_events = self._make_engine(cfg)
+        state = self._arm_exit_state(engine)
+
+        engine._on_book(BookEvent(
+            code="2330",
+            time=datetime(2026, 6, 3, 9, 46, 32, 118332),
+            ask=[SimpleNamespace(price=Decimal("1095"), volume=10)],
+            bid=[SimpleNamespace(price=Decimal("1100"), volume=50)],
+        ))
+        engine._on_tick(TickEvent(
+            code="2330",
+            time=datetime(2026, 6, 3, 9, 46, 32, 148789),
+            price=Decimal("1095"),
+            volume=499,
+        ))
+
+        engine._tick(state, time.time())
+
+        self.assertEqual(strategy_events[-1]["strategy"], "F4")
+        self.assertEqual(trades[-1]["action"], "SELL")
+        self.assertIn("漲停板打開", trades[-1]["note"])
+        self.assertEqual(strategy_events[-1]["details"]["winner_strategy"], "F4")
+
+    def test_sell_tie_break_prefers_f5_when_trigger_times_match(self):
+        cfg = TradingConfig(
+            f9_enabled=False,
+            f4_open_ticks_to_sell=1,
+            volume_spike_sell_threshold=499,
+        )
+        engine, _logs, trades, strategy_events = self._make_engine(cfg)
+        state = self._arm_exit_state(engine)
+        same_ts = datetime(2026, 6, 3, 10, 0, 0).timestamp()
+        state.is_at_limit_up = False
+        state.ask0_price = Decimal("1095")
+        state.last_1s_vol = 499
+
+        engine._record_sell_trigger_candidates(state, same_ts)
+        engine._tick(state, time.time())
+
+        self.assertEqual(strategy_events[-1]["strategy"], "F5")
+        self.assertEqual(trades[-1]["action"], "SELL")
 
     def test_open_limitup_entry_toggle_blocks_entry(self):
         cfg = TradingConfig(
@@ -184,6 +293,41 @@ class TestTradingEngineStrategyRules(unittest.TestCase):
             sum(1 for _level, msg in logs if "日K第 2 根" in msg),
             1,
         )
+
+    def test_engine_detaches_broker_callbacks_on_stop(self):
+        cfg = TradingConfig()
+        broker = SimpleNamespace()
+        fill_subs = []
+        order_subs = []
+
+        broker.on_filled = fill_subs.append
+        broker.off_filled = lambda cb: fill_subs.remove(cb) if cb in fill_subs else None
+        broker.on_order = order_subs.append
+        broker.off_order = lambda cb: order_subs.remove(cb) if cb in order_subs else None
+
+        engine = TradingEngine(
+            cfg,
+            on_log=lambda _level, _msg: None,
+            on_trade=lambda _trade: None,
+            on_status=lambda _summary: None,
+            broker=broker,
+        )
+
+        engine.start()
+        self.assertEqual(fill_subs, [engine._on_broker_fill])
+        self.assertEqual(order_subs, [engine._on_broker_order])
+
+        engine.stop()
+        self.assertEqual(fill_subs, [])
+        self.assertEqual(order_subs, [])
+
+        engine.start()
+        self.assertEqual(fill_subs, [engine._on_broker_fill])
+        self.assertEqual(order_subs, [engine._on_broker_order])
+
+        engine.stop()
+        self.assertEqual(fill_subs, [])
+        self.assertEqual(order_subs, [])
 
     def test_first_daily_limit_up_is_candle_one_without_prior_streak(self):
         cfg = TradingConfig(
@@ -465,7 +609,7 @@ class TestTradingEngineStrategyRules(unittest.TestCase):
             f9_enabled=False,
             f10_enabled=False,
             entry_before_time="23:59",
-            ask_queue_threshold=100,
+            start_time="09:31",
         )
         decision_events = []
         engine = TradingEngine(
@@ -477,7 +621,6 @@ class TestTradingEngineStrategyRules(unittest.TestCase):
         )
         engine._current_datetime = lambda: datetime(2026, 5, 19, 9, 30, 0)
         state = self._arm_entry_state(engine)
-        state.ask_qty_at_limit = 120
         state.last_price = Decimal(str(state.info.limit_up))
 
         engine._tick(state, time.time())
@@ -485,7 +628,7 @@ class TestTradingEngineStrategyRules(unittest.TestCase):
         self.assertTrue(decision_events)
         self.assertEqual(decision_events[-1]["category"], "ENTRY_SKIP")
         self.assertEqual(decision_events[-1]["result"], "未進場")
-        self.assertIn("委賣", decision_events[-1]["reason"])
+        self.assertIn("未到開始時間", decision_events[-1]["reason"])
 
     def test_consume_entry_skips_f1_when_mutex_enabled(self):
         cfg = TradingConfig(
