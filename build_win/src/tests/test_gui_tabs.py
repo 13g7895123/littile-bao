@@ -794,10 +794,11 @@ class TestGuiTabLayout(unittest.TestCase):
         self.win._fields["daily_volume_min"].setText("1")
 
         with mock.patch("broker.universe.PreviousTradingDaysApiClient", side_effect=RuntimeError("api off")):
-            symbol_infos, feed = self.win._load_trading_runtime(
+            symbol_infos, feed, reserve_pool = self.win._load_trading_runtime(
                 self.win.broker, self.win._collect_config())
 
         self.assertIsNone(feed)
+        self.assertEqual(reserve_pool, {})
         self.assertEqual(snapshot.calls[0], {"market": "TSE", "type": "COMMONSTOCK"})
         self.assertEqual(snapshot.calls[1], {"symbols": ["2330"]})
         self.assertEqual(list(symbol_infos.keys()), ["2330"])
@@ -866,15 +867,105 @@ class TestGuiTabLayout(unittest.TestCase):
         self.win._checks["market_twse"].setChecked(True)
         self.win._checks["market_tpex"].setChecked(False)
         self.win._fields["daily_volume_min"].setText("1")
+        self.win._confirm_fubon_special_candidates = lambda loader, candidates, cfg: candidates
 
         with mock.patch("broker.universe.PreviousTradingDaysApiClient", FakePreviousDaysClient):
-            symbol_infos, feed = self.win._load_trading_runtime(
+            symbol_infos, feed, reserve_pool = self.win._load_trading_runtime(
                 FakeBroker(), self.win._collect_config())
 
         self.assertIsNone(feed)
+        self.assertEqual(reserve_pool, {})
         self.assertEqual(FakePreviousDaysClient.instances[0].markets, ("TSE",))
         self.assertEqual(symbol_infos["2330"].is_attention, False)
         self.assertEqual(list(symbol_infos.keys()), ["2330"])
+
+    def test_runtime_does_not_build_reserve_pool_below_symbol_limit(self):
+        from broker.universe import build_symbol_info
+
+        class FakeBroker:
+            def __init__(self):
+                self._sdk = object()
+
+            def create_realtime_feed(self):
+                return None
+
+        class FakePreviousDaysClient:
+            def __init__(self):
+                self.last_from_cache = True
+                self.last_as_of = "2026-05-10"
+
+            def load_symbol_infos(self, markets):
+                return {
+                    f"{1000 + i}": build_symbol_info(
+                        f"{1000 + i}",
+                        f"股票{i}",
+                        "TSE",
+                        Decimal("50"),
+                        quote_price=Decimal("50"),
+                        prev_volume=10_000 - i,
+                        prior_limit_up_streak=0,
+                    )
+                    for i in range(430)
+                }
+
+        self.win._checks["market_twse"].setChecked(True)
+        self.win._checks["market_tpex"].setChecked(False)
+        self.win._fields["daily_volume_min"].setText("1")
+        self.win._confirm_fubon_special_candidates = lambda loader, candidates, cfg: candidates
+
+        with mock.patch("broker.universe.PreviousTradingDaysApiClient", FakePreviousDaysClient):
+            symbol_infos, feed, reserve_pool = self.win._load_trading_runtime(
+                FakeBroker(), self.win._collect_config())
+
+        self.assertIsNone(feed)
+        self.assertEqual(len(symbol_infos), 430)
+        self.assertEqual(reserve_pool, {})
+
+    def test_runtime_builds_reserve_pool_only_for_overflow_candidates(self):
+        from broker import FUBON_REALTIME_SYMBOL_LIMIT
+        from broker.universe import build_symbol_info
+
+        class FakeBroker:
+            def __init__(self):
+                self._sdk = object()
+
+            def create_realtime_feed(self):
+                return None
+
+        class FakePreviousDaysClient:
+            def __init__(self):
+                self.last_from_cache = True
+                self.last_as_of = "2026-05-10"
+
+            def load_symbol_infos(self, markets):
+                total = FUBON_REALTIME_SYMBOL_LIMIT + 3
+                return {
+                    f"{1000 + i}": build_symbol_info(
+                        f"{1000 + i}",
+                        f"股票{i}",
+                        "TSE",
+                        Decimal("50"),
+                        quote_price=Decimal("50"),
+                        prev_volume=20_000 - i,
+                        prior_limit_up_streak=0,
+                    )
+                    for i in range(total)
+                }
+
+        self.win._checks["market_twse"].setChecked(True)
+        self.win._checks["market_tpex"].setChecked(False)
+        self.win._fields["daily_volume_min"].setText("1")
+        self.win._confirm_fubon_special_candidates = lambda loader, candidates, cfg: candidates
+
+        with mock.patch("broker.universe.PreviousTradingDaysApiClient", FakePreviousDaysClient):
+            symbol_infos, feed, reserve_pool = self.win._load_trading_runtime(
+                FakeBroker(), self.win._collect_config())
+
+        self.assertIsNone(feed)
+        self.assertEqual(len(symbol_infos), FUBON_REALTIME_SYMBOL_LIMIT)
+        self.assertEqual(len(reserve_pool), 3)
+        self.assertFalse(set(symbol_infos).intersection(reserve_pool))
+        self.assertEqual(list(reserve_pool.keys()), ["1500", "1501", "1502"])
 
 
 if __name__ == "__main__":

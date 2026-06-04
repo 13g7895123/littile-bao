@@ -3644,7 +3644,8 @@ class App(QMainWindow):
                     exclude_day_trade_restricted=False,
                     markets=tuple(cfg.get_markets()),
                     min_prev_volume=(cfg.daily_volume_min if cfg.f8_enabled else 0),
-                    max_candidates=FUBON_REALTIME_SYMBOL_LIMIT,
+                    # 先保留完整靜態候選，之後再切成主池 500 + 備用池 overflow。
+                    max_candidates=10_000,
                     max_prior_limit_up_streak=max_prior_streak,
                 )
 
@@ -3733,14 +3734,11 @@ class App(QMainWindow):
                                         include_traceback=False)
                         candidates = self._confirm_fubon_special_candidates(
                             loader, candidates, cfg)
-                        symbol_infos = {si.code: si for si in candidates}
-                        # ── 備用池：通過靜態篩選但超出訂閱上限的股票，供動態換股使用 ──
-                        subscribed_codes = set(symbol_infos.keys())
-                        reserve_pool = {
-                            si.code: si
-                            for si in all_infos.values()
-                            if si.code not in subscribed_codes
-                        }
+                        subscribed_candidates = candidates[:FUBON_REALTIME_SYMBOL_LIMIT]
+                        reserve_candidates = candidates[FUBON_REALTIME_SYMBOL_LIMIT:]
+                        symbol_infos = {si.code: si for si in subscribed_candidates}
+                        # ── 備用池：僅保留「通過靜態篩選但超出 500 上限」的股票 ──
+                        reserve_pool = {si.code: si for si in reserve_candidates}
                         push_log("INFO",
                             f"篩選後候選 {len(symbol_infos)} 支"
                             f"（價格 {crit.price_min}~{crit.price_max} 元"
