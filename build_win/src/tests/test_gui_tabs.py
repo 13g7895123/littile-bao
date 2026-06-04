@@ -251,7 +251,7 @@ class TestGuiTabLayout(unittest.TestCase):
         self.assertIn("時間=2026-05-20T09:03:00", self.win.trades_table.item(0, 6).text())
         self.assertIn("數量=1", self.win.trades_full_table.item(0, 6).text())
         self.assertEqual(self.win.trades_table.item(0, 7).text(), "+500")
-        self.assertEqual(self.win.stat_trade_cnt.text(), "1 / 5")
+        self.assertEqual(self.win.stat_trade_cnt.text(), f"1 / {self.win.cfg.daily_max_trades}")
 
         self.win._set_log_filter("all")
         self.win._append_log("INFO", "tab log smoke")
@@ -407,9 +407,10 @@ class TestGuiTabLayout(unittest.TestCase):
         self.win._apply_selected_limitup_test_mode()
 
         combo = self.win._combos["limit_up_detection_mode"]
-        self.assertEqual(combo.currentData(), "bid_only")
-        self.assertEqual(self.win.cfg.limit_up_detection_mode, "bid_only")
-        self.assertEqual(fake_engine.applied_modes, ["bid_only"])
+        self.assertFalse(combo.isEnabled())
+        self.assertEqual(combo.currentData(), "bid_or_trade_flag")
+        self.assertEqual(self.win.cfg.limit_up_detection_mode, "bid_or_trade_flag")
+        self.assertEqual(fake_engine.applied_modes, ["bid_or_trade_flag"])
 
     def test_monitor_count_action_text_and_column_autosize(self):
         summary = [

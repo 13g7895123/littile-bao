@@ -9,7 +9,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from config import TradingConfig  # noqa: E402
+from config import AppState, LOCKED_LIMIT_UP_DETECTION_MODE, TradingConfig  # noqa: E402
 
 
 class TestTradingConfigJsonIO(unittest.TestCase):
@@ -48,6 +48,7 @@ class TestTradingConfigJsonIO(unittest.TestCase):
             self.assertEqual(cfg.consume_qty_threshold, 300)
             self.assertFalse(cfg.consume_mutex_with_f1)
             self.assertFalse(cfg.file_logging_enabled)
+            self.assertEqual(cfg.limit_up_detection_mode, LOCKED_LIMIT_UP_DETECTION_MODE)
 
     def test_load_strict_invalid_json_raises(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -67,14 +68,30 @@ class TestTradingConfigJsonIO(unittest.TestCase):
             "limit_up_detection_mode": "ask_or_bid_or_last",
         })
 
-        self.assertEqual(cfg.limit_up_detection_mode, "strict_lock_from_user_rule")
+        self.assertEqual(cfg.limit_up_detection_mode, LOCKED_LIMIT_UP_DETECTION_MODE)
+
+
+class TestAppStateJsonIO(unittest.TestCase):
+    def test_app_state_round_trip(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "app_state.json")
+            state = AppState(
+                last_trading_config_path="/tmp/trading_import.json",
+                last_broker_settings_path="/tmp/broker_import.json",
+            )
+
+            state.save(path)
+            loaded = AppState.load_strict(path)
+
+            self.assertEqual(loaded.last_trading_config_path, "/tmp/trading_import.json")
+            self.assertEqual(loaded.last_broker_settings_path, "/tmp/broker_import.json")
 
     def test_from_dict_migrates_previous_default_limitup_mode(self):
         cfg = TradingConfig.from_dict({
             "limit_up_detection_mode": "bid_and_zero_ask",
         })
 
-        self.assertEqual(cfg.limit_up_detection_mode, "strict_lock_from_user_rule")
+        self.assertEqual(cfg.limit_up_detection_mode, LOCKED_LIMIT_UP_DETECTION_MODE)
 
 
 if __name__ == "__main__":

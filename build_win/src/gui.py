@@ -21,7 +21,15 @@ from PyQt6.QtCore import Qt, QTimer, QPoint, pyqtSignal
 from PyQt6.QtGui import QPainter, QColor, QFont, QBrush
 
 from app_logging import compose_log_message, configure_runtime_logging, write_log_event
-from config import BROKER_SETTINGS_FILE, CONFIG_FILE, AppState, BrokerSettings, TradingConfig
+from config import (
+    BROKER_SETTINGS_FILE,
+    CONFIG_FILE,
+    LOCKED_LIMIT_UP_DETECTION_MODE,
+    get_locked_trading_config_baseline_paths,
+    AppState,
+    BrokerSettings,
+    TradingConfig,
+)
 from engine import TradingEngine
 from limitup_detection import LIMIT_UP_DETECTION_MODES, resolve_limit_up_mode
 
@@ -442,6 +450,12 @@ class App(QMainWindow):
             push_log("WARN", f"儲存 app_state 失敗：{e}")
 
     def _load_startup_trading_config(self) -> TradingConfig:
+        for path in get_locked_trading_config_baseline_paths():
+            if path and os.path.exists(path):
+                try:
+                    return TradingConfig.load_strict(path)
+                except Exception:
+                    pass
         path = (self._app_state.last_trading_config_path or "").strip()
         if path and os.path.exists(path):
             try:
@@ -451,6 +465,10 @@ class App(QMainWindow):
         return TradingConfig.load()
 
     def _log_startup_import_sources(self) -> None:
+        for path in get_locked_trading_config_baseline_paths():
+            if path and os.path.exists(path):
+                push_log("INFO", f"啟動時已優先套用固定交易設定 JSON：{path}", include_traceback=False)
+                return
         cfg_path = (self._app_state.last_trading_config_path or "").strip()
         if cfg_path:
             if os.path.exists(cfg_path):
@@ -1059,9 +1077,14 @@ class App(QMainWindow):
         combo.clear()
         for mode, desc in LIMIT_UP_DETECTION_MODES.items():
             combo.addItem(f"{mode} | {desc}", mode)
+        locked_index = combo.findData(LOCKED_LIMIT_UP_DETECTION_MODE)
+        if locked_index >= 0:
+            combo.setCurrentIndex(locked_index)
+        combo.setEnabled(False)
+        combo.setToolTip("鎖漲停判斷模式目前固定，不提供變更。")
 
     def _set_limit_up_mode_selection(self, mode: str) -> str:
-        resolved = resolve_limit_up_mode(mode)
+        resolved = resolve_limit_up_mode(LOCKED_LIMIT_UP_DETECTION_MODE)
         combo = self._combos.get("limit_up_detection_mode")
         if combo is None:
             return resolved
@@ -1071,10 +1094,7 @@ class App(QMainWindow):
         return resolved
 
     def _get_selected_limit_up_mode(self) -> str:
-        combo = self._combos.get("limit_up_detection_mode")
-        if combo is None:
-            return resolve_limit_up_mode(getattr(self.cfg, "limit_up_detection_mode", ""))
-        return resolve_limit_up_mode(str(combo.currentData() or combo.currentText()))
+        return resolve_limit_up_mode(LOCKED_LIMIT_UP_DETECTION_MODE)
 
     def _apply_limit_up_mode(self, mode: str, *, log_change: bool = True) -> str:
         resolved = self._set_limit_up_mode_selection(mode)

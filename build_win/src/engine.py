@@ -15,7 +15,7 @@ from datetime import date, datetime, time as dtime
 from decimal import Decimal
 from typing import Callable, Dict, List, Optional
 
-from config import TradingConfig
+from config import LOCKED_LIMIT_UP_DETECTION_MODE, TradingConfig
 from limitup_detection import (
     DEFAULT_LIMIT_UP_DETECTION_MODE,
     LIMIT_UP_DETECTION_MODES,
@@ -259,7 +259,7 @@ class TradingEngine:
         self._thread.start()
 
     def update_limit_up_mode(self, mode: str) -> str:
-        resolved = resolve_limit_up_mode(mode)
+        resolved = resolve_limit_up_mode(LOCKED_LIMIT_UP_DETECTION_MODE)
         with self._lock:
             self._limit_up_mode = resolved
             self.config.limit_up_detection_mode = resolved

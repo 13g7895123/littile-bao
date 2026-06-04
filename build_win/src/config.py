@@ -23,8 +23,25 @@ def _broker_settings_path() -> str:
         base = os.path.dirname(os.path.abspath(__file__))
     return os.path.join(base, "broker_settings.json")
 
+
+def _app_state_path() -> str:
+    if getattr(__import__('sys'), 'frozen', False):
+        base = os.path.dirname(__import__('sys').executable)
+    else:
+        base = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base, "app_state.json")
+
+
+def get_locked_trading_config_baseline_paths() -> List[str]:
+    return [
+        "/mnt/c/Users/user/Downloads/trading_config_20260602_093245.json",
+        r"C:\Users\user\Downloads\trading_config_20260602_093245.json",
+    ]
+
 CONFIG_FILE = _config_path()
 BROKER_SETTINGS_FILE = _broker_settings_path()
+APP_STATE_FILE = _app_state_path()
+LOCKED_LIMIT_UP_DETECTION_MODE = "bid_or_trade_flag"
 
 
 @dataclass
@@ -32,7 +49,7 @@ class TradingConfig:
     # ── 功能 1：10點前漲停，委賣(漲停價)低於N張才進場 ─────────────────────
     f1_enabled: bool = True
     start_time: str = "09:00"
-    entry_before_time: str = "10:00"
+    entry_before_time: str = "10:30"
     ask_queue_threshold: int = 100
 
     # ── 功能 2：市場選擇 ────────────────────────────────────────────────────
@@ -47,7 +64,7 @@ class TradingConfig:
     f4_open_ticks_to_sell: int = 1       # 漲停板打開幾檔才賣；1=打開1檔就賣
     f4_require_today_limitup: bool = True  # F4 須當日曾觸及漲停才生效
 
-    # ── 功能 5：持倉中，1秒成交量超過N張就賣 ──────────────────────────────
+    # ── 功能 5：持倉中，1秒成交量達 N 張就賣（含等於門檻）──────────────────
     f5_enabled: bool = True
     volume_spike_sell_threshold: int = 499
 
@@ -66,7 +83,7 @@ class TradingConfig:
     # ── 功能 9：股價區間篩選 ────────────────────────────────────────────────
     f9_enabled: bool = True
     price_min: float = 10.0
-    price_max: float = 500.0
+    price_max: float = 100.0
 
     # ── 功能 10：委賣價 + 即時量雙重確認 ────────────────────────────────────
     f10_enabled: bool = True
@@ -78,11 +95,11 @@ class TradingConfig:
 
     # ── 功能 12：開盤即漲停 + 當天已賣過就封鎖 ──────────────────────────────
     f12_enabled: bool = True
-    f_open_limitup_entry_enabled: bool = True  # 是否允許追開盤即漲停
+    f_open_limitup_entry_enabled: bool = False  # 是否允許追開盤即漲停
 
     # ── 功能 13：限制每天最大成交檔數 ───────────────────────────────────────
     f13_enabled: bool = True
-    daily_max_trades: int = 5   # 當天最多成交幾檔
+    daily_max_trades: int = 100   # 當天最多成交幾檔
 
     # ── 消化量進場：漲停價成交量達 N 張即進場（與功能 1 可互斥）──────────────
     f_consume_enabled: bool = False
@@ -98,7 +115,7 @@ class TradingConfig:
     # ── 盤中行情錄製（Phase 1）─────────────────────────────────────────────
     # 啟動策略時若 recording_enabled=True，會把 SDK 推送的原始訊息與解析後的
     # tick/book 寫入 log/recordings/<YYYYMMDD>/，供事後分析或日後復盤使用。
-    recording_enabled: bool = False
+    recording_enabled: bool = True
     recording_dir: str = ""              # 留空 → 使用預設 log/recordings/
     recording_keep_days: int = 7         # 自動清除超過 N 天的舊錄製；<=0 = 不清理
     recording_record_raw: bool = True    # 是否錄製原始 SDK JSON 字串（吃較多空間）
@@ -106,7 +123,7 @@ class TradingConfig:
     # ── 鎖漲停判斷模式 ──────────────────────────────────────────────────────
     # 鎖板預設採用較嚴格規則：API 明示最後成交價為漲停，且買一在漲停且有量，
     # 同時無委賣、賣一量為 0，或賣一已高於漲停，才視為真正鎖板。
-    limit_up_detection_mode: str = "strict_lock_from_user_rule"
+    limit_up_detection_mode: str = LOCKED_LIMIT_UP_DETECTION_MODE
 
     # ── 帳號 ────────────────────────────────────────────────────────────────
     api_id: str = ""
@@ -121,10 +138,8 @@ class TradingConfig:
         if not isinstance(data, dict):
             raise ValueError("設定檔格式錯誤：JSON 根節點必須為物件")
         valid = {k: v for k, v in data.items() if k in cls.__dataclass_fields__}
-        # 相容舊版設定：舊預設較容易把「觸板」誤判成「鎖板」。
-        # 若載入舊預設值，統一升級到目前新的嚴格預設。
-        if valid.get("limit_up_detection_mode") in {"ask_or_bid_or_last", "bid_and_zero_ask"}:
-            valid["limit_up_detection_mode"] = "strict_lock_from_user_rule"
+        # 目前先固定鎖漲停判斷模式，避免匯入檔案、重啟或手動操作後被改掉。
+        valid["limit_up_detection_mode"] = LOCKED_LIMIT_UP_DETECTION_MODE
         return cls(**valid)
 
     def save(self, path: str = ""):
@@ -329,3 +344,38 @@ class BrokerSettings:
             if not self.branch_no:   checks.append("分行代號")
             if not self.account_no:  checks.append("帳號")
         return checks
+
+
+@dataclass
+class AppState:
+    """記錄 UI 最近一次匯入的設定檔路徑。"""
+    last_trading_config_path: str = ""
+    last_broker_settings_path: str = ""
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "AppState":
+        if not isinstance(data, dict):
+            raise ValueError("AppState 格式錯誤：JSON 根節點必須為物件")
+        valid = {k: v for k, v in data.items() if k in cls.__dataclass_fields__}
+        return cls(**valid)
+
+    def save(self, path: str = "") -> None:
+        path = path or APP_STATE_FILE
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(asdict(self), f, ensure_ascii=False, indent=2)
+
+    @classmethod
+    def load_strict(cls, path: str) -> "AppState":
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return cls.from_dict(data)
+
+    @classmethod
+    def load(cls, path: str = "") -> "AppState":
+        path = path or APP_STATE_FILE
+        if os.path.exists(path):
+            try:
+                return cls.load_strict(path)
+            except Exception as e:
+                print(f"[AppState] 載入失敗，使用預設值：{e}")
+        return cls()

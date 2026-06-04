@@ -19,6 +19,7 @@
 | 券商適配層（含 Mock / Fubon） | `build_win/src/broker/*` | [`broker/`](./broker/) |
 | 工具腳本（verify / 分析） | `build_win/src/verify_*.py`、`analyze_limitup_logs.py` | [`utils/`](./utils/) |
 | Windows 執行路徑對照 / 交易紀錄查找 | `build_win/dist/*`、`build_win/dist/log/*`、`dry_run_audit_YYYYMMDD.jsonl` | [`utils/windows_runtime_paths.skill.md`](./utils/windows_runtime_paths.skill.md) |
+| 每日盤後交易整理 | `build_win/src/generate_daily_trade_report.py`、`dry_run_audit_YYYYMMDD.jsonl`、`program.log.YYYYMMDD` | [`utils/daily_trade_report.skill.md`](./utils/daily_trade_report.skill.md) |
 
 ## broker 子模組
 | 子模組 | skill |
