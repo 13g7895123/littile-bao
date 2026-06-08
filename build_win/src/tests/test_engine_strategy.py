@@ -574,6 +574,71 @@ class TestTradingEngineStrategyRules(unittest.TestCase):
         ))
         self.assertFalse(engine3._states["2330"].is_at_limit_up)
 
+    def test_strict_lock_keeps_candidate_time_before_confirmed_lock(self):
+        cfg = TradingConfig(
+            f1_enabled=False,
+            f9_enabled=False,
+            f10_enabled=False,
+            f11_enabled=False,
+            per_stock_amount=2_000_000,
+            limit_up_detection_mode="strict_lock_from_user_rule",
+        )
+        decision_events = []
+        engine = TradingEngine(
+            cfg,
+            on_log=lambda _level, _msg: None,
+            on_trade=lambda _trade: None,
+            on_status=lambda _summary: None,
+            on_decision_event=decision_events.append,
+        )
+        engine._running = True
+
+        engine._on_tick(TickEvent(
+            code="2330",
+            time=datetime(2026, 5, 19, 9, 32, 16),
+            price=Decimal("1100"),
+            volume=10,
+            is_limit_up_price=True,
+        ))
+
+        state = engine._states["2330"]
+        self.assertIsNotNone(state.first_limit_up_candidate_event_time)
+        self.assertEqual(
+            state.first_limit_up_candidate_event_time,
+            datetime(2026, 5, 19, 9, 32, 16),
+        )
+        self.assertIsNone(state.first_limit_up_confirmed_event_time)
+        self.assertFalse(state.is_at_limit_up)
+        self.assertFalse(state.pending)
+
+        engine._on_book(BookEvent(
+            code="2330",
+            time=datetime(2026, 5, 19, 9, 32, 24),
+            ask=[],
+            bid=[SimpleNamespace(price=Decimal("1100"), volume=99)],
+        ))
+        engine._on_tick(TickEvent(
+            code="2330",
+            time=datetime(2026, 5, 19, 9, 32, 24, 500000),
+            price=Decimal("1100"),
+            volume=5,
+            is_limit_up_price=True,
+        ))
+
+        self.assertEqual(
+            state.first_limit_up_confirmed_event_time,
+            datetime(2026, 5, 19, 9, 32, 24),
+        )
+        self.assertTrue(state.is_at_limit_up)
+        self.assertTrue(state.pending)
+        self.assertTrue(
+            any(ev.get("category") == "LIMIT_UP_CANDIDATE" for ev in decision_events)
+        )
+        self.assertEqual(
+            decision_events[-1]["details"]["confirmed_lock_event_time"],
+            "2026-05-19T09:32:24",
+        )
+
     def test_update_limitup_mode_refreshes_state_and_summary_signals(self):
         cfg = TradingConfig(
             f1_enabled=False,
@@ -598,11 +663,11 @@ class TestTradingEngineStrategyRules(unittest.TestCase):
         engine.update_limit_up_mode("bid_only")
 
         summary = {item["code"]: item for item in engine.get_summary()}
-        self.assertEqual(state.active_limit_up_mode, "bid_only")
-        self.assertTrue(state.is_at_limit_up)
-        self.assertEqual(summary["2330"]["limit_up_mode"], "bid_only")
+        self.assertEqual(state.active_limit_up_mode, "strict_lock_from_user_rule")
+        self.assertFalse(state.is_at_limit_up)
+        self.assertEqual(summary["2330"]["limit_up_mode"], "strict_lock_from_user_rule")
         self.assertTrue(summary["2330"]["limit_up_signals"]["bid_at_limit"])
-        self.assertTrue(summary["2330"]["limit_up_candidates"]["bid_only"])
+        self.assertFalse(summary["2330"]["limit_up_candidates"]["strict_lock_from_user_rule"])
 
     def test_skip_entry_emits_decision_detail_event(self):
         cfg = TradingConfig(
@@ -629,6 +694,127 @@ class TestTradingEngineStrategyRules(unittest.TestCase):
         self.assertEqual(decision_events[-1]["category"], "ENTRY_SKIP")
         self.assertEqual(decision_events[-1]["result"], "未進場")
         self.assertIn("未到開始時間", decision_events[-1]["reason"])
+
+    def test_decision_event_includes_market_recv_and_decision_timing(self):
+        decision_events = []
+        cfg = TradingConfig(
+            f1_enabled=False,
+            f9_enabled=False,
+            f10_enabled=False,
+            f11_enabled=False,
+            limit_up_detection_mode="ask_or_bid_or_last",
+        )
+        engine = TradingEngine(
+            cfg,
+            on_log=lambda _level, _msg: None,
+            on_trade=lambda _trade: None,
+            on_status=lambda _summary: None,
+            on_decision_event=decision_events.append,
+        )
+        market_time = datetime(2026, 5, 19, 9, 32, 16, 123000)
+        recv_time = datetime(2026, 5, 19, 9, 32, 19, 456000)
+
+        engine._on_tick(TickEvent(
+            code="2330",
+            time=market_time,
+            recv_time=recv_time,
+            price=Decimal("1100"),
+            volume=10,
+        ))
+
+        self.assertTrue(decision_events)
+        event = decision_events[-1]
+        details = event["details"]
+        self.assertEqual(event["market_event_time"], market_time.isoformat())
+        self.assertEqual(event["recv_time"], recv_time.isoformat())
+        self.assertEqual(details["market_event_time"], market_time.isoformat())
+        self.assertEqual(details["recv_time"], recv_time.isoformat())
+        self.assertIsInstance(details["decision_time"], str)
+        self.assertEqual(details["market_to_recv_ms"], 3333.0)
+        self.assertGreaterEqual(details["recv_to_decision_ms"], 0.0)
+        self.assertGreaterEqual(details["market_to_decision_ms"], 3333.0)
+
+    def test_limit_up_event_triggers_entry_without_waiting_for_tick_loop(self):
+        class FakeBroker:
+            def __init__(self):
+                self.orders = []
+
+            def place_order(self, req):
+                self.orders.append(req)
+                return "O1"
+
+        cfg = TradingConfig(
+            f1_enabled=False,
+            f9_enabled=False,
+            f10_enabled=False,
+            f11_enabled=False,
+            limit_up_detection_mode="ask_or_bid_or_last",
+            per_stock_amount=2_000_000,
+        )
+        broker = FakeBroker()
+        engine = TradingEngine(
+            cfg,
+            on_log=lambda _level, _msg: None,
+            on_trade=lambda _trade: None,
+            on_status=lambda _summary: None,
+            broker=broker,
+        )
+        engine._running = True
+
+        engine._on_tick(TickEvent(
+            code="2330",
+            time=datetime(2026, 5, 19, 9, 1),
+            price=Decimal("1100"),
+            volume=10,
+        ))
+
+        state = engine._states["2330"]
+        self.assertTrue(state.pending)
+        self.assertEqual(len(broker.orders), 1)
+        self.assertEqual(broker.orders[0].code, "2330")
+
+    def test_limit_up_event_does_not_repeat_buy_within_same_lock_segment(self):
+        class FakeBroker:
+            def __init__(self):
+                self.orders = []
+
+            def place_order(self, req):
+                self.orders.append(req)
+                return "O1"
+
+        cfg = TradingConfig(
+            f1_enabled=False,
+            f9_enabled=False,
+            f10_enabled=False,
+            f11_enabled=False,
+            limit_up_detection_mode="ask_or_bid_or_last",
+            per_stock_amount=2_000_000,
+        )
+        broker = FakeBroker()
+        engine = TradingEngine(
+            cfg,
+            on_log=lambda _level, _msg: None,
+            on_trade=lambda _trade: None,
+            on_status=lambda _summary: None,
+            broker=broker,
+        )
+        engine._running = True
+
+        limit_up = Decimal(str(engine._states["2330"].info.limit_up))
+        engine._on_tick(TickEvent(
+            code="2330",
+            time=datetime(2026, 5, 19, 9, 1),
+            price=limit_up,
+            volume=10,
+        ))
+        engine._on_book(BookEvent(
+            code="2330",
+            time=datetime(2026, 5, 19, 9, 1, 0, 500000),
+            ask=[],
+            bid=[SimpleNamespace(price=limit_up, volume=99)],
+        ))
+
+        self.assertEqual(len(broker.orders), 1)
 
     def test_consume_entry_skips_f1_when_mutex_enabled(self):
         cfg = TradingConfig(

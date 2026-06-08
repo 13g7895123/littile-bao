@@ -4,9 +4,11 @@ gui.py — 打板策略系統 主視窗
 """
 from __future__ import annotations
 import html
+import json
 import os
 import queue
 import threading
+from pathlib import Path
 from decimal import Decimal
 from typing import Dict, Optional
 from datetime import datetime, time as dtime
@@ -20,7 +22,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QTimer, QPoint, pyqtSignal
 from PyQt6.QtGui import QPainter, QColor, QFont, QBrush
 
-from app_logging import compose_log_message, configure_runtime_logging, write_log_event
+from app_logging import compose_log_message, configure_runtime_logging, runtime_base_dir, write_log_event
 from config import (
     BROKER_SETTINGS_FILE,
     CONFIG_FILE,
@@ -90,6 +92,24 @@ def push_log(level: str, msg: object, *, include_traceback: Optional[bool] = Non
     text = compose_log_message(level, msg, include_traceback=include_traceback)
     LOG_Q.put((level, text))
     write_log_event(level, text)
+
+
+def _jsonl_value(value):
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {k: _jsonl_value(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_jsonl_value(v) for v in value]
+    return value
+
+
+def _append_jsonl_record(path: Path, record: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(_jsonl_value(record), ensure_ascii=False) + "\n")
 
 
 # ──────────────────────────────────────────────
@@ -3088,6 +3108,39 @@ class App(QMainWindow):
         t.start(self._POOL_SWAP_INTERVAL_MS)
         self._pool_swap_timer = t
 
+    @staticmethod
+    def _pool_swap_snapshot_value(value):
+        return _jsonl_value(value)
+
+    def _pool_swap_snapshot_path(self, now: Optional[datetime] = None) -> Path:
+        stamp = (now or datetime.now()).strftime("%Y%m%d")
+        return Path(runtime_base_dir()) / "log" / f"pool_swap.{stamp}.jsonl"
+
+    def _write_pool_swap_snapshot(self, stage: str, payload: dict) -> None:
+        now = datetime.now()
+        path = self._pool_swap_snapshot_path(now)
+        record = {
+            "ts": now.isoformat(timespec="microseconds"),
+            "stage": stage,
+        }
+        record.update(self._pool_swap_snapshot_value(payload))
+        try:
+            _append_jsonl_record(path, record)
+        except Exception as e:
+            push_log("WARN", f"[PoolSwap] 寫入快照失敗：{e}", include_traceback=False)
+
+    def _decision_event_log_path(self, now: Optional[datetime] = None) -> Path:
+        stamp = (now or datetime.now()).strftime("%Y%m%d")
+        return Path(runtime_base_dir()) / "log" / f"decision_events.{stamp}.jsonl"
+
+    def _write_decision_event_record(self, ev: dict) -> None:
+        now = datetime.now()
+        record = {
+            "logged_at": now.isoformat(timespec="microseconds"),
+            **(ev or {}),
+        }
+        _append_jsonl_record(self._decision_event_log_path(now), record)
+
     def _pool_swap_worker(self, engine: TradingEngine, reserve_pool: dict) -> None:
         """背景執行緒：計算要換掉誰、補進誰，然後呼叫 replace_universe + resubscribe。
 
@@ -3106,6 +3159,7 @@ class App(QMainWindow):
             in_range:  list[dict] = []
             out_range: list[dict] = []   # 有行情且不在 8~10%，且無持倉/委託/進場紀錄
             no_price:  list[dict] = []   # 尚未收到行情，本輪跳過
+            protected_outside_range: list[dict] = []
 
             for row in summary:
                 pct = row.get("change_pct")
@@ -3118,15 +3172,37 @@ class App(QMainWindow):
                     in_range.append(row)
                 elif not protected:
                     out_range.append(row)
-                # protected 且不在範圍 → 強制保留，不動
+                else:
+                    protected_outside_range.append(row)
 
             push_log("INFO",
                 f"[PoolSwap] 掃描：池內 {len(summary)} 支，"
                 f"在範圍({lo}~{hi}%) {len(in_range)} 支，"
                 f"待替換 {len(out_range)} 支，無行情 {len(no_price)} 支",
                 include_traceback=False)
+            self._write_pool_swap_snapshot(
+                "scan",
+                {
+                    "range_pct": {"lo": lo, "hi": hi},
+                    "pool_size": len(summary),
+                    "reserve_pool_size": len(reserve_pool),
+                    "active_codes": [row["code"] for row in summary],
+                    "in_range_codes": [row["code"] for row in in_range],
+                    "out_range_codes": [row["code"] for row in out_range],
+                    "protected_outside_range_codes": [row["code"] for row in protected_outside_range],
+                    "no_price_codes": [row["code"] for row in no_price],
+                },
+            )
 
             if not out_range:
+                self._write_pool_swap_snapshot(
+                    "skip",
+                    {
+                        "reason": "no_out_of_range_candidates",
+                        "pool_size": len(summary),
+                        "reserve_pool_size": len(reserve_pool),
+                    },
+                )
                 return
 
             # ── 備用池候選：尚未訂閱，無即時行情 ──
@@ -3143,6 +3219,15 @@ class App(QMainWindow):
                 push_log("INFO",
                     "[PoolSwap] 備用池已空，無法補入新股票",
                     include_traceback=False)
+                self._write_pool_swap_snapshot(
+                    "skip",
+                    {
+                        "reason": "reserve_pool_empty",
+                        "pool_size": len(summary),
+                        "reserve_pool_size": len(reserve_pool),
+                        "out_range_codes": [row["code"] for row in out_range],
+                    },
+                )
                 return
 
             # ── 決定換掉誰 ──
@@ -3165,6 +3250,17 @@ class App(QMainWindow):
             push_log("INFO",
                 f"[PoolSwap] 準備換股：移除 {_fmt(to_remove)} → 補入 {_fmt(to_add)}",
                 include_traceback=False)
+            self._write_pool_swap_snapshot(
+                "plan",
+                {
+                    "pool_size": len(summary),
+                    "reserve_pool_size": len(reserve_pool),
+                    "swap_count": swap_count,
+                    "planned_remove_codes": to_remove,
+                    "planned_add_codes": to_add,
+                    "reserve_candidate_codes": [code for _, code in reserve_candidates[:swap_count]],
+                },
+            )
 
             # ── 建立新的 symbol_infos（目前池 - 移除 + 加入）──
             remove_set = set(to_remove)
@@ -3213,6 +3309,21 @@ class App(QMainWindow):
                 f"保留（在新範圍）{len(diff['kept_in_new'])} 支、"
                 f"保留（有持倉/委託）{len(diff['kept_protected'])} 支",
                 include_traceback=False)
+            post_summary = engine.get_summary()
+            self._write_pool_swap_snapshot(
+                "complete",
+                {
+                    "pool_size": len(post_summary),
+                    "reserve_pool_size": len(self._reserve_pool),
+                    "active_codes": [row["code"] for row in post_summary],
+                    "added_codes": diff["added"],
+                    "removed_codes": diff["removed"],
+                    "kept_in_new_codes": diff["kept_in_new"],
+                    "kept_protected_codes": diff["kept_protected"],
+                    "planned_remove_codes": to_remove,
+                    "planned_add_codes": to_add,
+                },
+            )
 
         except Exception as e:
             push_log("ERROR", f"[PoolSwap] 換股掃描發生例外：{e}")
@@ -4161,6 +4272,10 @@ class App(QMainWindow):
 
     def _on_decision_event(self, ev: dict) -> None:
         """從策略引擎接收決策明細事件，丟回 GUI 主執行緒繪製。"""
+        try:
+            self._write_decision_event_record(ev)
+        except Exception as e:
+            push_log("WARN", f"[DecisionEvent] 寫入事件檔失敗：{e}", include_traceback=False)
         self._dispatch_ui(lambda ev=ev: self._append_decision_detail(ev))
 
     def _append_strategy_event(self, ev: dict) -> None:

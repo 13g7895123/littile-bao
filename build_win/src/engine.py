@@ -77,6 +77,7 @@ class StockState:
         self.last_1s_vol: int = 0
         self.tick_vols: deque = deque()   # (timestamp, vol)
         self.limit_up_since: Optional[float] = None
+        self.limit_up_candidate_since: Optional[float] = None
         self.today_limit_up_counted: bool = False
         self.sold_today: bool = False     # 功能 12：當天已賣過
         # ── Milestone 2：行情驅動欄位 ───────────────────────
@@ -94,6 +95,10 @@ class StockState:
         self.trade_is_limit_up_price: Optional[bool] = None
         self.trade_is_limit_up_bid: Optional[bool] = None
         self.trade_is_limit_up_ask: Optional[bool] = None
+        self.last_market_event_time: Optional[datetime] = None
+        self.last_recv_time: Optional[datetime] = None
+        self.first_limit_up_candidate_event_time: Optional[datetime] = None
+        self.first_limit_up_confirmed_event_time: Optional[datetime] = None
         self.has_ask_levels: bool = False
         self.has_bid_levels: bool = False
         self.limit_up_signal_states: Dict[str, bool] = {}
@@ -447,6 +452,8 @@ class TradingEngine:
             state.trade_is_limit_up_price = getattr(ev, "is_limit_up_price", None)
             state.trade_is_limit_up_bid = getattr(ev, "is_limit_up_bid", None)
             state.trade_is_limit_up_ask = getattr(ev, "is_limit_up_ask", None)
+            state.last_market_event_time = getattr(ev, "time", None)
+            state.last_recv_time = getattr(ev, "recv_time", None)
 
             # 漲停判斷：成交價 == 漲停價
             limit_up = Decimal(str(state.info.limit_up))
@@ -479,6 +486,8 @@ class TradingEngine:
                 state.bid0_price = None
                 state.bid0_volume = 0
             state.has_bid_levels = bool(ev.bid)
+            state.last_market_event_time = getattr(ev, "time", None)
+            state.last_recv_time = getattr(ev, "recv_time", None)
             now = time.time()
             self._refresh_limit_up_state(state, source="book", now=now, event_time=ev.time)
             if state.position_qty > 0 and not state.pending:
@@ -488,6 +497,8 @@ class TradingEngine:
                 )
 
     def _refresh_limit_up_state(self, state: StockState, *, source: str, now: float, event_time=None) -> None:
+        was_at_limit_up = bool(state.is_at_limit_up)
+        was_candidate = bool(state.limit_up_candidate_since is not None)
         decision = evaluate_limit_up_state(
             limit_up=Decimal(str(state.info.limit_up)),
             ask0_price=state.ask0_price,
@@ -508,6 +519,22 @@ class TradingEngine:
         state.limit_up_candidate_states = dict(decision["candidates"])
         mode = state.active_limit_up_mode or self._limit_up_mode
         sealed = bool(decision["candidates"].get(mode, False))
+        candidate_sealed = bool(
+            decision["signals"].get("last_at_limit")
+            or decision["signals"].get("trade_flag_price")
+            or (
+                decision["signals"].get("bid_at_limit")
+                and decision["signals"].get("bid_qty_positive")
+            )
+        )
+
+        if candidate_sealed:
+            if state.limit_up_candidate_since is None:
+                state.limit_up_candidate_since = now
+            if state.first_limit_up_candidate_event_time is None and isinstance(event_time, datetime):
+                state.first_limit_up_candidate_event_time = event_time
+        else:
+            state.limit_up_candidate_since = None
 
         if self._started_at is not None and not state.initial_limit_up_checked:
             state.initial_limit_up_checked = True
@@ -515,6 +542,8 @@ class TradingEngine:
                 state.is_at_limit_up = True
                 state.startup_limitup_blocked = True
                 state.limit_up_since = None
+                if state.first_limit_up_confirmed_event_time is None and isinstance(event_time, datetime):
+                    state.first_limit_up_confirmed_event_time = event_time
                 state.last_skip_reason = "程式啟用後已漲停"
                 self.on_log(
                     "INFO",
@@ -533,6 +562,8 @@ class TradingEngine:
 
         if sealed:
             state.is_at_limit_up = True
+            if state.first_limit_up_confirmed_event_time is None and isinstance(event_time, datetime):
+                state.first_limit_up_confirmed_event_time = event_time
             if not state.startup_limitup_blocked:
                 state.touched_limit_up_today = True
                 self._mark_limit_up_touched(state, now)
@@ -554,6 +585,28 @@ class TradingEngine:
             signals=decision["signals"],
             event_time=event_time,
         )
+        if candidate_sealed and not was_candidate:
+            self._emit_decision_event(
+                "LIMIT_UP_CANDIDATE",
+                state,
+                "候選鎖板",
+                f"{source}:candidate",
+                {
+                    "candidate_lock_time": event_time,
+                    "candidate_mode": "last_or_trade_flag_price_or_bid_at_limit",
+                    "active_mode": state.active_limit_up_mode,
+                    "signals": decision["signals"],
+                },
+                event_time=event_time,
+            )
+        if (
+            self._running
+            and not was_at_limit_up
+            and state.is_at_limit_up
+            and not state.startup_limitup_blocked
+        ):
+            # 封板首次成立時立即補一次進場評估，避免只靠 1 秒輪詢漏掉短暫鎖板。
+            self._evaluate_entry(state, now)
 
     def _log_limit_up_signal_change(self, state: StockState, *, source: str, signals: dict, event_time=None) -> None:
         prev = getattr(state, "_last_limit_signal_snapshot", None)
@@ -626,12 +679,15 @@ class TradingEngine:
             st.sold_today = False
             st.candle_index = 0
             st.limit_up_since = None
+            st.limit_up_candidate_since = None
             st.today_limit_up_counted = False
             st.touched_limit_up_today = False
             st.limit_up_consumed_qty = 0
             st.special_check_completed = False
             st.initial_limit_up_checked = False
             st.startup_limitup_blocked = False
+            st.first_limit_up_candidate_event_time = None
+            st.first_limit_up_confirmed_event_time = None
             self._reset_sell_trigger_state(st)
             # 注意：position_qty 不清空，避免影響真實持倉同步
         self._daily_trade_count = 0
@@ -700,8 +756,12 @@ class TradingEngine:
             return
 
         self._reset_sell_trigger_state(state)
+        self._evaluate_entry(state, now)
 
+    def _evaluate_entry(self, state: StockState, now: float) -> None:
         # ── 進場邏輯 ──────────────────────────────────────────────
+        cfg = self.config
+        info = state.info
         if state.pending or state.entry_blocked or state.candle_index == 0:
             return
         if state.limit_up_since is None or not state.is_at_limit_up:
@@ -1497,13 +1557,23 @@ class TradingEngine:
     def _fmt_decision_value(value):
         if isinstance(value, Decimal):
             return str(value)
+        if isinstance(value, (datetime, date, dtime)):
+            return value.isoformat()
         if isinstance(value, dict):
             return {k: TradingEngine._fmt_decision_value(v) for k, v in value.items()}
         if isinstance(value, (list, tuple)):
             return [TradingEngine._fmt_decision_value(v) for v in value]
         return value
 
-    def _state_snapshot_details(self, state: StockState) -> dict:
+    @staticmethod
+    def _calc_delay_ms(start_time, end_time) -> Optional[float]:
+        if not isinstance(start_time, datetime) or not isinstance(end_time, datetime):
+            return None
+        return round((end_time - start_time).total_seconds() * 1000, 3)
+
+    def _state_snapshot_details(self, state: StockState, *, decision_time: Optional[datetime] = None) -> dict:
+        market_event_time = state.last_market_event_time
+        recv_time = state.last_recv_time
         return {
             "candle": state.candle_index,
             "limit_up_mode": state.active_limit_up_mode,
@@ -1518,6 +1588,15 @@ class TradingEngine:
             "trade_ask": state.trade_ask,
             "last_1s_vol": state.last_1s_vol,
             "consume_qty": state.limit_up_consumed_qty,
+            "candidate_lock_since": state.limit_up_candidate_since,
+            "candidate_lock_event_time": state.first_limit_up_candidate_event_time,
+            "confirmed_lock_event_time": state.first_limit_up_confirmed_event_time,
+            "market_event_time": market_event_time,
+            "recv_time": recv_time,
+            "decision_time": decision_time,
+            "market_to_recv_ms": self._calc_delay_ms(market_event_time, recv_time),
+            "recv_to_decision_ms": self._calc_delay_ms(recv_time, decision_time),
+            "market_to_decision_ms": self._calc_delay_ms(market_event_time, decision_time),
             "pending": state.pending,
             "position_qty": state.position_qty,
             "first_f4_time": state.f4_first_trigger_at,
@@ -1545,7 +1624,8 @@ class TradingEngine:
     ) -> None:
         if self.on_decision_event is None:
             return
-        merged = self._state_snapshot_details(state)
+        decision_time = datetime.now()
+        merged = self._state_snapshot_details(state, decision_time=decision_time)
         merged.update(details or {})
         try:
             self.on_decision_event({
@@ -1559,6 +1639,9 @@ class TradingEngine:
                 "category": category,
                 "result": result,
                 "reason": reason,
+                "market_event_time": self._fmt_decision_value(state.last_market_event_time),
+                "recv_time": self._fmt_decision_value(state.last_recv_time),
+                "decision_time": self._fmt_decision_value(decision_time),
                 "details": self._fmt_decision_value(merged),
             })
         except Exception:
@@ -1628,6 +1711,8 @@ class TradingEngine:
                     "trade_ask": (float(s.trade_ask) if s.trade_ask is not None else None),
                     "has_ask_levels": s.has_ask_levels,
                     "has_bid_levels": s.has_bid_levels,
+                    "candidate_lock_event_time": self._fmt_decision_value(s.first_limit_up_candidate_event_time),
+                    "confirmed_lock_event_time": self._fmt_decision_value(s.first_limit_up_confirmed_event_time),
                     "limit_up_signals": dict(s.limit_up_signal_states),
                     "limit_up_candidates": dict(s.limit_up_candidate_states),
                     "out_of_range": out_of_range,  # F9 即時價過濾旗標（True = 該檔被排除顯示）

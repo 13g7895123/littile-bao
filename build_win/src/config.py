@@ -41,7 +41,7 @@ def get_locked_trading_config_baseline_paths() -> List[str]:
 CONFIG_FILE = _config_path()
 BROKER_SETTINGS_FILE = _broker_settings_path()
 APP_STATE_FILE = _app_state_path()
-LOCKED_LIMIT_UP_DETECTION_MODE = "bid_or_trade_flag"
+LOCKED_LIMIT_UP_DETECTION_MODE = "strict_lock_from_user_rule"
 
 
 @dataclass

@@ -408,9 +408,9 @@ class TestGuiTabLayout(unittest.TestCase):
 
         combo = self.win._combos["limit_up_detection_mode"]
         self.assertFalse(combo.isEnabled())
-        self.assertEqual(combo.currentData(), "bid_or_trade_flag")
-        self.assertEqual(self.win.cfg.limit_up_detection_mode, "bid_or_trade_flag")
-        self.assertEqual(fake_engine.applied_modes, ["bid_or_trade_flag"])
+        self.assertEqual(combo.currentData(), "strict_lock_from_user_rule")
+        self.assertEqual(self.win.cfg.limit_up_detection_mode, "strict_lock_from_user_rule")
+        self.assertEqual(fake_engine.applied_modes, ["strict_lock_from_user_rule"])
 
     def test_monitor_count_action_text_and_column_autosize(self):
         summary = [
