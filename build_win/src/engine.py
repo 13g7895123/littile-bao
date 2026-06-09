@@ -15,7 +15,11 @@ from datetime import date, datetime, time as dtime
 from decimal import Decimal
 from typing import Callable, Dict, List, Optional
 
-from config import LOCKED_LIMIT_UP_DETECTION_MODE, TradingConfig
+from config import (
+    LOCKED_LIMIT_UP_DETECTION_MODE,
+    LOCKED_STARTUP_LIMIT_UP_DETECTION_MODE,
+    TradingConfig,
+)
 from limitup_detection import (
     DEFAULT_LIMIT_UP_DETECTION_MODE,
     LIMIT_UP_DETECTION_MODES,
@@ -170,6 +174,13 @@ class TradingEngine:
         self._limit_up_mode: str = resolve_limit_up_mode(
             getattr(config, "limit_up_detection_mode", DEFAULT_LIMIT_UP_DETECTION_MODE)
         )
+        self._startup_limit_up_mode: str = resolve_limit_up_mode(
+            getattr(
+                config,
+                "startup_limit_up_detection_mode",
+                LOCKED_STARTUP_LIMIT_UP_DETECTION_MODE,
+            )
+        )
         # ── 診斷計數器 ─────────────────────────────────────
         self._tick_recv_count: int = 0   # engine 收到的 tick 總數
         self._book_recv_count: int = 0   # engine 收到的 book 總數
@@ -222,6 +233,11 @@ class TradingEngine:
         self.on_log("INFO", f"監控 {len(self._states)} 支股票")
         active = self._active_features()
         self.on_log("INFO", f"已啟用篩選功能：{active}")
+        self.on_log(
+            "INFO",
+            f"啟動即鎖判斷模式：{self._startup_limit_up_mode} "
+            f"（{LIMIT_UP_DETECTION_MODES.get(self._startup_limit_up_mode, '')}）",
+        )
         self.on_log(
             "INFO",
             f"鎖漲停判斷模式：{self._limit_up_mode} "
@@ -519,6 +535,8 @@ class TradingEngine:
         state.limit_up_candidate_states = dict(decision["candidates"])
         mode = state.active_limit_up_mode or self._limit_up_mode
         sealed = bool(decision["candidates"].get(mode, False))
+        startup_mode = self._startup_limit_up_mode or LOCKED_STARTUP_LIMIT_UP_DETECTION_MODE
+        startup_sealed = bool(decision["candidates"].get(startup_mode, False))
         candidate_sealed = bool(
             decision["signals"].get("last_at_limit")
             or decision["signals"].get("trade_flag_price")
@@ -537,28 +555,46 @@ class TradingEngine:
             state.limit_up_candidate_since = None
 
         if self._started_at is not None and not state.initial_limit_up_checked:
-            state.initial_limit_up_checked = True
-            if sealed:
-                state.is_at_limit_up = True
-                state.startup_limitup_blocked = True
-                state.limit_up_since = None
-                if state.first_limit_up_confirmed_event_time is None and isinstance(event_time, datetime):
-                    state.first_limit_up_confirmed_event_time = event_time
-                state.last_skip_reason = "程式啟用後已漲停"
-                self.on_log(
-                    "INFO",
-                    f"[{state.info.code} {state.info.name}] 啟用時已鎖漲停，"
-                    "先標記為「程式啟用後已漲停」，待撬開後再觀察重鎖進場",
-                )
-                self._log_limit_up_signal_change(
-                    state,
-                    source=source,
-                    signals=decision["signals"],
-                    event_time=event_time,
-                )
-                return
+            # 啟動即鎖判斷至少等到收到成交價，再用當下整合過的 book/tick 狀態判斷。
+            # 這樣舊版 startup 規則可以利用 tick 旗標，避免第一筆 book 就過早定案。
+            startup_ready = state.last_price is not None
+            if startup_ready:
+                state.initial_limit_up_checked = True
+                if startup_sealed:
+                    state.is_at_limit_up = True
+                    state.startup_limitup_blocked = True
+                    state.limit_up_since = None
+                    if state.first_limit_up_confirmed_event_time is None and isinstance(event_time, datetime):
+                        state.first_limit_up_confirmed_event_time = event_time
+                    state.last_skip_reason = "程式啟用後已漲停"
+                    self.on_log(
+                        "INFO",
+                        f"[{state.info.code} {state.info.name}] 啟用時已鎖漲停，"
+                        f"先標記為「程式啟用後已漲停」，待撬開後再觀察重鎖進場"
+                        f"（判斷={startup_mode}）",
+                    )
+                    self._log_limit_up_signal_change(
+                        state,
+                        source=source,
+                        signals=decision["signals"],
+                        event_time=event_time,
+                    )
+                    return
         elif self._started_at is None and not state.initial_limit_up_checked:
             state.initial_limit_up_checked = True
+
+        if state.startup_limitup_blocked:
+            if startup_sealed:
+                state.is_at_limit_up = True
+                state.limit_up_since = None
+            else:
+                state.startup_limitup_blocked = False
+                state.last_skip_reason = ""
+                state.is_at_limit_up = False
+                self.on_log(
+                    "INFO",
+                    f"[{state.info.code} {state.info.name}] 啟用後既有漲停已撬開，恢復觀察重鎖進場",
+                )
 
         if sealed:
             state.is_at_limit_up = True
@@ -568,16 +604,9 @@ class TradingEngine:
                 state.touched_limit_up_today = True
                 self._mark_limit_up_touched(state, now)
         else:
-            if state.is_at_limit_up:
+            if state.is_at_limit_up and not state.startup_limitup_blocked:
                 state.is_at_limit_up = False
                 state.limit_up_since = None
-            if state.startup_limitup_blocked:
-                state.startup_limitup_blocked = False
-                state.last_skip_reason = ""
-                self.on_log(
-                    "INFO",
-                    f"[{state.info.code} {state.info.name}] 啟用後既有漲停已撬開，恢復觀察重鎖進場",
-                )
 
         self._log_limit_up_signal_change(
             state,
@@ -1577,6 +1606,7 @@ class TradingEngine:
         return {
             "candle": state.candle_index,
             "limit_up_mode": state.active_limit_up_mode,
+            "startup_limit_up_mode": self._startup_limit_up_mode,
             "is_at_limit_up": state.is_at_limit_up,
             "ask_qty": state.ask_qty_at_limit,
             "ask0_price": state.ask0_price,
@@ -1703,6 +1733,7 @@ class TradingEngine:
                     "ask_qty":    s.ask_qty_at_limit,  # 漲停委賣張數
                     "is_at_limit_up": s.is_at_limit_up,
                     "limit_up_mode": s.active_limit_up_mode,
+                    "startup_limit_up_mode": self._startup_limit_up_mode,
                     "ask0_price": (float(s.ask0_price) if s.ask0_price is not None else None),
                     "ask0_volume": s.ask0_volume,
                     "bid0_price": (float(s.bid0_price) if s.bid0_price is not None else None),

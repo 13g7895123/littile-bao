@@ -41,6 +41,7 @@ def get_locked_trading_config_baseline_paths() -> List[str]:
 CONFIG_FILE = _config_path()
 BROKER_SETTINGS_FILE = _broker_settings_path()
 APP_STATE_FILE = _app_state_path()
+LOCKED_STARTUP_LIMIT_UP_DETECTION_MODE = "bid_or_trade_flag"
 LOCKED_LIMIT_UP_DETECTION_MODE = "strict_lock_from_user_rule"
 
 
@@ -121,6 +122,11 @@ class TradingConfig:
     recording_record_raw: bool = True    # 是否錄製原始 SDK JSON 字串（吃較多空間）
 
     # ── 鎖漲停判斷模式 ──────────────────────────────────────────────────────
+    # 啟動時「是否已鎖板」與盤中新鎖進場拆成兩套規則：
+    # - startup_limit_up_detection_mode：沿用較寬鬆的舊規則，避免像 8422 這類
+    #   啟動後其實早已鎖板的個股被誤追。
+    # - limit_up_detection_mode：盤中進場維持較嚴格規則，避免像 6432 那種瞬間假鎖。
+    startup_limit_up_detection_mode: str = LOCKED_STARTUP_LIMIT_UP_DETECTION_MODE
     # 鎖板預設採用較嚴格規則：API 明示最後成交價為漲停，且買一在漲停且有量，
     # 同時無委賣、賣一量為 0，或賣一已高於漲停，才視為真正鎖板。
     limit_up_detection_mode: str = LOCKED_LIMIT_UP_DETECTION_MODE
@@ -138,7 +144,9 @@ class TradingConfig:
         if not isinstance(data, dict):
             raise ValueError("設定檔格式錯誤：JSON 根節點必須為物件")
         valid = {k: v for k, v in data.items() if k in cls.__dataclass_fields__}
-        # 目前先固定鎖漲停判斷模式，避免匯入檔案、重啟或手動操作後被改掉。
+        # 目前先固定啟動時 / 盤中兩套鎖漲停判斷模式，避免匯入檔案、
+        # 重啟或手動操作後被改掉。
+        valid["startup_limit_up_detection_mode"] = LOCKED_STARTUP_LIMIT_UP_DETECTION_MODE
         valid["limit_up_detection_mode"] = LOCKED_LIMIT_UP_DETECTION_MODE
         return cls(**valid)
 

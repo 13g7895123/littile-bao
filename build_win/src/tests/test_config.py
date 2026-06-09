@@ -9,7 +9,12 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from config import AppState, LOCKED_LIMIT_UP_DETECTION_MODE, TradingConfig  # noqa: E402
+from config import (  # noqa: E402
+    AppState,
+    LOCKED_LIMIT_UP_DETECTION_MODE,
+    LOCKED_STARTUP_LIMIT_UP_DETECTION_MODE,
+    TradingConfig,
+)
 
 
 class TestTradingConfigJsonIO(unittest.TestCase):
@@ -48,6 +53,10 @@ class TestTradingConfigJsonIO(unittest.TestCase):
             self.assertEqual(cfg.consume_qty_threshold, 300)
             self.assertFalse(cfg.consume_mutex_with_f1)
             self.assertFalse(cfg.file_logging_enabled)
+            self.assertEqual(
+                cfg.startup_limit_up_detection_mode,
+                LOCKED_STARTUP_LIMIT_UP_DETECTION_MODE,
+            )
             self.assertEqual(cfg.limit_up_detection_mode, LOCKED_LIMIT_UP_DETECTION_MODE)
 
     def test_load_strict_invalid_json_raises(self):
@@ -65,9 +74,14 @@ class TestTradingConfigJsonIO(unittest.TestCase):
 
     def test_from_dict_migrates_old_limitup_mode(self):
         cfg = TradingConfig.from_dict({
+            "startup_limit_up_detection_mode": "ask_or_bid_or_last",
             "limit_up_detection_mode": "ask_or_bid_or_last",
         })
 
+        self.assertEqual(
+            cfg.startup_limit_up_detection_mode,
+            LOCKED_STARTUP_LIMIT_UP_DETECTION_MODE,
+        )
         self.assertEqual(cfg.limit_up_detection_mode, LOCKED_LIMIT_UP_DETECTION_MODE)
 
 
@@ -88,9 +102,14 @@ class TestAppStateJsonIO(unittest.TestCase):
 
     def test_from_dict_migrates_previous_default_limitup_mode(self):
         cfg = TradingConfig.from_dict({
+            "startup_limit_up_detection_mode": "bid_and_zero_ask",
             "limit_up_detection_mode": "bid_and_zero_ask",
         })
 
+        self.assertEqual(
+            cfg.startup_limit_up_detection_mode,
+            LOCKED_STARTUP_LIMIT_UP_DETECTION_MODE,
+        )
         self.assertEqual(cfg.limit_up_detection_mode, LOCKED_LIMIT_UP_DETECTION_MODE)
 
 

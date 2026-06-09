@@ -382,6 +382,7 @@ class TestTradingEngineStrategyRules(unittest.TestCase):
             f1_enabled=False,
             f9_enabled=False,
             f10_enabled=False,
+            startup_limit_up_detection_mode="ask_or_bid_or_last",
             limit_up_detection_mode="ask_or_bid_or_last",
         )
         engine, logs, _trades, _strategy_events = self._make_engine(cfg)
@@ -419,6 +420,86 @@ class TestTradingEngineStrategyRules(unittest.TestCase):
 
         self.assertEqual(state.candle_index, 1)
         self.assertTrue(state.is_at_limit_up)
+
+    def test_startup_lock_mode_can_block_even_when_intraday_mode_is_strict(self):
+        cfg = TradingConfig(
+            f1_enabled=False,
+            f9_enabled=False,
+            f10_enabled=False,
+            startup_limit_up_detection_mode="bid_or_trade_flag",
+            limit_up_detection_mode="strict_lock_from_user_rule",
+        )
+        engine, logs, _trades, _strategy_events = self._make_engine(cfg)
+        engine._started_at = datetime(2026, 5, 19, 9, 0, 0)
+        state = engine._states["2330"]
+
+        engine._on_book(BookEvent(
+            code="2330",
+            time=datetime(2026, 5, 19, 9, 1),
+            ask=[],
+            bid=[SimpleNamespace(price=Decimal("0"), volume=999)],
+        ))
+        engine._on_tick(TickEvent(
+            code="2330",
+            time=datetime(2026, 5, 19, 9, 1, 1),
+            price=Decimal("1100"),
+            volume=10,
+            is_limit_up_price=True,
+            is_limit_up_bid=True,
+        ))
+
+        self.assertTrue(state.startup_limitup_blocked)
+        self.assertTrue(state.is_at_limit_up)
+        self.assertFalse(state.touched_limit_up_today)
+        self.assertEqual(state.candle_index, 0)
+        self.assertFalse(state.limit_up_candidate_states["strict_lock_from_user_rule"])
+        self.assertTrue(any("判斷=bid_or_trade_flag" in msg for _level, msg in logs))
+
+    def test_startup_lock_mode_unblocks_after_old_lock_rule_breaks(self):
+        cfg = TradingConfig(
+            f1_enabled=False,
+            f9_enabled=False,
+            f10_enabled=False,
+            startup_limit_up_detection_mode="bid_or_trade_flag",
+            limit_up_detection_mode="strict_lock_from_user_rule",
+        )
+        engine, _logs, _trades, _strategy_events = self._make_engine(cfg)
+        engine._started_at = datetime(2026, 5, 19, 9, 0, 0)
+        state = engine._states["2330"]
+
+        engine._on_book(BookEvent(
+            code="2330",
+            time=datetime(2026, 5, 19, 9, 1),
+            ask=[],
+            bid=[SimpleNamespace(price=Decimal("0"), volume=999)],
+        ))
+        engine._on_tick(TickEvent(
+            code="2330",
+            time=datetime(2026, 5, 19, 9, 1, 1),
+            price=Decimal("1100"),
+            volume=10,
+            is_limit_up_price=True,
+            is_limit_up_bid=True,
+        ))
+        self.assertTrue(state.startup_limitup_blocked)
+
+        engine._on_book(BookEvent(
+            code="2330",
+            time=datetime(2026, 5, 19, 9, 2),
+            ask=[SimpleNamespace(price=Decimal("1100"), volume=1)],
+            bid=[SimpleNamespace(price=Decimal("1095"), volume=20)],
+        ))
+        engine._on_tick(TickEvent(
+            code="2330",
+            time=datetime(2026, 5, 19, 9, 2, 1),
+            price=Decimal("1095"),
+            volume=5,
+            is_limit_up_price=False,
+            is_limit_up_bid=False,
+        ))
+
+        self.assertFalse(state.startup_limitup_blocked)
+        self.assertFalse(state.is_at_limit_up)
 
     def test_f1_respects_start_time(self):
         cfg = TradingConfig(
