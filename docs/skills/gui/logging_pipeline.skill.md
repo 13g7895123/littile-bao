@@ -35,5 +35,6 @@ QTimer (每 100~200ms) 在主執行緒 drain LOG_Q
 - 任何訊息一律走 `push_log`，禁止直接呼叫 `self.event_log.append(...)`，否則：
   - 不會進 `LOG_Q` → 不會寫進實體 log。
   - 不會經 filter / coloring → 樣式不一致。
+- 分析 log 時，預設先看 Windows runtime 路徑 `C:\Jarvis\15_bonus\01_littile-bao\build_win\dist\log`；repo 內 `build_win/src/log` 通常只是開發樣本或舊檔。
 - `LOG_Q` 為 thread-safe `queue.Queue`；多 thread 寫入安全。
 - 新增 log level → 更新 `_log_colors`、`_is_strategy_log`、`compose_log_message` 行為（如需 traceback）。
