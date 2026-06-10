@@ -365,6 +365,7 @@ class App(QMainWindow):
         self._log_filter_buttons = {"all": [], "strategy": []}
         self._strategy_trigger_count = 0
         self._decision_detail_count = 0
+        self._latency_stats = self._new_latency_stats()
         self._syncing_order_mode_control = False
         self._socket_recovering = False
         self._last_socket_disconnect_at: Optional[datetime] = None
@@ -3133,6 +3134,10 @@ class App(QMainWindow):
         stamp = (now or datetime.now()).strftime("%Y%m%d")
         return Path(runtime_base_dir()) / "log" / f"decision_events.{stamp}.jsonl"
 
+    def _latency_summary_log_path(self, now: Optional[datetime] = None) -> Path:
+        stamp = (now or datetime.now()).strftime("%Y%m%d")
+        return Path(runtime_base_dir()) / "log" / f"latency_summary.{stamp}.jsonl"
+
     def _write_decision_event_record(self, ev: dict) -> None:
         now = datetime.now()
         record = {
@@ -3140,6 +3145,143 @@ class App(QMainWindow):
             **(ev or {}),
         }
         _append_jsonl_record(self._decision_event_log_path(now), record)
+
+    @staticmethod
+    def _new_latency_bucket() -> dict:
+        return {
+            "count": 0,
+            "sum": 0.0,
+            "min": None,
+            "max": None,
+        }
+
+    def _new_latency_stats(self) -> dict:
+        return {
+            "started_at": datetime.now().isoformat(timespec="microseconds"),
+            "event_count": 0,
+            "metrics": {
+                "market_to_recv_ms": self._new_latency_bucket(),
+                "recv_to_decision_ms": self._new_latency_bucket(),
+                "decision_to_order_ms": self._new_latency_bucket(),
+            },
+            "codes": {},
+        }
+
+    def _reset_latency_stats(self) -> None:
+        self._latency_stats = self._new_latency_stats()
+
+    @staticmethod
+    def _update_latency_bucket(bucket: dict, value) -> bool:
+        try:
+            sample = float(value)
+        except (TypeError, ValueError):
+            return False
+        if sample < 0:
+            return False
+        bucket["count"] += 1
+        bucket["sum"] += sample
+        bucket["min"] = sample if bucket["min"] is None else min(bucket["min"], sample)
+        bucket["max"] = sample if bucket["max"] is None else max(bucket["max"], sample)
+        return True
+
+    def _record_latency_stats(self, ev: dict) -> None:
+        details = ev.get("details") or {}
+        if not isinstance(details, dict):
+            return
+        code = str(ev.get("code") or "")
+        name = str(ev.get("name") or "")
+        category = str(ev.get("category") or "")
+        result = str(ev.get("result") or "")
+        reason = str(ev.get("reason") or "")
+        self._latency_stats["event_count"] += 1
+
+        code_stats = self._latency_stats["codes"].setdefault(code, {
+            "name": name,
+            "metrics": {
+                "market_to_recv_ms": self._new_latency_bucket(),
+                "recv_to_decision_ms": self._new_latency_bucket(),
+                "decision_to_order_ms": self._new_latency_bucket(),
+            },
+            "last_category": "",
+            "last_result": "",
+            "last_reason": "",
+        })
+        code_stats["name"] = name or code_stats.get("name", "")
+        code_stats["last_category"] = category
+        code_stats["last_result"] = result
+        code_stats["last_reason"] = reason
+
+        metrics = {
+            "market_to_recv_ms": details.get("market_to_recv_ms"),
+            "recv_to_decision_ms": details.get("recv_to_decision_ms"),
+        }
+        if category == "ORDER" and result == "委託PENDING":
+            metrics["decision_to_order_ms"] = details.get("decision_to_order_ms")
+
+        wrote_sample = False
+        for key, value in metrics.items():
+            if self._update_latency_bucket(self._latency_stats["metrics"][key], value):
+                self._update_latency_bucket(code_stats["metrics"][key], value)
+                wrote_sample = True
+
+        if wrote_sample and (
+            self._latency_stats["event_count"] % 100 == 0
+            or (category == "ORDER" and result == "委託PENDING")
+        ):
+            self._write_latency_summary_snapshot(
+                reason="order_pending" if category == "ORDER" and result == "委託PENDING" else "periodic",
+            )
+
+    @staticmethod
+    def _latency_bucket_snapshot(bucket: dict) -> dict:
+        count = int(bucket.get("count") or 0)
+        total = float(bucket.get("sum") or 0.0)
+        avg = round(total / count, 3) if count > 0 else None
+        min_value = bucket.get("min")
+        max_value = bucket.get("max")
+        return {
+            "count": count,
+            "avg": avg,
+            "min": round(float(min_value), 3) if min_value is not None else None,
+            "max": round(float(max_value), 3) if max_value is not None else None,
+        }
+
+    def _write_latency_summary_snapshot(self, *, reason: str) -> None:
+        stats = self._latency_stats or {}
+        code_rows = []
+        for code, payload in (stats.get("codes") or {}).items():
+            metrics = payload.get("metrics") or {}
+            market_snapshot = self._latency_bucket_snapshot(metrics.get("market_to_recv_ms") or {})
+            decision_snapshot = self._latency_bucket_snapshot(metrics.get("decision_to_order_ms") or {})
+            code_rows.append({
+                "code": code,
+                "name": payload.get("name", ""),
+                "market_to_recv_ms": market_snapshot,
+                "decision_to_order_ms": decision_snapshot,
+                "last_category": payload.get("last_category", ""),
+                "last_result": payload.get("last_result", ""),
+                "last_reason": payload.get("last_reason", ""),
+            })
+
+        code_rows.sort(
+            key=lambda row: (
+                row["market_to_recv_ms"].get("max") or 0.0,
+                row["decision_to_order_ms"].get("max") or 0.0,
+            ),
+            reverse=True,
+        )
+        record = {
+            "logged_at": datetime.now().isoformat(timespec="microseconds"),
+            "reason": reason,
+            "started_at": stats.get("started_at"),
+            "event_count": int(stats.get("event_count") or 0),
+            "metrics": {
+                key: self._latency_bucket_snapshot(bucket)
+                for key, bucket in (stats.get("metrics") or {}).items()
+            },
+            "top_codes": code_rows[:20],
+        }
+        _append_jsonl_record(self._latency_summary_log_path(), record)
 
     def _pool_swap_worker(self, engine: TradingEngine, reserve_pool: dict) -> None:
         """背景執行緒：計算要換掉誰、補進誰，然後呼叫 replace_universe + resubscribe。
@@ -3605,6 +3747,7 @@ class App(QMainWindow):
         self._buy_count = 0
         self._sell_count = 0
         self._daily_trade_codes = set()
+        self._reset_latency_stats()
         self._clear_decision_detail()
         self._set_badge_loading()
         self._set_strategy_status("載入中…", C["yellow_l"])
@@ -4017,6 +4160,11 @@ class App(QMainWindow):
         was_starting = self._strategy_starting
         self._strategy_start_token += 1
         self._strategy_starting = False
+        if int(self._latency_stats.get("event_count") or 0) > 0:
+            try:
+                self._write_latency_summary_snapshot(reason="stop")
+            except Exception as e:
+                push_log("WARN", f"[Latency] 寫入統計摘要失敗：{e}", include_traceback=False)
         if self.engine:
             threading.Thread(target=self.engine.stop, daemon=True).start()
         # Phase 1：停止盤中錄製並 flush 檔案
@@ -4274,6 +4422,7 @@ class App(QMainWindow):
         """從策略引擎接收決策明細事件，丟回 GUI 主執行緒繪製。"""
         try:
             self._write_decision_event_record(ev)
+            self._record_latency_stats(ev)
         except Exception as e:
             push_log("WARN", f"[DecisionEvent] 寫入事件檔失敗：{e}", include_traceback=False)
         self._dispatch_ui(lambda ev=ev: self._append_decision_detail(ev))

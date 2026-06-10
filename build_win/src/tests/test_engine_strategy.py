@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from broker import BookEvent, TickEvent, build_symbol_info  # noqa: E402
+from broker import BookEvent, OrderEvent, OrderSide, OrderStatus, TickEvent, build_symbol_info  # noqa: E402
 from config import TradingConfig  # noqa: E402
 from engine import TradingEngine  # noqa: E402
 
@@ -896,6 +896,72 @@ class TestTradingEngineStrategyRules(unittest.TestCase):
         ))
 
         self.assertEqual(len(broker.orders), 1)
+
+    def test_order_decision_event_includes_decision_to_order_latency(self):
+        class FakeBroker:
+            def __init__(self):
+                self.orders = []
+
+            def place_order(self, req):
+                self.orders.append(req)
+                return "O1"
+
+        decision_events = []
+        cfg = TradingConfig(
+            f1_enabled=False,
+            f9_enabled=False,
+            f10_enabled=False,
+            f11_enabled=False,
+            limit_up_detection_mode="ask_or_bid_or_last",
+            per_stock_amount=2_000_000,
+        )
+        broker = FakeBroker()
+        engine = TradingEngine(
+            cfg,
+            on_log=lambda _level, _msg: None,
+            on_trade=lambda _trade: None,
+            on_status=lambda _summary: None,
+            on_decision_event=decision_events.append,
+            broker=broker,
+        )
+        engine._running = True
+
+        limit_up = Decimal(str(engine._states["2330"].info.limit_up))
+        engine._on_tick(TickEvent(
+            code="2330",
+            time=datetime(2026, 5, 19, 9, 1),
+            price=limit_up,
+            volume=10,
+        ))
+        engine._on_book(BookEvent(
+            code="2330",
+            time=datetime(2026, 5, 19, 9, 1, 0, 500000),
+            ask=[],
+            bid=[SimpleNamespace(price=limit_up, volume=99)],
+        ))
+
+        engine._on_broker_order(OrderEvent(
+            order_id="O1",
+            code="2330",
+            side=OrderSide.BUY,
+            price=limit_up,
+            qty=1,
+            filled_qty=0,
+            status=OrderStatus.PENDING,
+            time=datetime(2026, 5, 19, 9, 1, 1),
+            name="台積電",
+            source="TEST",
+        ))
+
+        event = decision_events[-1]
+        details = event["details"]
+        self.assertEqual(event["category"], "ORDER")
+        self.assertEqual(event["result"], "委託PENDING")
+        self.assertEqual(details["source"], "TEST")
+        self.assertIsInstance(details["trigger_decision_time"], str)
+        self.assertIsInstance(details["local_order_submit_time"], str)
+        self.assertIsInstance(details["decision_to_order_ms"], float)
+        self.assertGreaterEqual(details["decision_to_order_ms"], 0.0)
 
     def test_consume_entry_skips_f1_when_mutex_enabled(self):
         cfg = TradingConfig(

@@ -115,6 +115,8 @@ class StockState:
         self.f5_first_trigger_at: Optional[float] = None
         self.f4_trigger_snapshot: Optional[dict] = None
         self.f5_trigger_snapshot: Optional[dict] = None
+        self.last_strategy_decision_times: Dict[str, datetime] = {}
+        self.last_order_submit_times: Dict[str, datetime] = {}
         # ── Milestone 4：損益追蹤 ────────────────────
         self.entry_price: Optional[Decimal] = None  # 進場成交均價
 
@@ -984,6 +986,7 @@ class TradingEngine:
                     note=f"BUY-{state.candle_index}",
                 )
                 self.broker.place_order(req)
+                state.last_order_submit_times["BUY"] = self._current_datetime()
             except Exception as e:  # noqa: BLE001
                 state.pending = False
                 state.entry_blocked = True
@@ -1078,6 +1081,7 @@ class TradingEngine:
                 )
                 self.on_log("TRADE", f"[{info.code}] 出場委託 {qty} 張 @ {sell_price_dec}（{note}）")
                 self.broker.place_order(req)
+                state.last_order_submit_times["SELL"] = self._current_datetime()
             except Exception as e:  # noqa: BLE001
                 self.on_log("ERROR", f"[{info.code}] 出場下單失敗：{e}")
                 state.pending = False
@@ -1411,7 +1415,7 @@ class TradingEngine:
                 "details": {key: _fmt(value) for key, value in details.items()
                             if value is not None},
             })
-        self._emit_decision_event(
+        decision_time = self._emit_decision_event(
             "STRATEGY",
             state,
             {
@@ -1422,6 +1426,8 @@ class TradingEngine:
             strategy,
             details,
         )
+        if isinstance(decision_time, datetime):
+            state.last_strategy_decision_times[str(side or "").upper()] = decision_time
         self.on_log(
             "TRADE",
             f"[策略觸發][{side}][{state.info.code} {state.info.name}] "
@@ -1442,6 +1448,9 @@ class TradingEngine:
             pass
         state = self._states.get(ev.code)
         if state is not None:
+            side_key = str(getattr(ev.side, "value", ev.side) or "").upper()
+            trigger_decision_time = state.last_strategy_decision_times.get(side_key)
+            local_submit_time = state.last_order_submit_times.get(side_key)
             self._emit_decision_event(
                 "ORDER",
                 state,
@@ -1454,6 +1463,12 @@ class TradingEngine:
                     "price": ev.price,
                     "status": ev.status.value,
                     "source": getattr(ev, "source", ""),
+                    "trigger_decision_time": trigger_decision_time,
+                    "local_order_submit_time": local_submit_time,
+                    "decision_to_order_ms": self._calc_delay_ms(
+                        trigger_decision_time,
+                        local_submit_time,
+                    ),
                 },
                 event_time=ev.time,
             )
@@ -1651,9 +1666,9 @@ class TradingEngine:
         details: dict,
         *,
         event_time=None,
-    ) -> None:
+    ) -> Optional[datetime]:
         if self.on_decision_event is None:
-            return
+            return None
         decision_time = datetime.now()
         merged = self._state_snapshot_details(state, decision_time=decision_time)
         merged.update(details or {})
@@ -1676,6 +1691,7 @@ class TradingEngine:
             })
         except Exception:
             pass
+        return decision_time
 
     # ─────────────────────────────────────────
     #  狀態彙整（供 UI 輪詢）
