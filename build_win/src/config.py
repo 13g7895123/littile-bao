@@ -42,7 +42,7 @@ CONFIG_FILE = _config_path()
 BROKER_SETTINGS_FILE = _broker_settings_path()
 APP_STATE_FILE = _app_state_path()
 LOCKED_STARTUP_LIMIT_UP_DETECTION_MODE = "bid_or_trade_flag"
-LOCKED_LIMIT_UP_DETECTION_MODE = "strict_lock_from_user_rule"
+LOCKED_LIMIT_UP_DETECTION_MODE = "strict_lock_with_effective_bid_tick_confirmed"
 
 
 @dataclass
@@ -127,8 +127,10 @@ class TradingConfig:
     #   啟動後其實早已鎖板的個股被誤追。
     # - limit_up_detection_mode：盤中進場維持較嚴格規則，避免像 6432 那種瞬間假鎖。
     startup_limit_up_detection_mode: str = LOCKED_STARTUP_LIMIT_UP_DETECTION_MODE
-    # 鎖板預設採用較嚴格規則：API 明示最後成交價為漲停，且買一在漲停且有量，
-    # 同時無委賣、賣一量為 0，或賣一已高於漲停，才視為真正鎖板。
+    # 鎖板預設採用較嚴格規則：API 明示最後成交價為漲停，且 API 也明示
+    # isLimitUpBid=true；同時「有效買一」在漲停且有量。若 SDK book 第一檔
+    # 是 price=0 佔位值，會跳過後再找真正最佳買價。仍要求無委賣、賣一量
+    # 為 0，或賣一已高於漲停。
     limit_up_detection_mode: str = LOCKED_LIMIT_UP_DETECTION_MODE
 
     # ── 帳號 ────────────────────────────────────────────────────────────────

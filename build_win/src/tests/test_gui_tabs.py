@@ -344,7 +344,7 @@ class TestGuiTabLayout(unittest.TestCase):
             "change_pct": 10.0,
             "ask_qty": 0,
             "is_at_limit_up": True,
-            "limit_up_mode": "strict_lock_from_user_rule",
+            "limit_up_mode": "strict_lock_with_effective_bid_tick_confirmed",
             "ask0_price": None,
             "ask0_volume": 0,
             "bid0_price": 1100.0,
@@ -369,6 +369,8 @@ class TestGuiTabLayout(unittest.TestCase):
                 "bid_and_no_ask": True,
                 "bid_and_zero_ask": True,
                 "strict_lock_from_user_rule": True,
+                "strict_lock_with_effective_bid": True,
+                "strict_lock_with_effective_bid_tick_confirmed": True,
                 "trade_price_only": True,
                 "trade_flag_only": False,
             },
@@ -376,7 +378,7 @@ class TestGuiTabLayout(unittest.TestCase):
 
         class FakeEngine:
             def __init__(self):
-                self.config = SimpleNamespace(limit_up_detection_mode="strict_lock_from_user_rule")
+                self.config = SimpleNamespace(limit_up_detection_mode="strict_lock_with_effective_bid_tick_confirmed")
                 self.applied_modes = []
 
             def update_limit_up_mode(self, mode):
@@ -395,7 +397,7 @@ class TestGuiTabLayout(unittest.TestCase):
             self.win.limitup_test_mode_table.rowCount(),
             len(gui.LIMIT_UP_DETECTION_MODES),
         )
-        self.assertIn("strict_lock_from_user_rule", self.win.limitup_test_selected_lbl.text())
+        self.assertIn("strict_lock_with_effective_bid_tick_confirmed", self.win.limitup_test_selected_lbl.text())
         self.assertIn("signals=", self.win.limitup_test_snapshot.toPlainText())
 
         for row in range(self.win.limitup_test_mode_table.rowCount()):
@@ -408,9 +410,9 @@ class TestGuiTabLayout(unittest.TestCase):
 
         combo = self.win._combos["limit_up_detection_mode"]
         self.assertFalse(combo.isEnabled())
-        self.assertEqual(combo.currentData(), "strict_lock_from_user_rule")
-        self.assertEqual(self.win.cfg.limit_up_detection_mode, "strict_lock_from_user_rule")
-        self.assertEqual(fake_engine.applied_modes, ["strict_lock_from_user_rule"])
+        self.assertEqual(combo.currentData(), "strict_lock_with_effective_bid_tick_confirmed")
+        self.assertEqual(self.win.cfg.limit_up_detection_mode, "strict_lock_with_effective_bid_tick_confirmed")
+        self.assertEqual(fake_engine.applied_modes, ["strict_lock_with_effective_bid_tick_confirmed"])
 
     def test_monitor_count_action_text_and_column_autosize(self):
         summary = [

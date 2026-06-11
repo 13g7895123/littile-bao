@@ -30,6 +30,8 @@ class SymbolState:
     ask0_volume: int = 0
     bid0_price: Optional[Decimal] = None
     bid0_volume: int = 0
+    effective_bid0_price: Optional[Decimal] = None
+    effective_bid0_volume: int = 0
     has_ask_levels: bool = False
     has_bid_levels: bool = False
     prev_candidates: Dict[str, bool] = field(default_factory=dict)
@@ -105,6 +107,19 @@ def _apply_event(state: SymbolState, row: dict) -> None:
         else:
             state.bid0_price = None
             state.bid0_volume = 0
+        effective_bid = next(
+            (
+                level for level in bids
+                if (_to_decimal(level.get("price")) or Decimal("0")) > 0
+            ),
+            None,
+        )
+        if effective_bid is not None:
+            state.effective_bid0_price = _to_decimal(effective_bid.get("price"))
+            state.effective_bid0_volume = int(effective_bid.get("volume") or 0)
+        else:
+            state.effective_bid0_price = None
+            state.effective_bid0_volume = 0
 
 
 def _evaluate(state: SymbolState, row: dict) -> None:
@@ -117,6 +132,8 @@ def _evaluate(state: SymbolState, row: dict) -> None:
         last_price=state.last_price,
         trade_bid=state.trade_bid,
         trade_ask=state.trade_ask,
+        effective_bid0_price=state.effective_bid0_price,
+        effective_bid0_volume=state.effective_bid0_volume,
         has_ask_levels=state.has_ask_levels,
         has_bid_levels=state.has_bid_levels,
         is_limit_up_price=state.trade_is_limit_up_price,

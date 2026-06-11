@@ -453,6 +453,7 @@ class TestTradingEngineStrategyRules(unittest.TestCase):
         self.assertFalse(state.touched_limit_up_today)
         self.assertEqual(state.candle_index, 0)
         self.assertFalse(state.limit_up_candidate_states["strict_lock_from_user_rule"])
+        self.assertFalse(state.limit_up_candidate_states["strict_lock_with_effective_bid"])
         self.assertTrue(any("判斷=bid_or_trade_flag" in msg for _level, msg in logs))
 
     def test_startup_lock_mode_unblocks_after_old_lock_rule_breaks(self):
@@ -655,6 +656,83 @@ class TestTradingEngineStrategyRules(unittest.TestCase):
         ))
         self.assertFalse(engine3._states["2330"].is_at_limit_up)
 
+    def test_strict_lock_with_effective_bid_skips_zero_placeholder_level(self):
+        cfg = TradingConfig(
+            f1_enabled=False,
+            f9_enabled=False,
+            f10_enabled=False,
+            limit_up_detection_mode="strict_lock_with_effective_bid",
+        )
+        engine, _logs, _trades, _strategy_events = self._make_engine(cfg)
+
+        engine._on_book(BookEvent(
+            code="2330",
+            time=datetime(2026, 5, 19, 9, 1),
+            ask=[],
+            bid=[
+                SimpleNamespace(price=Decimal("0"), volume=999),
+                SimpleNamespace(price=Decimal("1100"), volume=99),
+            ],
+        ))
+        engine._on_tick(TickEvent(
+            code="2330",
+            time=datetime(2026, 5, 19, 9, 1, 1),
+            price=Decimal("1100"),
+            volume=10,
+            cum_volume=100,
+            is_limit_up_price=True,
+            is_limit_up_bid=False,
+        ))
+
+        self.assertTrue(engine._states["2330"].is_at_limit_up)
+        self.assertFalse(engine._states["2330"].limit_up_candidate_states["strict_lock_from_user_rule"])
+        self.assertTrue(engine._states["2330"].limit_up_candidate_states["strict_lock_with_effective_bid"])
+        self.assertFalse(engine._states["2330"].limit_up_candidate_states["strict_lock_with_effective_bid_tick_confirmed"])
+
+    def test_strict_lock_with_effective_bid_tick_confirmed_requires_trade_bid_flag(self):
+        cfg = TradingConfig(
+            f1_enabled=False,
+            f9_enabled=False,
+            f10_enabled=False,
+            limit_up_detection_mode="strict_lock_with_effective_bid_tick_confirmed",
+        )
+        engine, _logs, _trades, _strategy_events = self._make_engine(cfg)
+
+        engine._on_book(BookEvent(
+            code="2330",
+            time=datetime(2026, 5, 19, 9, 1),
+            ask=[],
+            bid=[
+                SimpleNamespace(price=Decimal("0"), volume=999),
+                SimpleNamespace(price=Decimal("1100"), volume=99),
+            ],
+        ))
+        engine._on_tick(TickEvent(
+            code="2330",
+            time=datetime(2026, 5, 19, 9, 1, 1),
+            price=Decimal("1100"),
+            volume=10,
+            cum_volume=100,
+            is_limit_up_price=True,
+            is_limit_up_bid=False,
+        ))
+
+        self.assertFalse(engine._states["2330"].is_at_limit_up)
+        self.assertFalse(engine._states["2330"].limit_up_candidate_states["strict_lock_with_effective_bid_tick_confirmed"])
+
+        engine._on_tick(TickEvent(
+            code="2330",
+            time=datetime(2026, 5, 19, 9, 1, 2),
+            price=Decimal("1100"),
+            volume=10,
+            cum_volume=110,
+            is_limit_up_price=True,
+            is_limit_up_bid=True,
+        ))
+
+        self.assertTrue(engine._states["2330"].is_at_limit_up)
+        self.assertTrue(engine._states["2330"].limit_up_candidate_states["strict_lock_with_effective_bid_tick_confirmed"])
+
     def test_strict_lock_keeps_candidate_time_before_confirmed_lock(self):
         cfg = TradingConfig(
             f1_enabled=False,
@@ -744,11 +822,11 @@ class TestTradingEngineStrategyRules(unittest.TestCase):
         engine.update_limit_up_mode("bid_only")
 
         summary = {item["code"]: item for item in engine.get_summary()}
-        self.assertEqual(state.active_limit_up_mode, "strict_lock_from_user_rule")
+        self.assertEqual(state.active_limit_up_mode, "strict_lock_with_effective_bid_tick_confirmed")
         self.assertFalse(state.is_at_limit_up)
-        self.assertEqual(summary["2330"]["limit_up_mode"], "strict_lock_from_user_rule")
+        self.assertEqual(summary["2330"]["limit_up_mode"], "strict_lock_with_effective_bid_tick_confirmed")
         self.assertTrue(summary["2330"]["limit_up_signals"]["bid_at_limit"])
-        self.assertFalse(summary["2330"]["limit_up_candidates"]["strict_lock_from_user_rule"])
+        self.assertFalse(summary["2330"]["limit_up_candidates"]["strict_lock_with_effective_bid_tick_confirmed"])
 
     def test_skip_entry_emits_decision_detail_event(self):
         cfg = TradingConfig(

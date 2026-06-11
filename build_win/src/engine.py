@@ -90,6 +90,8 @@ class StockState:
         self.ask0_volume: int = 0
         self.bid0_price: Optional[Decimal] = None
         self.bid0_volume: int = 0
+        self.effective_bid0_price: Optional[Decimal] = None
+        self.effective_bid0_volume: int = 0
         self.ask_qty_at_limit: int = 0    # 漲停價委賣張數（不為漲停時 = 0）
         self.is_at_limit_up: bool = False
         self.touched_limit_up_today: bool = False
@@ -504,6 +506,21 @@ class TradingEngine:
                 state.bid0_price = None
                 state.bid0_volume = 0
             state.has_bid_levels = bool(ev.bid)
+            effective_bid = next(
+                (
+                    level for level in (ev.bid or [])
+                    if level is not None
+                    and level.price is not None
+                    and Decimal(str(level.price)) > 0
+                ),
+                None,
+            )
+            if effective_bid is not None:
+                state.effective_bid0_price = effective_bid.price
+                state.effective_bid0_volume = int(effective_bid.volume)
+            else:
+                state.effective_bid0_price = None
+                state.effective_bid0_volume = 0
             state.last_market_event_time = getattr(ev, "time", None)
             state.last_recv_time = getattr(ev, "recv_time", None)
             now = time.time()
@@ -526,6 +543,8 @@ class TradingEngine:
             last_price=state.last_price,
             trade_bid=state.trade_bid,
             trade_ask=state.trade_ask,
+            effective_bid0_price=state.effective_bid0_price,
+            effective_bid0_volume=state.effective_bid0_volume,
             has_ask_levels=state.has_ask_levels,
             has_bid_levels=state.has_bid_levels,
             is_limit_up_price=state.trade_is_limit_up_price,
@@ -1628,6 +1647,8 @@ class TradingEngine:
             "ask0_volume": state.ask0_volume,
             "bid0_price": state.bid0_price,
             "bid0_volume": state.bid0_volume,
+            "effective_bid0_price": state.effective_bid0_price,
+            "effective_bid0_volume": state.effective_bid0_volume,
             "last_price": state.last_price,
             "trade_bid": state.trade_bid,
             "trade_ask": state.trade_ask,

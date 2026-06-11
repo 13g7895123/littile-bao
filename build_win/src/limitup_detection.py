@@ -16,11 +16,13 @@ LIMIT_UP_DETECTION_MODES: Dict[str, str] = {
     "bid_and_no_ask": "bid1=漲停 且 沒有任何委賣檔",
     "bid_and_zero_ask": "bid1=漲停 且 沒有委賣或賣一量=0",
     "strict_lock_from_user_rule": "isLimitUpPrice=true 且 bid1=漲停且有量，且無委賣/賣一量=0/賣一高於漲停",
+    "strict_lock_with_effective_bid": "isLimitUpPrice=true 且有效 bid1=漲停且有量，且無委賣/賣一量=0/賣一高於漲停（忽略 bid[0]=0 佔位檔）",
+    "strict_lock_with_effective_bid_tick_confirmed": "isLimitUpPrice=true 且 isLimitUpBid=true，且有效 bid1=漲停且有量，且無委賣/賣一量=0/賣一高於漲停（忽略 bid[0]=0 佔位檔）",
     "trade_price_only": "只有最新成交=漲停 才算觸板/封板",
     "trade_flag_only": "只有 API 漲停旗標為真才算",
 }
 
-DEFAULT_LIMIT_UP_DETECTION_MODE = "strict_lock_from_user_rule"
+DEFAULT_LIMIT_UP_DETECTION_MODE = "strict_lock_with_effective_bid_tick_confirmed"
 
 
 def _to_decimal(value: Optional[Decimal]) -> Optional[Decimal]:
@@ -39,6 +41,8 @@ def evaluate_limit_up_state(
     last_price: Optional[Decimal],
     trade_bid: Optional[Decimal] = None,
     trade_ask: Optional[Decimal] = None,
+    effective_bid0_price: Optional[Decimal] = None,
+    effective_bid0_volume: Optional[int] = None,
     has_ask_levels: bool = False,
     has_bid_levels: bool = False,
     is_limit_up_price: Optional[bool] = None,
@@ -51,9 +55,18 @@ def evaluate_limit_up_state(
     last_price = _to_decimal(last_price)
     trade_bid = _to_decimal(trade_bid)
     trade_ask = _to_decimal(trade_ask)
+    effective_bid0_price = _to_decimal(effective_bid0_price)
+
+    if effective_bid0_price is None:
+        effective_bid0_price = bid0_price
+    if effective_bid0_volume is None:
+        effective_bid0_volume = bid0_volume
 
     ask_at_limit = ask0_price is not None and ask0_price >= limit_up
     bid_at_limit = bid0_price is not None and bid0_price >= limit_up
+    effective_bid_at_limit = (
+        effective_bid0_price is not None and effective_bid0_price >= limit_up
+    )
     last_at_limit = last_price is not None and last_price >= limit_up
     trade_bid_at_limit = trade_bid is not None and trade_bid >= limit_up
     trade_ask_at_limit = trade_ask is not None and trade_ask >= limit_up
@@ -61,6 +74,9 @@ def evaluate_limit_up_state(
     bid_empty = not has_bid_levels
     ask_qty_zero = ask_empty or int(ask0_volume or 0) <= 0
     bid_qty_positive = (not bid_empty) and int(bid0_volume or 0) > 0
+    effective_bid_qty_positive = (
+        effective_bid0_price is not None and int(effective_bid0_volume or 0) > 0
+    )
     ask_price_above_limit = ask0_price is not None and ask0_price > limit_up
     trade_flag_price = bool(is_limit_up_price)
     trade_flag_bid = bool(is_limit_up_bid)
@@ -90,6 +106,19 @@ def evaluate_limit_up_state(
             and bid_qty_positive
             and (ask_empty or ask_qty_zero or ask_price_above_limit)
         ),
+        "strict_lock_with_effective_bid": (
+            trade_flag_price
+            and effective_bid_at_limit
+            and effective_bid_qty_positive
+            and (ask_empty or ask_qty_zero or ask_price_above_limit)
+        ),
+        "strict_lock_with_effective_bid_tick_confirmed": (
+            trade_flag_price
+            and trade_flag_bid
+            and effective_bid_at_limit
+            and effective_bid_qty_positive
+            and (ask_empty or ask_qty_zero or ask_price_above_limit)
+        ),
         "trade_price_only": last_at_limit or trade_flag_price,
         "trade_flag_only": trade_flag_price or trade_flag_bid or trade_flag_ask,
     }
@@ -99,6 +128,7 @@ def evaluate_limit_up_state(
         "signals": {
             "ask_at_limit": ask_at_limit,
             "bid_at_limit": bid_at_limit,
+            "effective_bid_at_limit": effective_bid_at_limit,
             "last_at_limit": last_at_limit,
             "trade_bid_at_limit": trade_bid_at_limit,
             "trade_ask_at_limit": trade_ask_at_limit,
@@ -111,6 +141,7 @@ def evaluate_limit_up_state(
             "bid_empty": bid_empty,
             "ask_qty_zero": ask_qty_zero,
             "bid_qty_positive": bid_qty_positive,
+            "effective_bid_qty_positive": effective_bid_qty_positive,
             "ask_price_above_limit": ask_price_above_limit,
         },
         "candidates": candidates,
