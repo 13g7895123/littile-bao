@@ -144,6 +144,7 @@ MOCK_STOCKS = [
 # ─────────────────────────────────────────────────────────────
 
 class TradingEngine:
+    AUTO_TRADE_CUTOFF_TIME = dtime(13, 25)
 
     def __init__(
         self,
@@ -818,6 +819,16 @@ class TradingEngine:
                 state.entry_blocked_reason = "爆量取消"
                 return
 
+        if self._is_after_auto_trade_cutoff():
+            self._reset_sell_trigger_state(state)
+            if state.position_qty <= 0:
+                self._skip_entry(
+                    state,
+                    f"已過自動交易截止 {self.AUTO_TRADE_CUTOFF_TIME.strftime('%H:%M')}",
+                    log=False,
+                )
+            return
+
         # ── 出場邏輯（功能 4、5）────────────────────────────────
         if state.position_qty > 0:
             # 若已有出場單在途（state.pending=True），跳過本次評估，避免重複下賣單
@@ -1440,6 +1451,12 @@ class TradingEngine:
             return dtime(parts[0], parts[1])
         except Exception:
             return fallback
+
+    def _is_after_auto_trade_cutoff(self, now: Optional[datetime] = None) -> bool:
+        if not self._running:
+            return False
+        current = now or self._current_datetime()
+        return current.time() >= self.AUTO_TRADE_CUTOFF_TIME
 
     @staticmethod
     def _current_datetime() -> datetime:

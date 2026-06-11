@@ -536,6 +536,46 @@ class TestTradingEngineStrategyRules(unittest.TestCase):
         self.assertFalse(state.pending)
         self.assertEqual(state.last_skip_reason, "F1:已過進場時段 13:30")
 
+    def test_auto_sell_is_disabled_at_and_after_1325(self):
+        cfg = TradingConfig(
+            f9_enabled=False,
+            f5_enabled=False,
+            f4_open_ticks_to_sell=1,
+        )
+        engine, _logs, trades, _strategy_events = self._make_engine(cfg)
+        engine._running = True
+        engine._current_datetime = lambda: datetime(2026, 5, 19, 13, 25, 0)
+        state = engine._states["2330"]
+        state.position_qty = 1
+        state.entry_price = Decimal("1100")
+        state.touched_limit_up_today = True
+        state.last_price = Decimal("1095")
+        state.ask0_price = Decimal("1095")
+        state.is_at_limit_up = False
+
+        engine._tick(state, time.time())
+
+        self.assertEqual(state.position_qty, 1)
+        self.assertEqual(trades, [])
+
+    def test_auto_entry_is_disabled_at_and_after_1325(self):
+        cfg = TradingConfig(
+            f1_enabled=False,
+            f9_enabled=False,
+            f10_enabled=False,
+            per_stock_amount=2_000_000,
+        )
+        engine, _logs, trades, _strategy_events = self._make_engine(cfg)
+        engine._running = True
+        engine._current_datetime = lambda: datetime(2026, 5, 19, 13, 25, 0)
+        state = self._arm_entry_state(engine)
+
+        engine._tick(state, time.time())
+
+        self.assertFalse(state.pending)
+        self.assertEqual(trades, [])
+        self.assertEqual(state.last_skip_reason, "已過自動交易截止 13:25")
+
     def test_bid_and_no_ask_mode_requires_bid_lock_without_asks(self):
         cfg = TradingConfig(
             f1_enabled=False,
