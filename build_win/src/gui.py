@@ -416,6 +416,37 @@ class App(QMainWindow):
     def _on_feed_disconnect(self, reason: str) -> None:
         self._dispatch_ui(lambda reason=reason: self._handle_feed_disconnect_ui(reason))
 
+    def _on_clock_skew(self, snap: dict) -> None:
+        self._dispatch_ui(lambda s=snap: self._handle_clock_skew_ui(s))
+
+    def _handle_clock_skew_ui(self, snap: dict) -> None:
+        if not hasattr(self, "latency_lbl"):
+            return
+        median = float(snap.get("median_ms") or 0.0)
+        median_abs = abs(median)
+        if median_abs < 1000.0:
+            text = f"行情延遲：{median:.0f}ms"
+        else:
+            text = f"行情延遲：{median / 1000.0:.2f}秒"
+        if median_abs >= 3000.0:
+            color = C["red"]
+        elif median_abs >= 1000.0:
+            color = C["yellow_l"]
+        elif median_abs >= 200.0:
+            color = C["yellow_l"]
+        else:
+            color = C["subtext"]
+        self.latency_lbl.setText(text)
+        self.latency_lbl.setStyleSheet(f"color: {color}; background: transparent;")
+        if median_abs >= 3000.0:
+            self.latency_warn_lbl.setText("⚠ 嚴重偏移")
+            self.latency_warn_lbl.setStyleSheet(
+                f"color: {C['red']}; background: transparent; font-weight: bold;"
+            )
+            self.latency_warn_lbl.setVisible(True)
+        else:
+            self.latency_warn_lbl.setVisible(False)
+
     def _handle_feed_disconnect_ui(self, reason: str) -> None:
         if self._socket_recovering:
             push_log("INFO", f"已在處理 socket 斷線重啟，略過重複事件：{reason}", include_traceback=False)
@@ -2727,7 +2758,12 @@ class App(QMainWindow):
         lay.addSpacing(20)
         lay.addWidget(_sep_bar())
         lay.addSpacing(20)
-        lay.addWidget(_label("行情延遲：0.15秒", C["subtext"], 9))
+        self.latency_lbl = _label("行情延遲：—", C["subtext"], 9)
+        lay.addWidget(self.latency_lbl)
+        lay.addSpacing(8)
+        self.latency_warn_lbl = _label("", C["red"], 9, bold=True)
+        self.latency_warn_lbl.setVisible(False)
+        lay.addWidget(self.latency_warn_lbl)
         lay.addSpacing(20)
         lay.addWidget(_sep_bar())
         lay.addSpacing(20)
@@ -3775,6 +3811,7 @@ class App(QMainWindow):
                 on_status=lambda _s: None,
                 on_strategy_event=self._on_strategy_event,
                 on_decision_event=self._on_decision_event,
+                on_clock_skew=self._on_clock_skew,
                 feed=feed,
                 symbol_infos=symbol_infos,
                 broker=broker,

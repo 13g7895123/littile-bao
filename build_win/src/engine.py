@@ -140,11 +140,66 @@ MOCK_STOCKS = [
 
 
 # ─────────────────────────────────────────────────────────────
+#  時鐘偏移監測
+# ─────────────────────────────────────────────────────────────
+
+
+class ClockSkewMonitor:
+    """累計 (api_time, recv_time) 樣本，提供中位數/最大值統計。
+
+    視窗為「最近 60 秒」的滑動視窗。skew = recv_time - api_time，
+    代表「本地收到時間 - 市場時間戳」，含網路與本地時鐘偏移成分。
+    持續性高偏移代表本地時鐘可能異常。
+    """
+
+    WINDOW_SEC = 60.0
+    MAX_SAMPLES = 600
+
+    def __init__(self) -> None:
+        self._samples: deque = deque(maxlen=self.MAX_SAMPLES)
+        self._lock = threading.Lock()
+
+    def add_sample(self, api_time: Optional[datetime], recv_time: Optional[datetime]) -> None:
+        if api_time is None or recv_time is None:
+            return
+        try:
+            skew_ms = (recv_time - api_time).total_seconds() * 1000.0
+        except Exception:
+            return
+        recv_ts = recv_time.timestamp()
+        with self._lock:
+            self._samples.append((recv_ts, skew_ms))
+
+    def snapshot(self) -> Optional[dict]:
+        cutoff = time.time() - self.WINDOW_SEC
+        with self._lock:
+            while self._samples and self._samples[0][0] < cutoff:
+                self._samples.popleft()
+            if not self._samples:
+                return None
+            values = sorted(s for _, s in self._samples)
+            count = len(values)
+            median = values[count // 2] if count % 2 == 1 else (values[count // 2 - 1] + values[count // 2]) / 2.0
+            return {
+                "median_ms": median,
+                "max_ms": max(values),
+                "min_ms": min(values),
+                "sample_count": count,
+                "window_sec": self.WINDOW_SEC,
+            }
+
+
+# ─────────────────────────────────────────────────────────────
 #  引擎
 # ─────────────────────────────────────────────────────────────
 
 class TradingEngine:
     AUTO_TRADE_CUTOFF_TIME = dtime(13, 25)
+    CLOCK_SKEW_REPORT_INTERVAL_SEC = 10.0
+    CLOCK_SKEW_WARN_MS = 1000.0
+    CLOCK_SKEW_ERROR_MS = 3000.0
+    CLOCK_SKEW_INFO_MS = 200.0
+    CLOCK_SKEW_INFO_LOG_INTERVAL_SEC = 60.0
 
     def __init__(
         self,
@@ -154,6 +209,7 @@ class TradingEngine:
         on_status: Callable[[List[dict]], None],
         on_strategy_event: Optional[Callable[[dict], None]] = None,
         on_decision_event: Optional[Callable[[dict], None]] = None,
+        on_clock_skew: Optional[Callable[[dict], None]] = None,
         feed: Optional["RealtimeFeed"] = None,
         symbol_infos: Optional[Dict[str, "object"]] = None,
         broker: Optional[object] = None,
@@ -164,8 +220,15 @@ class TradingEngine:
         self.on_status = on_status
         self.on_strategy_event = on_strategy_event
         self.on_decision_event = on_decision_event
+        self.on_clock_skew = on_clock_skew
         self.feed = feed
         self.broker = broker
+
+        # ── 時鐘偏移監測 ───────────────────────────────────
+        self._clock_skew_monitor = ClockSkewMonitor()
+        self._clock_skew_last_report_ts: float = 0.0
+        self._clock_skew_last_info_log_ts: float = 0.0
+        self._clock_skew_last_level: str = ""
 
         self._states: Dict[str, StockState] = {}
         self._lock = threading.Lock()
@@ -477,6 +540,10 @@ class TradingEngine:
             state.trade_is_limit_up_ask = getattr(ev, "is_limit_up_ask", None)
             state.last_market_event_time = getattr(ev, "time", None)
             state.last_recv_time = getattr(ev, "recv_time", None)
+            self._clock_skew_monitor.add_sample(
+                getattr(ev, "api_time", None) or getattr(ev, "time", None),
+                state.last_recv_time,
+            )
 
             # 漲停判斷：成交價 == 漲停價
             limit_up = Decimal(str(state.info.limit_up))
@@ -527,6 +594,10 @@ class TradingEngine:
                 state.effective_bid0_volume = 0
             state.last_market_event_time = getattr(ev, "time", None)
             state.last_recv_time = getattr(ev, "recv_time", None)
+            self._clock_skew_monitor.add_sample(
+                getattr(ev, "api_time", None) or getattr(ev, "time", None),
+                state.last_recv_time,
+            )
             now = time.time()
             self._refresh_limit_up_state(state, source="book", now=now, event_time=ev.time)
             if state.position_qty > 0 and not state.pending:
@@ -746,7 +817,45 @@ class TradingEngine:
                 for code, state in self._states.items():
                     self._tick(state, now)
             self.on_status(self.get_summary())
+            self._maybe_report_clock_skew(now)
             time.sleep(1.0)
+
+    def _maybe_report_clock_skew(self, now: float) -> None:
+        if now - self._clock_skew_last_report_ts < self.CLOCK_SKEW_REPORT_INTERVAL_SEC:
+            return
+        self._clock_skew_last_report_ts = now
+        snap = self._clock_skew_monitor.snapshot()
+        if snap is None:
+            return
+        median_abs = abs(snap["median_ms"])
+        if median_abs >= self.CLOCK_SKEW_ERROR_MS:
+            level = "ERROR"
+        elif median_abs >= self.CLOCK_SKEW_WARN_MS:
+            level = "WARN"
+        elif median_abs >= self.CLOCK_SKEW_INFO_MS:
+            level = "INFO"
+        else:
+            level = ""
+        snap["level"] = level
+        if self.on_clock_skew is not None:
+            try:
+                self.on_clock_skew(snap)
+            except Exception:  # noqa: BLE001
+                pass
+        if level in ("WARN", "ERROR"):
+            self._log_clock_skew(level, snap)
+        elif level == "INFO":
+            if now - self._clock_skew_last_info_log_ts >= self.CLOCK_SKEW_INFO_LOG_INTERVAL_SEC:
+                self._clock_skew_last_info_log_ts = now
+                self._log_clock_skew(level, snap)
+        self._clock_skew_last_level = level
+
+    def _log_clock_skew(self, level: str, snap: dict) -> None:
+        self.on_log(
+            level,
+            f"[時鐘偏移] 中位數 {snap['median_ms']:.0f}ms / 最大 {snap['max_ms']:.0f}ms "
+            f"（{snap['sample_count']} 筆樣本，最近 {int(snap['window_sec'])} 秒）",
+        )
 
     def _maybe_daily_reset(self) -> None:
         """日期變動時重置每日狀態，避免跨日卡單 / 誤賣。"""

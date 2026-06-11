@@ -1383,6 +1383,51 @@ class TestTradingEngineStrategyRules(unittest.TestCase):
 
         self.assertEqual(engine._states, {})
 
+    def test_clock_skew_monitor_reports_median_and_triggers_error_level(self):
+        from datetime import timedelta
+
+        cfg = TradingConfig()
+        engine, logs, _trades, _events = self._make_engine(cfg)
+        snaps = []
+        engine.on_clock_skew = snaps.append
+
+        now = datetime.now()
+        for _ in range(10):
+            engine._clock_skew_monitor.add_sample(
+                now - timedelta(milliseconds=3500),
+                now,
+            )
+
+        engine._clock_skew_last_report_ts = 0.0
+        engine._maybe_report_clock_skew(time.time())
+
+        self.assertEqual(len(snaps), 1)
+        self.assertGreaterEqual(snaps[0]["median_ms"], 3000.0)
+        self.assertEqual(snaps[0]["level"], "ERROR")
+        self.assertTrue(any(level == "ERROR" and "時鐘偏移" in msg for level, msg in logs))
+
+    def test_clock_skew_monitor_below_info_threshold_does_not_log(self):
+        from datetime import timedelta
+
+        cfg = TradingConfig()
+        engine, logs, _trades, _events = self._make_engine(cfg)
+        snaps = []
+        engine.on_clock_skew = snaps.append
+
+        now = datetime.now()
+        for _ in range(10):
+            engine._clock_skew_monitor.add_sample(
+                now - timedelta(milliseconds=50),
+                now,
+            )
+
+        engine._clock_skew_last_report_ts = 0.0
+        engine._maybe_report_clock_skew(time.time())
+
+        self.assertEqual(len(snaps), 1)
+        self.assertEqual(snaps[0]["level"], "")
+        self.assertFalse(any("時鐘偏移" in msg for _level, msg in logs))
+
 
 if __name__ == "__main__":
     unittest.main()
