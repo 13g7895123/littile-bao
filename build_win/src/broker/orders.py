@@ -77,7 +77,7 @@ class OrderManager(ABC):
 class MockOrderManager(OrderManager):
     """無券商 / Demo 用：以 Timer 模擬委託與成交流程。"""
 
-    def __init__(self, adapter, fill_delay_range=(0.6, 1.8)) -> None:
+    def __init__(self, adapter, fill_delay_range=(0.0, 0.0)) -> None:
         self.adapter = adapter
         self.fill_delay_range = fill_delay_range
         self._lock = threading.Lock()
@@ -151,7 +151,7 @@ class DryRunOrderManager(OrderManager):
     def __init__(
         self,
         adapter,
-        fill_delay_range=(0.5, 1.5),
+        fill_delay_range=(0.0, 0.0),
         audit_dir: str = "",
         use_market_price: bool = False,
     ) -> None:

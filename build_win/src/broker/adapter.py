@@ -242,8 +242,8 @@ class FubonAdapter(BrokerAdapter):
         api_secret: Optional[str] = None,
         dry_run: bool = True,
         dry_run_use_market_price: bool = False,
-        dry_run_fill_min_sec: float = 0.5,
-        dry_run_fill_max_sec: float = 1.5,
+        dry_run_fill_min_sec: float = 0.0,
+        dry_run_fill_max_sec: float = 0.0,
         dry_run_audit_dir: str = "",
     ) -> None:
         # 依登入模式決定必填欄位

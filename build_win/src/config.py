@@ -258,8 +258,8 @@ class BrokerSettings:
     api_secret: str = ""
     dry_run: bool = True
     dry_run_use_market_price: bool = False
-    dry_run_fill_min_sec: float = 0.5
-    dry_run_fill_max_sec: float = 1.5
+    dry_run_fill_min_sec: float = 0.0
+    dry_run_fill_max_sec: float = 0.0
     dry_run_audit_dir: str = ""
     mock_mode: bool = False  # 無憑證時改用 MockAdapter
 
@@ -305,8 +305,8 @@ class BrokerSettings:
             api_secret=os.environ.get("FUBON_API_SECRET", "").strip(),
             dry_run=_env_bool("FUBON_DRY_RUN", default=True),
             dry_run_use_market_price=_env_bool("FUBON_DRY_RUN_USE_MARKET_PRICE", default=False),
-            dry_run_fill_min_sec=_env_float("FUBON_DRY_RUN_FILL_MIN_SEC", default=0.5),
-            dry_run_fill_max_sec=_env_float("FUBON_DRY_RUN_FILL_MAX_SEC", default=1.5),
+            dry_run_fill_min_sec=_env_float("FUBON_DRY_RUN_FILL_MIN_SEC", default=0.0),
+            dry_run_fill_max_sec=_env_float("FUBON_DRY_RUN_FILL_MAX_SEC", default=0.0),
             dry_run_audit_dir=os.environ.get("FUBON_DRY_RUN_AUDIT_DIR", "").strip(),
             mock_mode=_env_bool("MOCK_MODE", default=False),
         )
