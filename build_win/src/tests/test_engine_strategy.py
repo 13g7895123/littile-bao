@@ -1016,6 +1016,28 @@ class TestTradingEngineStrategyRules(unittest.TestCase):
 
         self.assertEqual(len(broker.orders), 1)
 
+    def test_open_board_sell_triggers_without_waiting_for_tick_loop(self):
+        cfg = TradingConfig(
+            f9_enabled=False,
+            f5_enabled=False,
+            f4_open_ticks_to_sell=1,
+        )
+        engine, _logs, trades, strategy_events = self._make_engine(cfg)
+        engine._running = True
+        engine._current_datetime = lambda: datetime(2026, 5, 19, 9, 1, 0)
+        state = self._arm_exit_state(engine)
+
+        engine._on_book(BookEvent(
+            code="2330",
+            time=datetime(2026, 5, 19, 9, 1, 0, 500000),
+            ask=[SimpleNamespace(price=Decimal("1095"), volume=10)],
+            bid=[SimpleNamespace(price=Decimal("1090"), volume=50)],
+        ))
+
+        self.assertEqual(state.position_qty, 0)
+        self.assertEqual(trades[-1]["action"], "SELL")
+        self.assertEqual(strategy_events[-1]["strategy"], "F4")
+
     def test_order_decision_event_includes_decision_to_order_latency(self):
         class FakeBroker:
             def __init__(self):

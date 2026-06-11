@@ -487,6 +487,7 @@ class TradingEngine:
                     state,
                     self._event_time_to_ts(ev.time, now),
                 )
+            self._evaluate_realtime_state(state, now)
 
     def _on_book(self, ev) -> None:
         """RealtimeFeed 五檔推送。"""
@@ -532,6 +533,13 @@ class TradingEngine:
                     state,
                     self._event_time_to_ts(ev.time, now),
                 )
+            self._evaluate_realtime_state(state, now)
+
+    def _evaluate_realtime_state(self, state: StockState, now: float) -> None:
+        """收到單檔即時事件後，立即重跑該檔策略判斷，避免額外等待 1 秒輪詢。"""
+        if not self._running:
+            return
+        self._tick(state, now)
 
     def _refresh_limit_up_state(self, state: StockState, *, source: str, now: float, event_time=None) -> None:
         was_at_limit_up = bool(state.is_at_limit_up)
