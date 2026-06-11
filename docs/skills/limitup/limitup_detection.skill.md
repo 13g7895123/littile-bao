@@ -4,7 +4,7 @@
 - `build_win/src/limitup_detection.py`
 
 ## 主要職責
-- 提供 10 種「鎖板 / 觸板候選邏輯」的命名集 `LIMIT_UP_DETECTION_MODES`。
+- 提供 12 種「鎖板 / 觸板候選邏輯」的命名集 `LIMIT_UP_DETECTION_MODES`。
 - 提供 `evaluate_limit_up_state(...)` 將即時行情數值轉成各候選模式的 bool 結果。
 - 提供 `resolve_limit_up_mode(mode)`：把字串解析為合法模式，缺省回 `DEFAULT_LIMIT_UP_DETECTION_MODE`。
 
@@ -18,12 +18,14 @@
 | `bid_and_last` | bid1=漲停 且 最新成交=漲停 |
 | `bid_and_no_ask` | bid1=漲停 且 沒有任何委賣檔 |
 | `bid_and_zero_ask` | bid1=漲停 且 沒有委賣或賣一量=0 |
-| `strict_lock_from_user_rule` | **預設**；isLimitUpPrice=true 且 bid1 漲停且有量，且 (無委賣 / 賣一量=0 / 賣一高於漲停) |
+| `strict_lock_from_user_rule` | isLimitUpPrice=true 且原始 bid1 漲停且有量，且 (無委賣 / 賣一量=0 / 賣一高於漲停) |
+| `strict_lock_with_effective_bid` | isLimitUpPrice=true 且第一個有效 bid 漲停且有量，忽略 `price=0` 佔位檔 |
+| `strict_lock_with_effective_bid_tick_confirmed` | **預設**；有效 bid 鎖板候選段成立後，須由段內新 tick 正式確認 |
 | `trade_price_only` | 只有最新成交=漲停 |
 | `trade_flag_only` | 只有 API 漲停旗標為真 |
 
 ## 主要 API
-- `evaluate_limit_up_state(*, limit_up, ask0_price, ask0_volume, bid0_price, bid0_volume, last_price, trade_bid=None, trade_ask=None, has_ask_levels=False, has_bid_levels=False, is_limit_up_price=None, is_limit_up_bid=None, is_limit_up_ask=None) -> dict`
+- `evaluate_limit_up_state(*, limit_up, ask0_price, ask0_volume, bid0_price, bid0_volume, last_price, trade_bid=None, trade_ask=None, effective_bid0_price=None, effective_bid0_volume=None, has_ask_levels=False, has_bid_levels=False, is_limit_up_price=None, is_limit_up_bid=None, is_limit_up_ask=None) -> dict`
   - 回傳結構：
     ```python
     {
@@ -36,6 +38,7 @@
 
 ## 與其他模組關係
 - 被 `engine._refresh_limit_up_state` 呼叫，產生 `state.limit_up_signal_states / limit_up_candidate_states`。
+- `strict_lock_with_effective_bid_tick_confirmed` 的完整正式語意由 engine 管理候選段狀態；此工具內的同名 candidate 只是快照候選，不能單獨代表正式確認。
 - GUI 的「鎖板測試頁籤」會顯示這些 signals / candidates，並可即時切換 `active_limit_up_mode`。
 - 設定值名稱與 `TradingConfig.limit_up_detection_mode` 對齊；GUI 下拉選單由 `_populate_limit_up_mode_combo` 寫入。
 
@@ -46,6 +49,7 @@
   3. **檢查 `TradingConfig.from_dict` 是否需要把舊值升級到新預設**。
   4. GUI 的下拉會自動取自 `LIMIT_UP_DETECTION_MODES`，無需另外硬寫。
 - 數值一律先轉 `Decimal`，避免 float 比較誤差。
+- 修改正式模式時，必須同步驗證 `engine.py`、`analyze_limitup_logs.py` 與 `replay_limitup_trace.py` 的語意是否一致。
 
 ## 對應測試
 - 由 `engine` 與 `gui` 相關測試間接驗證；新增模式建議補單元測試於 `tests/` 下。

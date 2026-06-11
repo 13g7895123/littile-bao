@@ -437,10 +437,10 @@ class App(QMainWindow):
         self._stop_trading()
         self._last_socket_restart_result = "scheduled"
         self._set_strategy_status("斷線重啟中…", C["yellow_l"])
-        QMessageBox.warning(
-            self,
-            "Socket 中斷",
-            f"即時行情連線已中斷，系統將自動停止策略並重新啟動。\n\n{reason}",
+        push_log(
+            "INFO",
+            f"socket 斷線已進入自動重連流程：reason={reason}",
+            include_traceback=False,
         )
         QTimer.singleShot(1200, self._restart_strategy_after_disconnect)
 

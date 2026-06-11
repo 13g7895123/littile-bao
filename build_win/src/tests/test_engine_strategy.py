@@ -733,6 +733,47 @@ class TestTradingEngineStrategyRules(unittest.TestCase):
         self.assertTrue(engine._states["2330"].is_at_limit_up)
         self.assertTrue(engine._states["2330"].limit_up_candidate_states["strict_lock_with_effective_bid_tick_confirmed"])
 
+    def test_tick_confirmed_lock_does_not_reuse_stale_tick_from_previous_segment(self):
+        cfg = TradingConfig(
+            f1_enabled=False,
+            f9_enabled=False,
+            f10_enabled=False,
+            limit_up_detection_mode="strict_lock_with_effective_bid_tick_confirmed",
+        )
+        engine, _logs, _trades, _strategy_events = self._make_engine(cfg)
+
+        engine._on_tick(TickEvent(
+            code="2330",
+            time=datetime(2026, 5, 19, 11, 5, 40),
+            price=Decimal("1100"),
+            volume=10,
+            is_limit_up_price=True,
+            is_limit_up_bid=True,
+        ))
+        engine._on_book(BookEvent(
+            code="2330",
+            time=datetime(2026, 5, 19, 11, 5, 45),
+            ask=[],
+            bid=[SimpleNamespace(price=Decimal("1100"), volume=99)],
+        ))
+
+        state = engine._states["2330"]
+        self.assertTrue(state.limit_up_candidate_states["strict_lock_with_effective_bid"])
+        self.assertFalse(state.limit_up_candidate_states["strict_lock_with_effective_bid_tick_confirmed"])
+        self.assertFalse(state.is_at_limit_up)
+
+        engine._on_tick(TickEvent(
+            code="2330",
+            time=datetime(2026, 5, 19, 11, 5, 52),
+            price=Decimal("1100"),
+            volume=10,
+            is_limit_up_price=True,
+            is_limit_up_bid=True,
+        ))
+
+        self.assertTrue(state.limit_up_candidate_states["strict_lock_with_effective_bid_tick_confirmed"])
+        self.assertTrue(state.is_at_limit_up)
+
     def test_strict_lock_keeps_candidate_time_before_confirmed_lock(self):
         cfg = TradingConfig(
             f1_enabled=False,

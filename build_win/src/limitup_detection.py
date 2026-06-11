@@ -17,7 +17,7 @@ LIMIT_UP_DETECTION_MODES: Dict[str, str] = {
     "bid_and_zero_ask": "bid1=漲停 且 沒有委賣或賣一量=0",
     "strict_lock_from_user_rule": "isLimitUpPrice=true 且 bid1=漲停且有量，且無委賣/賣一量=0/賣一高於漲停",
     "strict_lock_with_effective_bid": "isLimitUpPrice=true 且有效 bid1=漲停且有量，且無委賣/賣一量=0/賣一高於漲停（忽略 bid[0]=0 佔位檔）",
-    "strict_lock_with_effective_bid_tick_confirmed": "isLimitUpPrice=true 且 isLimitUpBid=true，且有效 bid1=漲停且有量，且無委賣/賣一量=0/賣一高於漲停（忽略 bid[0]=0 佔位檔）",
+    "strict_lock_with_effective_bid_tick_confirmed": "有效 bid1 鎖板段成立後，須再收到新的 isLimitUpPrice=true 且 isLimitUpBid=true tick 才確認",
     "trade_price_only": "只有最新成交=漲停 才算觸板/封板",
     "trade_flag_only": "只有 API 漲停旗標為真才算",
 }

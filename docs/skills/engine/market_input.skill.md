@@ -21,11 +21,16 @@
 ## `_on_book` 行為
 1. 同樣鎖 `_lock`，找對應 state；找不到直接 return。
 2. 更新 `ask0_price/volume`、`bid0_price/volume`、`has_ask_levels`、`has_bid_levels`。
-3. 呼叫 `_refresh_limit_up_state(..., source="book")`。
+3. 跳過 `price <= 0` 的買盤佔位檔，更新 `effective_bid0_price/effective_bid0_volume`。
+4. 呼叫 `_refresh_limit_up_state(..., source="book")`。
 
 ## `_refresh_limit_up_state` 行為
 - 呼叫 `limitup_detection.evaluate_limit_up_state(...)` 取得 `ask_qty_at_limit`、`signals`、`candidates`。
 - 寫入 `state.limit_up_signal_states / limit_up_candidate_states`。
+- 對預設第三模式管理連續候選段：
+  - 新有效五檔鎖板候選段開始時清除舊 tick 確認。
+  - 只有候選段內的新 tick 同時帶 `isLimitUpPrice=true`、`isLimitUpBid=true` 才正式確認。
+  - 候選解除後重置段狀態，下一段重新確認。
 - 取 `mode = state.active_limit_up_mode or self._limit_up_mode`，看 `candidates[mode]` 判斷是否 sealed。
 - **初次檢查**（`_started_at` 已設、`initial_limit_up_checked=False`）：
   - 若已 sealed → 設 `startup_limitup_blocked=True`、`last_skip_reason="程式啟用後已漲停"`，等鎖板撬開後才允許後續進場。
@@ -38,3 +43,4 @@
 - `is_at_limit_up` 由 _refresh 統一寫，**不要在 `_on_tick` 內另算**。
 - 動態切換 `active_limit_up_mode`（GUI「鎖板測試頁籤」可即時換）會立即反映到下一筆 tick / book。
 - 加新訊號 → 更新 `evaluate_limit_up_state` 與此處的解析，並確保 `_log_limit_up_signal_change` 顯示完整。
+- 不可直接沿用候選段開始前的 tick 旗標；tick/book 是非同步資料流。

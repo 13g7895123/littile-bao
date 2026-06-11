@@ -109,6 +109,8 @@ class StockState:
         self.has_bid_levels: bool = False
         self.limit_up_signal_states: Dict[str, bool] = {}
         self.limit_up_candidate_states: Dict[str, bool] = {}
+        self.effective_lock_segment_active: bool = False
+        self.effective_lock_segment_tick_confirmed: bool = False
         self.active_limit_up_mode: str = DEFAULT_LIMIT_UP_DETECTION_MODE
         self.special_check_completed: bool = False
         self.initial_limit_up_checked: bool = False
@@ -554,10 +556,30 @@ class TradingEngine:
         state.ask_qty_at_limit = int(decision["ask_qty_at_limit"])
         state.limit_up_signal_states = dict(decision["signals"])
         state.limit_up_candidate_states = dict(decision["candidates"])
+        effective_lock_candidate = bool(
+            decision["candidates"].get("strict_lock_with_effective_bid", False)
+        )
+        if not effective_lock_candidate:
+            state.effective_lock_segment_active = False
+            state.effective_lock_segment_tick_confirmed = False
+        else:
+            if not state.effective_lock_segment_active:
+                # Do not let a tick flag from before this book-lock segment confirm it.
+                state.effective_lock_segment_active = True
+                state.effective_lock_segment_tick_confirmed = False
+            if (
+                source == "tick"
+                and decision["signals"].get("trade_flag_price")
+                and decision["signals"].get("trade_flag_bid")
+            ):
+                state.effective_lock_segment_tick_confirmed = True
+        state.limit_up_candidate_states["strict_lock_with_effective_bid_tick_confirmed"] = (
+            effective_lock_candidate and state.effective_lock_segment_tick_confirmed
+        )
         mode = state.active_limit_up_mode or self._limit_up_mode
-        sealed = bool(decision["candidates"].get(mode, False))
+        sealed = bool(state.limit_up_candidate_states.get(mode, False))
         startup_mode = self._startup_limit_up_mode or LOCKED_STARTUP_LIMIT_UP_DETECTION_MODE
-        startup_sealed = bool(decision["candidates"].get(startup_mode, False))
+        startup_sealed = bool(state.limit_up_candidate_states.get(startup_mode, False))
         candidate_sealed = bool(
             decision["signals"].get("last_at_limit")
             or decision["signals"].get("trade_flag_price")
@@ -738,6 +760,8 @@ class TradingEngine:
             st.startup_limitup_blocked = False
             st.first_limit_up_candidate_event_time = None
             st.first_limit_up_confirmed_event_time = None
+            st.effective_lock_segment_active = False
+            st.effective_lock_segment_tick_confirmed = False
             self._reset_sell_trigger_state(st)
             # 注意：position_qty 不清空，避免影響真實持倉同步
         self._daily_trade_count = 0

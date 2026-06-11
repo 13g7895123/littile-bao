@@ -1,0 +1,4 @@
+interface:
+  display_name: "鎖漲策略持續優化"
+  short_description: "Investigate and improve limit-up lock detection accuracy"
+  default_prompt: "Use $optimize-limit-up-strategy to investigate and improve today’s limit-up lock detection behavior."

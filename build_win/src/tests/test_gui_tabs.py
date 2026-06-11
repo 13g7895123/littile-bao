@@ -258,6 +258,37 @@ class TestGuiTabLayout(unittest.TestCase):
         self.assertIn("tab log smoke", self.win.event_log.toPlainText())
         self.assertIn("tab log smoke", self.win.events_full_log.toPlainText())
 
+    def test_socket_disconnect_auto_restarts_without_prompt(self):
+        self.win._running = True
+        self.win._strategy_starting = False
+        self.win._socket_recovering = False
+        self.win._toggles["strategy_enabled"] = mock.Mock()
+
+        with mock.patch.object(gui.QMessageBox, "warning") as warning_mock, \
+             mock.patch.object(gui.QTimer, "singleShot") as timer_mock, \
+             mock.patch.object(self.win, "_stop_trading") as stop_mock, \
+             mock.patch.object(self.win, "_set_strategy_status") as status_mock, \
+             mock.patch.object(self.win, "_start_trading") as start_mock, \
+             mock.patch.object(gui, "push_log") as push_log_mock:
+            self.win._handle_feed_disconnect_ui("socket closed")
+
+            warning_mock.assert_not_called()
+            stop_mock.assert_called_once()
+            status_mock.assert_called_once_with("斷線重啟中…", gui.C["yellow_l"])
+            timer_mock.assert_called_once()
+            self.assertEqual(timer_mock.call_args.args[0], 1200)
+
+            messages = [call.args[1] for call in push_log_mock.call_args_list]
+            self.assertTrue(any("偵測到 socket 中斷" in message for message in messages))
+            self.assertTrue(any("socket 斷線已進入自動重連流程" in message for message in messages))
+
+            restart_cb = timer_mock.call_args.args[1]
+            restart_cb()
+
+            start_mock.assert_called_once()
+            self.win._toggles["strategy_enabled"].set.assert_called_once_with(True)
+            self.assertFalse(self.win._socket_recovering)
+
     def test_return_rate_uses_realized_and_unrealized_pnl(self):
         self.win._append_trade({
             "time": "09:03:00",

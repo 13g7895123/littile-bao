@@ -36,3 +36,7 @@
 1. 開發 / 修改前 → 讀完 [`development_guidelines.skill.md`](./development_guidelines.skill.md)。
 2. 找到目標模組對應 skill → 確認職責、輸入/輸出、與其他模組互動。
 3. 若需要擴充：**先**更新 skill → 再改程式碼 → **再**回頭校對 skill。
+
+## 鎖漲策略持續優化
+- [`limitup/continuous_optimization.skill.md`](./limitup/continuous_optimization.skill.md) — 鎖漲提早、延後、漏判或模式調整時的必要取證、回放、修復與回歸流程。
+- [`limitup/optimize-limit-up-strategy/SKILL.md`](./limitup/optimize-limit-up-strategy/SKILL.md) — 僅存放於本專案內、可供 Codex 載入的標準 Skill 結構。
