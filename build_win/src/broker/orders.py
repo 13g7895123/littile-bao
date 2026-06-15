@@ -83,6 +83,7 @@ class MockOrderManager(OrderManager):
         self._lock = threading.Lock()
         self._orders: dict[str, OrderRequest] = {}
         self._cancelled: set[str] = set()
+        self._filled: set[str] = set()
 
     def place_order(self, req: OrderRequest) -> str:
         order_id = f"M{uuid.uuid4().hex[:10].upper()}"
@@ -110,6 +111,7 @@ class MockOrderManager(OrderManager):
             req = self._orders.get(order_id)
             if req is None or order_id in self._cancelled:
                 return
+            self._filled.add(order_id)
 
         now = datetime.now()
         # 委託回報：FILLED
@@ -128,6 +130,8 @@ class MockOrderManager(OrderManager):
     def cancel_order(self, order_id: str) -> bool:
         with self._lock:
             if order_id not in self._orders:
+                return False
+            if order_id in self._filled:
                 return False
             self._cancelled.add(order_id)
             req = self._orders[order_id]
@@ -168,6 +172,7 @@ class DryRunOrderManager(OrderManager):
         self._audit_lock = threading.Lock()
         self._orders: dict[str, OrderRequest] = {}
         self._cancelled: set[str] = set()
+        self._filled: set[str] = set()
 
     def place_order(self, req: OrderRequest) -> str:
         if getattr(self.adapter.state, "value", "") != "connected":
@@ -196,6 +201,8 @@ class DryRunOrderManager(OrderManager):
         with self._lock:
             req = self._orders.get(order_id)
             cancelled = order_id in self._cancelled
+            if req is not None and not cancelled:
+                self._filled.add(order_id)
         if req is None or cancelled:
             return
 
@@ -217,6 +224,8 @@ class DryRunOrderManager(OrderManager):
         with self._lock:
             req = self._orders.get(order_id)
             if req is None:
+                return False
+            if order_id in self._filled:
                 return False
             self._cancelled.add(order_id)
 

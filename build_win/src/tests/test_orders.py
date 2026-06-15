@@ -177,6 +177,45 @@ class TestFubonDryRun(unittest.TestCase):
                 records = [json.loads(line) for line in f]
             self.assertEqual([r["type"] for r in records], ["PLACE", "CANCEL"])
 
+    def test_dry_run_cannot_cancel_after_filled_status_emitted(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            adp = self._make(dry_run=True)
+            from broker.models import ConnectionState
+            adp._state = ConnectionState.CONNECTED
+            adp.dry_run_fill_min_sec = 0.0
+            adp.dry_run_fill_max_sec = 0.0
+            adp.dry_run_audit_dir = tmpdir
+            events = []
+            fills = []
+            cancel_results = []
+
+            def on_order(ev):
+                events.append(ev)
+                if ev.status == OrderStatus.FILLED:
+                    cancel_results.append(adp.cancel_order(ev.order_id))
+
+            adp.on_order(on_order)
+            adp.on_filled(fills.append)
+
+            oid = adp.place_order(OrderRequest(
+                code="3041", name="揚智",
+                price=Decimal("27"), qty=3,
+            ))
+            self.assertTrue(oid.startswith("DRY"))
+
+            deadline = time.time() + 2.0
+            while time.time() < deadline and not fills:
+                time.sleep(0.05)
+
+            self.assertEqual(cancel_results, [False])
+            self.assertEqual([e.status for e in events], [OrderStatus.PENDING, OrderStatus.FILLED])
+            self.assertEqual(len(fills), 1)
+
+            logs = [p for p in os.listdir(tmpdir) if p.startswith("dry_run_audit_")]
+            with open(os.path.join(tmpdir, logs[0]), "r", encoding="utf-8") as f:
+                records = [json.loads(line) for line in f]
+            self.assertEqual([r["type"] for r in records], ["PLACE", "FILL"])
+
 
 if __name__ == "__main__":
     unittest.main()
