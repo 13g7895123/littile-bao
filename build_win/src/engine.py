@@ -73,6 +73,8 @@ class StockState:
         self.candle_index: int = 0
         self.position_qty: int = 0
         self.pending: bool = False
+        self.pending_side: str = ""
+        self.pending_order_id: str = ""
         self.entry_blocked: bool = False
         self.entry_blocked_reason: str = ""
         # 進場「最近一次被略過」的原因（軟性過濾；不會像 entry_blocked 那樣永久封鎖）
@@ -911,7 +913,7 @@ class TradingEngine:
         # 功能 11 會在所有進場條件與資金確認通過後，於下單前最後確認。
 
         # ── 取消委託邏輯（功能 6）────────────────────────────────
-        if state.pending and cfg.f6_enabled:
+        if state.pending and state.pending_side == "BUY" and cfg.f6_enabled:
             if state.last_1s_vol > cfg.volume_spike_cancel_threshold:
                 self._log_strategy_trigger(
                     "CANCEL", state, "F6",
@@ -923,7 +925,13 @@ class TradingEngine:
                 self.on_log("WARN",
                     f"[{info.code}] 委託中！1秒量 {state.last_1s_vol} 張"
                     f" > {cfg.volume_spike_cancel_threshold} 張，取消委託")
-                state.pending = False
+                cancel_ok = False
+                if self.broker is not None and state.pending_order_id:
+                    try:
+                        cancel_ok = bool(self.broker.cancel_order(state.pending_order_id))
+                    except Exception as e:  # noqa: BLE001
+                        self.on_log("WARN", f"[{info.code}] 取消委託失敗：{e}")
+                self._clear_pending_order_state(state)
                 state.entry_blocked = True
                 state.entry_blocked_reason = "爆量取消"
                 return
@@ -1109,6 +1117,8 @@ class TradingEngine:
             return
 
         state.pending = True
+        state.pending_side = "BUY"
+        state.pending_order_id = ""
         self._log_strategy_trigger(
             "BUY", state, "+".join(entry_strategy_ids) or "BASE",
             {
@@ -1159,7 +1169,7 @@ class TradingEngine:
                 self.broker.place_order(req)
                 state.last_order_submit_times["BUY"] = self._current_datetime()
             except Exception as e:  # noqa: BLE001
-                state.pending = False
+                self._clear_pending_order_state(state)
                 state.entry_blocked = True
                 state.entry_blocked_reason = "下單失敗"
                 self.on_log("ERROR", f"[{info.code}] 下單失敗：{e}")
@@ -1181,7 +1191,7 @@ class TradingEngine:
                     return
                 st = self._states.get(code)
                 if st and st.pending:
-                    st.pending = False
+                    self._clear_pending_order_state(st)
                     st.position_qty += qty
                     st.entry_blocked_reason = ""
                     st.entry_price = Decimal(str(info.limit_up))
@@ -1241,6 +1251,8 @@ class TradingEngine:
             sell_price_dec = state.last_price or Decimal(str(info.limit_up))
             try:
                 state.pending = True   # 標記掛賣
+                state.pending_side = "SELL"
+                state.pending_order_id = ""
                 state._sell_note = note  # type: ignore[attr-defined]
                 self._reset_sell_trigger_state(state)
                 req = OrderRequest(
@@ -1255,7 +1267,7 @@ class TradingEngine:
                 state.last_order_submit_times["SELL"] = self._current_datetime()
             except Exception as e:  # noqa: BLE001
                 self.on_log("ERROR", f"[{info.code}] 出場下單失敗：{e}")
-                state.pending = False
+                self._clear_pending_order_state(state)
             return
 
         # 無 broker：原本的同步結算
@@ -1625,6 +1637,15 @@ class TradingEngine:
             pass
         state = self._states.get(ev.code)
         if state is not None:
+            status_value = str(getattr(ev.status, "value", ev.status) or "").upper()
+            side_value = str(getattr(ev.side, "value", ev.side) or "").upper()
+            order_id_value = str(getattr(ev, "order_id", "") or "")
+            if status_value == "PENDING":
+                state.pending = True
+                state.pending_side = side_value
+                state.pending_order_id = order_id_value
+            elif status_value in {"CANCELLED", "REJECTED"} and state.pending_order_id == order_id_value:
+                self._clear_pending_order_state(state)
             side_key = str(getattr(ev.side, "value", ev.side) or "").upper()
             trigger_decision_time = state.last_strategy_decision_times.get(side_key)
             local_submit_time = state.last_order_submit_times.get(side_key)
@@ -1675,7 +1696,7 @@ class TradingEngine:
             info = state.info
             qty = int(ev.qty)
             if ev.side.value == "BUY":
-                state.pending = False
+                self._clear_pending_order_state(state)
                 state.position_qty += qty
                 state.entry_blocked_reason = ""
                 self._reset_sell_trigger_state(state)
@@ -1735,7 +1756,7 @@ class TradingEngine:
                 note = getattr(state, "_sell_note", "出場")
                 # 部分賣出時 position_qty 應該扣掉，而不是直接歸零
                 state.position_qty = max(0, int(state.position_qty) - qty)
-                state.pending = False
+                self._clear_pending_order_state(state)
                 if state.position_qty == 0:
                     state.entry_blocked = True
                     state.entry_blocked_reason = "已賣出"
@@ -1773,6 +1794,12 @@ class TradingEngine:
                     },
                     event_time=ev.time,
                 )
+
+    @staticmethod
+    def _clear_pending_order_state(state: StockState) -> None:
+        state.pending = False
+        state.pending_side = ""
+        state.pending_order_id = ""
 
     @staticmethod
     def _fmt_decision_value(value):

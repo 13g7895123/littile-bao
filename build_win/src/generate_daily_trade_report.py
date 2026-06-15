@@ -82,6 +82,17 @@ class RealizedTrade:
     net: Decimal
 
 
+@dataclass
+class OrphanSell:
+    ts: str
+    code: str
+    name: str
+    qty: int
+    sell_price: Decimal
+    trigger: str
+    trigger_detail: str
+
+
 def parse_audit(path: Path) -> list[Fill]:
     fills: list[Fill] = []
     for line in path.read_text(encoding="utf-8").splitlines():
@@ -113,10 +124,13 @@ def classify_trigger(note: str) -> tuple[str, str]:
     return "UNKNOWN", clean
 
 
-def match_trades(fills: Iterable[Fill]) -> tuple[list[Fill], list[RealizedTrade], list[Fill]]:
+def match_trades(
+    fills: Iterable[Fill],
+) -> tuple[list[Fill], list[RealizedTrade], list[Fill], list[OrphanSell]]:
     buys = [fill for fill in fills if fill.side == "BUY"]
     positions: dict[str, list[Fill]] = defaultdict(list)
     realized: list[RealizedTrade] = []
+    orphan_sells: list[OrphanSell] = []
     for fill in fills:
         if fill.side == "BUY":
             positions[fill.code].append(fill)
@@ -124,6 +138,20 @@ def match_trades(fills: Iterable[Fill]) -> tuple[list[Fill], list[RealizedTrade]
         remaining = fill.qty
         trigger, detail = classify_trigger(fill.note)
         while remaining > 0:
+            if not positions[fill.code]:
+                orphan_sells.append(
+                    OrphanSell(
+                        ts=fill.ts,
+                        code=fill.code,
+                        name=fill.name,
+                        qty=remaining,
+                        sell_price=fill.price,
+                        trigger=trigger,
+                        trigger_detail=detail,
+                    )
+                )
+                remaining = 0
+                break
             buy = positions[fill.code][0]
             matched_qty = min(remaining, buy.qty)
             gross = (fill.price - buy.price) * matched_qty * Decimal("1000")
@@ -155,7 +183,7 @@ def match_trades(fills: Iterable[Fill]) -> tuple[list[Fill], list[RealizedTrade]
                 buy.qty -= matched_qty
     open_positions = [lot for lots in positions.values() for lot in lots]
     open_positions.sort(key=lambda item: item.ts)
-    return buys, realized, open_positions
+    return buys, realized, open_positions, orphan_sells
 
 
 def grep(pattern: str, text: str) -> list[re.Match[str]]:
@@ -230,6 +258,7 @@ def render_report(
     buys: list[Fill],
     realized: list[RealizedTrade],
     open_positions: list[Fill],
+    orphan_sells: list[OrphanSell],
     runtime: dict[str, object],
 ) -> str:
     sell_fills = [fill for fill in fills if fill.side == "SELL"]
@@ -268,6 +297,12 @@ def render_report(
         gross_text = f"+{fmt_int(item.gross)}" if item.gross > 0 else fmt_int(item.gross)
         sell_lines.append(
             f"| {short_ts(item.sell_ts)} | {item.code} | {item.name} | {item.qty} | {fmt_price(item.sell_price)} | `{item.trigger}` | {item.trigger_detail} | {gross_text} | {fmt_int(item.buy_fee)} | {fmt_int(item.sell_fee)} | {fmt_int(item.tax)} | {fmt_int(item.net)} |"
+        )
+
+    orphan_sell_lines = []
+    for item in orphan_sells:
+        orphan_sell_lines.append(
+            f"| {short_ts(item.ts)} | {item.code} | {item.name} | {item.qty} | {fmt_price(item.sell_price)} | `{item.trigger}` | {item.trigger_detail} | 無對應 BUY 可配對 |"
         )
 
     open_lines = []
@@ -324,6 +359,9 @@ def render_report(
         f"- 最大單筆虧損為 `{losses[0].code} {losses[0].name}` 在 `{short_ts(losses[0].sell_ts)}` 的 `{fmt_int(losses[0].net)}`，觸發原因為 `{losses[0].trigger_detail}`。"
         if losses
         else "- 今日沒有已平倉交易。",
+        f"- 稽核檔另發現 {len(orphan_sells)} 筆孤兒賣出；這些 SELL 沒有可配對的 BUY，已另外列示，未納入已實現損益。"
+        if orphan_sells
+        else "- 今日稽核檔未發現孤兒賣出。",
         f"- `client.log` 與 `program.log` 顯示 10:05 左右曾手動登出並重建行情連線；若後續要分析每日檔數限制或鎖漲停模式切換，需將重連前後分開看。"
         if logout_times
         else "- 今日未觀察到中途登出 / 重連事件。",
@@ -348,7 +386,9 @@ def render_report(
 ## 今日總覽
 
 - 買進成交：{len(buys)} 筆
-- 賣出成交：{len(realized)} 筆
+- 賣出成交：{len(sell_fills)} 筆
+- 已配對賣出：{len(realized)} 筆
+- 孤兒賣出：{len(orphan_sells)} 筆
 - 未平倉檔數：{len(open_positions)} 檔
 - 未平倉總張數：{sum(fill.qty for fill in open_positions)} 張
 - 買進成交總金額：`{fmt_int(buy_amount)}`
@@ -400,6 +440,12 @@ def render_report(
 | --- | --- | --- | ---: | ---: | --- | --- | ---: | ---: | ---: | ---: | ---: |
 {chr(10).join(sell_lines)}
 
+## 孤兒賣出清單
+
+| 時間 | 代碼 | 名稱 | 張數 | 賣價 | 觸發 | 觸發細節 | 說明 |
+| --- | --- | --- | ---: | ---: | --- | --- | --- |
+{chr(10).join(orphan_sell_lines)}
+
 ## 未平倉部位
 
 | 首次買進時間 | 代碼 | 名稱 | 張數 | 均價 | 成本金額 |
@@ -423,7 +469,7 @@ def main() -> None:
     args = parser.parse_args()
 
     fills = parse_audit(args.audit)
-    buys, realized, open_positions = match_trades(fills)
+    buys, realized, open_positions, orphan_sells = match_trades(fills)
     runtime = extract_runtime(args.program_log, args.client_log)
     report = render_report(
         report_date=args.date,
@@ -435,6 +481,7 @@ def main() -> None:
         buys=buys,
         realized=realized,
         open_positions=open_positions,
+        orphan_sells=orphan_sells,
         runtime=runtime,
     )
     args.output.write_text(report, encoding="utf-8")

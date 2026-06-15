@@ -1287,6 +1287,59 @@ class TestTradingEngineStrategyRules(unittest.TestCase):
         self.assertTrue(state.pending)
         self.assertEqual(state.entry_blocked_reason, "")
 
+    def test_f6_only_cancels_pending_buy_order(self):
+        class FakeBroker:
+            def __init__(self):
+                self.cancelled = []
+
+            def cancel_order(self, order_id):
+                self.cancelled.append(order_id)
+                return True
+
+        cfg = TradingConfig(f9_enabled=False, f6_enabled=True)
+        engine, _logs, _trades, strategy_events = self._make_engine(cfg)
+        engine.broker = FakeBroker()
+        state = engine._states["2330"]
+        state.pending = True
+        state.pending_side = "BUY"
+        state.pending_order_id = "B1"
+        now = time.time()
+        state.tick_vols.append((now, 600))
+
+        engine._tick(state, now)
+
+        self.assertEqual(engine.broker.cancelled, ["B1"])
+        self.assertFalse(state.pending)
+        self.assertEqual(state.entry_blocked_reason, "爆量取消")
+        self.assertEqual(strategy_events[-1]["strategy"], "F6")
+
+    def test_f6_does_not_cancel_pending_sell_order(self):
+        class FakeBroker:
+            def __init__(self):
+                self.cancelled = []
+
+            def cancel_order(self, order_id):
+                self.cancelled.append(order_id)
+                return True
+
+        cfg = TradingConfig(f9_enabled=False, f6_enabled=True, f4_enabled=False, f5_enabled=False)
+        engine, _logs, _trades, _strategy_events = self._make_engine(cfg)
+        engine.broker = FakeBroker()
+        state = engine._states["2330"]
+        state.position_qty = 1
+        state.entry_price = Decimal("1100")
+        state.pending = True
+        state.pending_side = "SELL"
+        state.pending_order_id = "S1"
+        now = time.time()
+        state.tick_vols.append((now, 600))
+
+        engine._tick(state, now)
+
+        self.assertEqual(engine.broker.cancelled, [])
+        self.assertTrue(state.pending)
+        self.assertEqual(state.pending_side, "SELL")
+
     def test_skip_reason_records_filter_failures(self):
         """進場條件未通過時，state.last_skip_reason 應記錄原因（供 GUI 顯示）。"""
         cfg = TradingConfig(
