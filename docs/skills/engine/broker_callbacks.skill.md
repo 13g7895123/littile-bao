@@ -18,6 +18,7 @@
 2. 找到對應 `state`；無 → return。
 3. **BUY**：
    - `pending=False`、`position_qty += qty`、`entry_blocked_reason=""`。
+   - 清空入場前累積的 `tick_vols / last_1s_vol` 與 F4/F5 候選狀態，避免用買進前的爆量訊號立刻觸發 F5 出場。
    - 平均成本更新：第一次以 `ev.price` 為基準；加碼以加權平均。
    - 維護 `_daily_trade_codes / _daily_trade_count`。
    - `on_log("INFO")` + `on_trade({action:"BUY", time, detail_time, ...})` + `_emit_decision_event("FILL", state, "買進成交", "BUY", {...})`。

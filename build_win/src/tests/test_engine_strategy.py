@@ -1340,6 +1340,88 @@ class TestTradingEngineStrategyRules(unittest.TestCase):
         self.assertTrue(state.pending)
         self.assertEqual(state.pending_side, "SELL")
 
+    def test_buy_fill_resets_pre_entry_volume_before_f5_sell_check(self):
+        cfg = TradingConfig(
+            f9_enabled=False,
+            f4_enabled=False,
+            f5_enabled=True,
+            volume_spike_sell_threshold=499,
+        )
+        engine, _logs, trades, strategy_events = self._make_engine(cfg)
+        state = engine._states["2330"]
+        now = time.time()
+        state.pending = True
+        state.pending_side = "BUY"
+        state.pending_order_id = "B1"
+        state.candle_index = 1
+        state.is_at_limit_up = True
+        state.last_price = Decimal(str(state.info.limit_up))
+        state.tick_vols.append((now, 600))
+        state.last_1s_vol = 600
+
+        engine._on_broker_fill(SimpleNamespace(
+            order_id="B1",
+            side=OrderSide.BUY,
+            code="2330",
+            price=Decimal(str(state.info.limit_up)),
+            qty=1,
+            time=datetime.fromtimestamp(now),
+        ))
+        engine._tick(state, now)
+
+        self.assertEqual(state.position_qty, 1)
+        self.assertEqual(state.last_1s_vol, 0)
+        self.assertEqual([ev["strategy"] for ev in strategy_events if ev["side"] == "SELL"], [])
+        self.assertTrue(all(trade["action"] != "SELL" for trade in trades))
+
+    def test_backfill_tick_does_not_update_volume_or_trigger_sell(self):
+        cfg = TradingConfig(
+            f9_enabled=False,
+            f4_enabled=False,
+            f5_enabled=True,
+            volume_spike_sell_threshold=499,
+        )
+        engine, logs, trades, strategy_events = self._make_engine(cfg)
+        state = self._arm_exit_state(engine)
+
+        engine._on_tick(TickEvent(
+            code="2330",
+            time=datetime(2026, 6, 16, 9, 44, 18, 759252),
+            price=Decimal("1100"),
+            volume=600,
+            is_backfill=True,
+        ))
+
+        self.assertEqual(state.last_1s_vol, 0)
+        self.assertEqual(state.position_qty, 1)
+        self.assertEqual(trades, [])
+        self.assertEqual(strategy_events, [])
+        self.assertTrue(any("忽略 backfill tick" in msg for _level, msg in logs))
+
+    def test_backfill_book_does_not_open_board_and_trigger_f4(self):
+        cfg = TradingConfig(
+            f9_enabled=False,
+            f4_enabled=True,
+            f5_enabled=False,
+            f4_open_ticks_to_sell=1,
+        )
+        engine, logs, trades, strategy_events = self._make_engine(cfg)
+        state = self._arm_exit_state(engine)
+
+        engine._on_book(BookEvent(
+            code="2330",
+            time=datetime(2026, 6, 16, 9, 44, 21, 520107),
+            ask=[SimpleNamespace(price=Decimal("1095"), volume=10)],
+            bid=[SimpleNamespace(price=Decimal("1100"), volume=50)],
+            is_backfill=True,
+        ))
+
+        self.assertEqual(state.ask0_price, Decimal(str(state.info.limit_up)))
+        self.assertEqual(state.position_qty, 1)
+        self.assertEqual(trades, [])
+        self.assertEqual(strategy_events, [])
+        self.assertTrue(any("忽略 backfill book" in msg for _level, msg in logs))
+
     def test_skip_reason_records_filter_failures(self):
         """進場條件未通過時，state.last_skip_reason 應記錄原因（供 GUI 顯示）。"""
         cfg = TradingConfig(

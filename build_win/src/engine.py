@@ -528,6 +528,17 @@ class TradingEngine:
                     )
                 return
 
+            if bool(getattr(ev, "is_backfill", False)):
+                self._tick_backfill_count = getattr(self, "_tick_backfill_count", 0) + 1
+                if self._tick_backfill_count <= 5 or self._tick_backfill_count % 100 == 0:
+                    self.on_log(
+                        "INFO",
+                        f"[Engine._on_tick] 忽略 backfill tick：code={ev.code} price={ev.price} "
+                        f"vol={ev.volume} event_time={getattr(ev, 'time', None)} "
+                        f"recv_time={getattr(ev, 'recv_time', None)}（共 {self._tick_backfill_count} 筆）"
+                    )
+                return
+
             now = time.time()
             # 1 秒滑動視窗
             state.tick_vols.append((now, int(ev.volume)))
@@ -564,6 +575,16 @@ class TradingEngine:
         with self._lock:
             state = self._states.get(ev.code)
             if state is None:
+                return
+            if bool(getattr(ev, "is_backfill", False)):
+                self._book_backfill_count = getattr(self, "_book_backfill_count", 0) + 1
+                if self._book_backfill_count <= 5 or self._book_backfill_count % 100 == 0:
+                    self.on_log(
+                        "INFO",
+                        f"[Engine._on_book] 忽略 backfill book：code={ev.code} "
+                        f"event_time={getattr(ev, 'time', None)} recv_time={getattr(ev, 'recv_time', None)} "
+                        f"（共 {self._book_backfill_count} 筆）"
+                    )
                 return
             if ev.ask:
                 state.ask0_price = ev.ask[0].price
@@ -1354,6 +1375,12 @@ class TradingEngine:
         state.f4_trigger_snapshot = None
         state.f5_trigger_snapshot = None
 
+    def _reset_post_entry_exit_state(self, state: StockState) -> None:
+        """Start exit monitoring from market events received after the entry fill."""
+        state.tick_vols.clear()
+        state.last_1s_vol = 0
+        self._reset_sell_trigger_state(state)
+
     def _record_sell_trigger_candidates(self, state: StockState, event_ts: float) -> None:
         cfg = self.config
         info = state.info
@@ -1699,7 +1726,7 @@ class TradingEngine:
                 self._clear_pending_order_state(state)
                 state.position_qty += qty
                 state.entry_blocked_reason = ""
-                self._reset_sell_trigger_state(state)
+                self._reset_post_entry_exit_state(state)
                 if state.entry_price is None:
                     state.entry_price = ev.price
                 else:

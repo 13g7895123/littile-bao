@@ -969,6 +969,7 @@ class FubonRealtimeFeed(RealtimeFeed):
                 if "isLimitUpAsk" in p else None
             ),
             is_trial=bool(p.get("isTrial")) if "isTrial" in p else None,
+            is_backfill=bool(p.get("is_backfill")) if "is_backfill" in p else None,
         )
 
     @staticmethod
@@ -1015,4 +1016,5 @@ class FubonRealtimeFeed(RealtimeFeed):
             bid=bid_levels,
             api_time=api_time,
             recv_time=recv_time,
+            is_backfill=bool(p.get("is_backfill")) if "is_backfill" in p else None,
         )

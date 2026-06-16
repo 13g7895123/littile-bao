@@ -42,3 +42,4 @@ build_win/src/cache/
 build_win/src/config.json
 
 build_win/dist/
+isolated_fubon_latency_probe/output/

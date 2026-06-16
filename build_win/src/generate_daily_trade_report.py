@@ -409,7 +409,7 @@ def render_report(
   - 起漲 K 限制：第 `1 ~ 2` 根
 - 出場策略：`F4` 與 `F5`
   - `F4` 漲停板打開就賣：log 顯示實際門檻 `open_ticks >= {f4_threshold_text}`
-  - `F5` 1 秒爆量就賣：`last_1s_vol > {f5_threshold_text}`
+  - `F5` 1 秒爆量就賣：`last_1s_vol >= {f5_threshold_text}`
 - 鎖漲停判斷模式：`{mode_summary}`
 - 實際執行口徑以當日 `program.log` 為準；若與 `config.json` 不一致，優先採信 log。
 

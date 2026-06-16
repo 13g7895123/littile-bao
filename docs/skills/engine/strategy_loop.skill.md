@@ -8,6 +8,7 @@
 - `_maybe_daily_reset()`
 - `_tick(state, now)`：每秒對單檔做的決策
 - `_do_sell(state, info, note)`
+- `_reset_post_entry_exit_state(state)`
 - `_open_ticks_from_limit(state)`
 - `_block_entry / _skip_entry`
 - `_confirm_buying_power / _confirm_special_stock_status`
@@ -27,7 +28,7 @@
 3. **F6（排隊取消）**：`pending` 且 `last_1s_vol > volume_spike_cancel_threshold` → 取消委託 + `entry_blocked="爆量取消"`。
 4. **出場（有部位 + 非 pending）**：
    - **F4**（漲停板打開）：需 `touched_limit_up_today or candle_index > 0`（或 `f4_require_today_limitup=False`）；`open_ticks ≥ f4_open_ticks_to_sell` → 賣出。
-   - **F5**（1 秒爆量）：`last_1s_vol > volume_spike_sell_threshold` → 賣出。
+   - **F5**（1 秒爆量）：`last_1s_vol >= volume_spike_sell_threshold` → 賣出。
 5. **進場前置**：
    - 跳過：`pending / entry_blocked / candle_index == 0 / 未鎖板 / startup_limitup_blocked`。
    - **F12**：開盤即漲停且當日已賣過 → skip。
@@ -58,6 +59,11 @@
   - 庫存 < 本地 → 以實際庫存為準。
 - 用 `last_price`（缺則用漲停價）建立 `OrderRequest(SELL)` 並 `place_order`。
 - 無 broker：直接更新 `position_qty=0 / sold_today=True`、計算 `realized_pnl` 累加 `_today_realized_pnl`、回呼 `on_trade`。
+
+## `_reset_post_entry_exit_state(state)`
+- 在 BUY fill 後呼叫。
+- 清空 `tick_vols` 與 `last_1s_vol`，並重置 F4/F5 首次成立狀態。
+- 目的：出場監控只使用持倉後的新行情，避免買進前已累積的 1 秒爆量在成交回報後立刻觸發 F5。
 
 ## 注意事項
 - 「軟性 skip」用 `_skip_entry`（只記原因、不封鎖），「硬性 block」用 `_block_entry`。

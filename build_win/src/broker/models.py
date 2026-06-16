@@ -73,6 +73,7 @@ class TickEvent:
     is_limit_up_bid: Optional[bool] = None
     is_limit_up_ask: Optional[bool] = None
     is_trial: Optional[bool] = None
+    is_backfill: Optional[bool] = None
 
 
 @dataclass
@@ -89,6 +90,7 @@ class BookEvent:
     bid: List[BookLevel] = field(default_factory=list)
     api_time: Optional[datetime] = None
     recv_time: Optional[datetime] = None
+    is_backfill: Optional[bool] = None
 
 
 class OrderSide(str, Enum):

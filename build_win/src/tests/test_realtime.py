@@ -122,6 +122,7 @@ class TestFubonRealtimeFeedSkeleton(unittest.TestCase):
             "volume": 100,
             "time": 1779762837138002,
             "isLimitUpPrice": True,
+            "is_backfill": True,
         }
 
         tick = FubonRealtimeFeed._to_tick(payload)
@@ -133,6 +134,7 @@ class TestFubonRealtimeFeedSkeleton(unittest.TestCase):
         self.assertLess(tick.api_time, tick.recv_time)
         self.assertEqual(tick.api_time, datetime.fromtimestamp(1779762837.138002))
         self.assertTrue(tick.is_limit_up_price)
+        self.assertTrue(tick.is_backfill)
 
     def test_to_book_prefers_api_time_and_keeps_recv_time(self):
         payload = {
@@ -140,6 +142,7 @@ class TestFubonRealtimeFeedSkeleton(unittest.TestCase):
             "time": 1779762837138002,
             "asks": [{"price": 1100, "size": 0}],
             "bids": [{"price": 1100, "size": 99}],
+            "is_backfill": True,
         }
 
         book = FubonRealtimeFeed._to_book(payload)
@@ -151,6 +154,7 @@ class TestFubonRealtimeFeedSkeleton(unittest.TestCase):
         self.assertLess(book.api_time, book.recv_time)
         self.assertEqual(book.api_time, datetime.fromtimestamp(1779762837.138002))
         self.assertEqual(book.bid[0].volume, 99)
+        self.assertTrue(book.is_backfill)
 
     def test_subscribe_caps_symbols_to_five_connection_limit(self):
         feed = FubonRealtimeFeed(SimpleNamespace())
