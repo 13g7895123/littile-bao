@@ -1,0 +1,4 @@
+interface:
+  display_name: "Diagnose Windows Time Skew"
+  short_description: "Check Windows clock drift and NTP sync."
+  default_prompt: "Diagnose Windows clock offset and time synchronization for latency measurements."

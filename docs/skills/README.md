@@ -30,6 +30,7 @@
 | Account（帳務 / 庫存） | [`broker/account/`](./broker/account/) |
 | Universe（選股 / 個股基本資料） | [`broker/universe/`](./broker/universe/) |
 | Recording（盤中錄製） | [`broker/recording/`](./broker/recording/) |
+| Windows 時間同步 / 時鐘偏移診斷 | [`utils/diagnose-windows-time-skew/`](./utils/diagnose-windows-time-skew/) |
 | Models / Errors / Fees | [`broker/models_errors_fees.skill.md`](./broker/models_errors_fees.skill.md) |
 
 ## 使用流程
