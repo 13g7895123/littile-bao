@@ -266,9 +266,13 @@ class TradingEngine:
             for code, si in symbol_infos.items():
                 if si.market not in markets:
                     continue
-                self._states[code] = StockState(
-                    self._stock_info_from_symbol_info(si))
-                self._states[code].active_limit_up_mode = self._limit_up_mode
+                state = StockState(self._stock_info_from_symbol_info(si))
+                # SymbolInfo is loaded and, for Fubon runtime, batch-confirmed before
+                # subscription. Avoid a per-stock synchronous broker lookup on the
+                # first hot-path entry trigger.
+                state.special_check_completed = True
+                state.active_limit_up_mode = self._limit_up_mode
+                self._states[code] = state
         else:
             # 退回 MOCK_STOCKS 預設清單
             for s in MOCK_STOCKS:
@@ -439,12 +443,15 @@ class TradingEngine:
 
             for code in added:
                 si = new_symbol_infos[code]
-                self._states[code] = StockState(
-                    self._stock_info_from_symbol_info(si))
+                state = StockState(self._stock_info_from_symbol_info(si))
+                state.special_check_completed = True
+                state.active_limit_up_mode = self._limit_up_mode
+                self._states[code] = state
 
             for code in kept_in_new:
                 self._states[code].info = self._stock_info_from_symbol_info(
                     new_symbol_infos[code])
+                self._states[code].special_check_completed = True
 
         return {
             "added": sorted(added),

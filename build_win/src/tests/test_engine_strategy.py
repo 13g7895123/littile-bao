@@ -1490,6 +1490,51 @@ class TestTradingEngineStrategyRules(unittest.TestCase):
         self.assertEqual(state.entry_blocked_reason, "特殊股排除")
         self.assertTrue(any("注意股" in msg for _level, msg in logs))
 
+    def test_preloaded_symbol_info_skips_hot_path_special_lookup(self):
+        class FakeBroker:
+            def __init__(self):
+                self.orders = []
+
+            def load_symbol_info(self, codes):
+                raise AssertionError(f"unexpected hot-path special lookup: {codes}")
+
+            def place_order(self, req):
+                self.orders.append(req)
+                return "O1"
+
+        cfg = TradingConfig(
+            f1_enabled=False,
+            f9_enabled=False,
+            f10_enabled=False,
+            per_stock_amount=2_000_000,
+        )
+        broker = FakeBroker()
+        engine = TradingEngine(
+            cfg,
+            on_log=lambda _level, _msg: None,
+            on_trade=lambda _trade: None,
+            on_status=lambda _summary: None,
+            broker=broker,
+            symbol_infos={
+                "2330": build_symbol_info(
+                    "2330",
+                    "台積電",
+                    "TSE",
+                    Decimal("1000"),
+                    is_disposal=False,
+                    is_attention=False,
+                    is_day_trade_restricted=False,
+                    prior_limit_up_streak=0,
+                )
+            },
+        )
+        state = self._arm_entry_state(engine, "2330")
+
+        engine._tick(state, time.time())
+
+        self.assertEqual(len(broker.orders), 1)
+        self.assertTrue(state.special_check_completed)
+
     def test_sell_all_strategy_positions_sells_current_positions(self):
         cfg = TradingConfig(f9_enabled=False, f5_enabled=False)
         engine, logs, trades, strategy_events = self._make_engine(cfg)
