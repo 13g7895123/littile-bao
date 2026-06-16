@@ -237,6 +237,101 @@ class TestTradingEngineStrategyRules(unittest.TestCase):
 
         self.assertFalse(state.pending)
 
+    def test_prelock_ask_entry_buys_before_limit_lock(self):
+        cfg = TradingConfig(
+            f1_enabled=False,
+            f9_enabled=False,
+            f10_enabled=False,
+            f11_enabled=False,
+            f_prelock_ask_entry_enabled=True,
+            per_stock_amount=2_000_000,
+        )
+        engine, logs, _trades, strategy_events = self._make_engine(cfg)
+        state = engine._states["2330"]
+        state.ask0_price = Decimal(str(state.info.limit_up))
+        state.ask0_volume = 44
+        state.ask_qty_at_limit = 44
+        state.last_price = Decimal(str(state.info.limit_up))
+        state.is_at_limit_up = False
+
+        engine._tick(state, time.time())
+
+        self.assertTrue(state.pending or state.position_qty > 0)
+        if state.pending:
+            self.assertEqual(state.pending_entry_strategy, "PRELOCK_ASK")
+        else:
+            self.assertTrue(state.entry_via_prelock_ask)
+        self.assertEqual(strategy_events[-1]["strategy"], "鎖前委賣+F7")
+        self.assertTrue(any("鎖板前漲停委賣 44 張 < 100 張" in msg for _level, msg in logs))
+
+    def test_prelock_ask_entry_requires_best_ask_at_limit(self):
+        cfg = TradingConfig(
+            f1_enabled=False,
+            f9_enabled=False,
+            f10_enabled=False,
+            f_prelock_ask_entry_enabled=True,
+        )
+        engine, _logs, _trades, _strategy_events = self._make_engine(cfg)
+        state = engine._states["2330"]
+        state.ask0_price = Decimal(str(state.info.limit_up)) - Decimal("5")
+        state.ask0_volume = 2
+        state.ask_qty_at_limit = 0
+        state.last_price = Decimal(str(state.info.limit_up))
+        state.is_at_limit_up = False
+
+        engine._tick(state, time.time())
+
+        self.assertFalse(state.pending)
+        self.assertEqual(state.position_qty, 0)
+
+    def test_prelock_stop_sells_only_prelock_entry_after_configured_ticks(self):
+        cfg = TradingConfig(
+            f9_enabled=False,
+            f4_enabled=False,
+            f5_enabled=False,
+            f_prelock_stop_enabled=True,
+            prelock_stop_ticks=2,
+        )
+        engine, _logs, trades, strategy_events = self._make_engine(cfg)
+        state = engine._states["2330"]
+        state.position_qty = 1
+        state.entry_price = Decimal(str(state.info.limit_up))
+        state.entry_via_prelock_ask = True
+        state.last_price = state.entry_price - engine._tick_size(state.entry_price)
+
+        engine._tick(state, time.time())
+
+        self.assertEqual(state.position_qty, 1)
+        self.assertEqual(trades, [])
+
+        state.last_price = state.entry_price - engine._tick_size(state.entry_price) * Decimal("2")
+        engine._tick(state, time.time())
+
+        self.assertEqual(state.position_qty, 0)
+        self.assertEqual(trades[-1]["action"], "SELL")
+        self.assertIn("鎖板前委賣進場停損", trades[-1]["note"])
+        self.assertEqual(strategy_events[-1]["strategy"], "鎖前停損")
+
+    def test_prelock_stop_does_not_apply_to_regular_limit_lock_entry(self):
+        cfg = TradingConfig(
+            f9_enabled=False,
+            f4_enabled=False,
+            f5_enabled=False,
+            f_prelock_stop_enabled=True,
+            prelock_stop_ticks=2,
+        )
+        engine, _logs, trades, _strategy_events = self._make_engine(cfg)
+        state = engine._states["2330"]
+        state.position_qty = 1
+        state.entry_price = Decimal(str(state.info.limit_up))
+        state.entry_via_prelock_ask = False
+        state.last_price = state.entry_price - engine._tick_size(state.entry_price) * Decimal("2")
+
+        engine._tick(state, time.time())
+
+        self.assertEqual(state.position_qty, 1)
+        self.assertEqual(trades, [])
+
     def test_candle_index_uses_daily_prior_streak_once_per_day(self):
         cfg = TradingConfig(
             f1_enabled=False,

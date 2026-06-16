@@ -121,10 +121,14 @@ class StockState:
         self.f5_first_trigger_at: Optional[float] = None
         self.f4_trigger_snapshot: Optional[dict] = None
         self.f5_trigger_snapshot: Optional[dict] = None
+        self.prelock_stop_first_trigger_at: Optional[float] = None
+        self.prelock_stop_trigger_snapshot: Optional[dict] = None
         self.last_strategy_decision_times: Dict[str, datetime] = {}
         self.last_order_submit_times: Dict[str, datetime] = {}
         # ── Milestone 4：損益追蹤 ────────────────────
         self.entry_price: Optional[Decimal] = None  # 進場成交均價
+        self.entry_via_prelock_ask: bool = False
+        self.pending_entry_strategy: str = ""
 
 
 MOCK_STOCKS = [
@@ -489,6 +493,8 @@ class TradingEngine:
             "⑨": cfg.f9_enabled,  "⑩": cfg.f10_enabled,
             "⑪": cfg.f11_enabled, "⑫": cfg.f12_enabled, "⑬": cfg.f13_enabled,
             "消化量": getattr(cfg, "f_consume_enabled", False),
+            "鎖前委賣": getattr(cfg, "f_prelock_ask_entry_enabled", False),
+            "鎖前停損": getattr(cfg, "f_prelock_stop_enabled", False),
         }
         return " ".join(k for k, v in flags.items() if v) or "（無）"
 
@@ -910,6 +916,8 @@ class TradingEngine:
             st.first_limit_up_confirmed_event_time = None
             st.effective_lock_segment_active = False
             st.effective_lock_segment_tick_confirmed = False
+            st.entry_via_prelock_ask = False
+            st.pending_entry_strategy = ""
             self._reset_sell_trigger_state(st)
             # 注意：position_qty 不清空，避免影響真實持倉同步
         self._daily_trade_count = 0
@@ -1000,7 +1008,11 @@ class TradingEngine:
         # ── 進場邏輯 ──────────────────────────────────────────────
         cfg = self.config
         info = state.info
-        if state.pending or state.entry_blocked or state.candle_index == 0:
+        if state.pending or state.entry_blocked:
+            return
+        if self._try_prelock_ask_entry(state):
+            return
+        if state.candle_index == 0:
             return
         if state.limit_up_since is None or not state.is_at_limit_up:
             return
@@ -1144,20 +1156,6 @@ class TradingEngine:
         if not self._confirm_special_stock_status(state):
             return
 
-        state.pending = True
-        state.pending_side = "BUY"
-        state.pending_order_id = ""
-        self._log_strategy_trigger(
-            "BUY", state, "+".join(entry_strategy_ids) or "BASE",
-            {
-                "qty": qty,
-                "limit_up": info.limit_up,
-                "ask_qty": ask_qty,
-                "last_1s_vol": state.last_1s_vol,
-                "consume_qty": state.limit_up_consumed_qty,
-                "candle": state.candle_index,
-            },
-        )
         if apply_f1:
             if f1_lock_bypass:
                 entry_note = (
@@ -1176,6 +1174,176 @@ class TradingEngine:
             bypass_tags.append("F1")
         if f10_lock_bypass:
             bypass_tags.append("F10")
+
+        self._submit_buy_order(
+            state=state,
+            qty=qty,
+            strategy="+".join(entry_strategy_ids) or "BASE",
+            entry_note=entry_note,
+            details={
+                "qty": qty,
+                "limit_up": info.limit_up,
+                "ask_qty": ask_qty,
+                "last_1s_vol": state.last_1s_vol,
+                "consume_qty": state.limit_up_consumed_qty,
+                "candle": state.candle_index,
+            },
+            bypass_tags=bypass_tags,
+            prelock=False,
+        )
+
+    def _try_prelock_ask_entry(self, state: StockState) -> bool:
+        cfg = self.config
+        info = state.info
+        if not bool(getattr(cfg, "f_prelock_ask_entry_enabled", False)):
+            return False
+        if state.is_at_limit_up or state.startup_limitup_blocked:
+            return False
+
+        limit_up_price = Decimal(str(info.limit_up))
+        ask_qty = int(state.ask_qty_at_limit or 0)
+        if state.ask0_price != limit_up_price:
+            return False
+        if ask_qty <= 0 or ask_qty >= int(cfg.ask_queue_threshold):
+            return False
+
+        if not self._passes_common_entry_guards(state, prelock=True):
+            return False
+
+        candle = self._ensure_entry_candle_index(state)
+        if cfg.f7_enabled and candle > cfg.candle_limit:
+            self._skip_entry(
+                state,
+                f"F7:第 {candle} 根 > 上限 {cfg.candle_limit}",
+            )
+            return False
+
+        lot_cost = limit_up_price * Decimal("1000")
+        per_stock_amount = Decimal(str(cfg.per_stock_amount))
+        if lot_cost <= 0 or per_stock_amount <= 0:
+            self._block_entry(
+                state,
+                "資金不足",
+                "WARN",
+                f"[{info.code}] 每檔金額設定無效（{cfg.per_stock_amount:,.0f} 元），已略過不購買",
+            )
+            return False
+        if lot_cost > per_stock_amount:
+            self._block_entry(
+                state,
+                "資金不足",
+                "WARN",
+                f"[{info.code}] 每檔金額 {per_stock_amount:,.0f} 元不足買進 1 張 @ "
+                f"{limit_up_price:,.2f}，預估需 {lot_cost:,.0f} 元，已略過不購買",
+            )
+            return False
+
+        qty = int(per_stock_amount // lot_cost)
+        order_amount = lot_cost * Decimal(qty)
+        if not self._confirm_buying_power(state, order_amount):
+            return False
+        if not self._confirm_special_stock_status(state):
+            return False
+
+        strategy_ids = ["鎖前委賣"]
+        if cfg.f1_enabled:
+            strategy_ids.append("F1")
+        if cfg.f7_enabled:
+            strategy_ids.append("F7")
+        self._submit_buy_order(
+            state=state,
+            qty=qty,
+            strategy="+".join(strategy_ids),
+            entry_note=f"鎖板前漲停委賣 {ask_qty} 張 < {cfg.ask_queue_threshold} 張",
+            details={
+                "qty": qty,
+                "limit_up": info.limit_up,
+                "ask_qty": ask_qty,
+                "ask0_price": state.ask0_price,
+                "last_price": state.last_price,
+                "last_1s_vol": state.last_1s_vol,
+                "candle": state.candle_index,
+            },
+            prelock=True,
+        )
+        return True
+
+    def _passes_common_entry_guards(self, state: StockState, *, prelock: bool = False) -> bool:
+        cfg = self.config
+        info = state.info
+
+        if cfg.f12_enabled and info.open_limit_up and state.sold_today:
+            self._skip_entry(state, "F12:開盤即漲停且當日已賣過")
+            return False
+        if not getattr(cfg, "f_open_limitup_entry_enabled", True) and info.open_limit_up:
+            self._skip_entry(state, "已關閉追開盤即漲停")
+            return False
+        if cfg.f13_enabled and self._daily_trade_count >= cfg.daily_max_trades:
+            self._skip_entry(
+                state,
+                f"F13:已達當日上限 {self._daily_trade_count}/{cfg.daily_max_trades}",
+            )
+            return False
+
+        if cfg.f1_enabled:
+            now_time = self._current_datetime().time()
+            start_time = self._parse_config_time(getattr(cfg, "start_time", "09:00"), dtime(9, 0))
+            cutoff = self._parse_config_time(cfg.entry_before_time, dtime(10, 0))
+            market_close = dtime(13, 30)
+            if cutoff > market_close:
+                cutoff = market_close
+            if now_time < start_time:
+                self._skip_entry(state, f"F1:未到開始時間 {start_time.strftime('%H:%M')}")
+                return False
+            if now_time >= cutoff:
+                self._skip_entry(state, f"F1:已過進場時段 {cutoff.strftime('%H:%M')}")
+                return False
+
+        if prelock and bool(getattr(cfg, "f_consume_enabled", False)):
+            consume_threshold = int(getattr(cfg, "consume_qty_threshold", 0) or 0)
+            if state.limit_up_consumed_qty < consume_threshold:
+                self._skip_entry(
+                    state,
+                    f"消化量 {state.limit_up_consumed_qty} < {consume_threshold} 張",
+                )
+                return False
+        return True
+
+    def _ensure_entry_candle_index(self, state: StockState) -> int:
+        if state.candle_index > 0:
+            return state.candle_index
+        prior_streak = state.info.prior_limit_up_streak
+        base_streak = prior_streak if prior_streak is not None else 0
+        state.candle_index = base_streak + 1
+        state.today_limit_up_counted = True
+        state.touched_limit_up_today = True
+        if prior_streak is None:
+            self.on_log(
+                "WARN",
+                f"[{state.info.code} {state.info.name}] 缺少昨日前連續漲停日K資料，"
+                f"暫以日K第 {state.candle_index} 根判斷",
+            )
+        return state.candle_index
+
+    def _submit_buy_order(
+        self,
+        *,
+        state: StockState,
+        qty: int,
+        strategy: str,
+        entry_note: str,
+        details: dict,
+        bypass_tags: Optional[List[str]] = None,
+        prelock: bool = False,
+    ) -> None:
+        info = state.info
+        bypass_tags = bypass_tags or []
+        state.pending = True
+        state.pending_side = "BUY"
+        state.pending_order_id = ""
+        state.pending_entry_strategy = "PRELOCK_ASK" if prelock else "LIMIT_LOCK"
+        state.last_skip_reason = ""
+        self._log_strategy_trigger("BUY", state, strategy, details)
         bypass_note = (
             f"；鎖漲停忽略 {'、'.join(bypass_tags)}" if bypass_tags else ""
         )
@@ -1192,7 +1360,7 @@ class TradingEngine:
                     side=OrderSide.BUY,
                     price=Decimal(str(info.limit_up)),
                     qty=qty, day_trade=True,
-                    note=f"BUY-{state.candle_index}",
+                    note=("PRELOCK" if prelock else f"BUY-{state.candle_index}"),
                 )
                 self.broker.place_order(req)
                 state.last_order_submit_times["BUY"] = self._current_datetime()
@@ -1219,10 +1387,12 @@ class TradingEngine:
                     return
                 st = self._states.get(code)
                 if st and st.pending:
+                    prelock_fill = st.pending_entry_strategy == "PRELOCK_ASK"
                     self._clear_pending_order_state(st)
                     st.position_qty += qty
                     st.entry_blocked_reason = ""
                     st.entry_price = Decimal(str(info.limit_up))
+                    st.entry_via_prelock_ask = prelock_fill
                     self._reset_sell_trigger_state(st)
                     if code not in self._daily_trade_codes:
                         self._daily_trade_codes.add(code)
@@ -1239,7 +1409,11 @@ class TradingEngine:
                         "price": info.limit_up,
                         "qty": qty,
                         "pnl": 0.0,
-                        "note": f"第 {st.candle_index} 根漲停",
+                        "note": (
+                            f"鎖板前委賣進場，第 {st.candle_index} 根"
+                            if prelock_fill
+                            else f"第 {st.candle_index} 根漲停"
+                        ),
                     })
         threading.Thread(target=fill, daemon=True).start()
 
@@ -1264,6 +1438,7 @@ class TradingEngine:
                         state.entry_blocked = True
                         state.sold_today = True
                         state.entry_price = None
+                        state.entry_via_prelock_ask = False
                         self._reset_sell_trigger_state(state)
                         return
                     if broker_qty < qty:
@@ -1317,6 +1492,7 @@ class TradingEngine:
         state.entry_blocked_reason = "已賣出"
         state.sold_today = True   # 功能 12：標記當天已賣過
         state.entry_price = None
+        state.entry_via_prelock_ask = False
         self._reset_sell_trigger_state(state)
         trade_time = datetime.now()
         self.on_trade({
@@ -1379,8 +1555,10 @@ class TradingEngine:
     def _reset_sell_trigger_state(state: StockState) -> None:
         state.f4_first_trigger_at = None
         state.f5_first_trigger_at = None
+        state.prelock_stop_first_trigger_at = None
         state.f4_trigger_snapshot = None
         state.f5_trigger_snapshot = None
+        state.prelock_stop_trigger_snapshot = None
 
     def _reset_post_entry_exit_state(self, state: StockState) -> None:
         """Start exit monitoring from market events received after the entry fill."""
@@ -1420,10 +1598,31 @@ class TradingEngine:
                     "trigger_time": event_ts,
                 }
 
+        if (
+            bool(getattr(cfg, "f_prelock_stop_enabled", False))
+            and state.entry_via_prelock_ask
+            and state.entry_price is not None
+            and state.last_price is not None
+        ):
+            stop_ticks = max(1, int(getattr(cfg, "prelock_stop_ticks", 2) or 2))
+            tick = self._tick_size(state.entry_price)
+            stop_price = state.entry_price - tick * Decimal(stop_ticks)
+            if state.last_price <= stop_price and state.prelock_stop_first_trigger_at is None:
+                state.prelock_stop_first_trigger_at = event_ts
+                state.prelock_stop_trigger_snapshot = {
+                    "entry_price": state.entry_price,
+                    "last_price": state.last_price,
+                    "stop_price": stop_price,
+                    "stop_ticks": stop_ticks,
+                    "tick_size": tick,
+                    "trigger_time": event_ts,
+                }
+
     def _pick_sell_strategy(self, state: StockState) -> Optional[dict]:
         f4_at = state.f4_first_trigger_at
         f5_at = state.f5_first_trigger_at
-        if f4_at is None and f5_at is None:
+        prelock_stop_at = state.prelock_stop_first_trigger_at
+        if f4_at is None and f5_at is None and prelock_stop_at is None:
             return None
 
         def _detail_time(value: Optional[float]) -> Optional[str]:
@@ -1431,14 +1630,14 @@ class TradingEngine:
                 return None
             return datetime.fromtimestamp(value).isoformat(timespec="microseconds")
 
-        if f4_at is None:
-            winner = "F5"
-        elif f5_at is None:
-            winner = "F4"
-        elif f5_at <= f4_at:
-            winner = "F5"
-        else:
-            winner = "F4"
+        candidates = [
+            ("F4", f4_at),
+            ("F5", f5_at),
+            ("鎖前停損", prelock_stop_at),
+        ]
+        present = [(name, ts) for name, ts in candidates if ts is not None]
+        priority = {"F5": 0, "鎖前停損": 1, "F4": 2}
+        winner = min(present, key=lambda item: (item[1], priority[item[0]]))[0]
 
         if winner == "F4":
             snapshot = dict(state.f4_trigger_snapshot or {})
@@ -1446,11 +1645,18 @@ class TradingEngine:
                 f"漲停板打開 {snapshot.get('open_ticks')} 檔，"
                 f"達出場門檻 {snapshot.get('threshold')} 檔"
             )
-        else:
+        elif winner == "F5":
             snapshot = dict(state.f5_trigger_snapshot or {})
             reason = (
                 f"1秒量 {snapshot.get('last_1s_vol')} 張 >= "
                 f"{snapshot.get('threshold')} 張，爆量出場"
+            )
+        else:
+            snapshot = dict(state.prelock_stop_trigger_snapshot or {})
+            reason = (
+                f"鎖板前委賣進場停損：現價 {snapshot.get('last_price')} "
+                f"<= 買價 {snapshot.get('entry_price')} - "
+                f"{snapshot.get('stop_ticks')} 檔（{snapshot.get('stop_price')}）"
             )
 
         details = {
@@ -1458,6 +1664,7 @@ class TradingEngine:
             "winner_strategy": winner,
             "first_f4_time": _detail_time(f4_at),
             "first_f5_time": _detail_time(f5_at),
+            "first_prelock_stop_time": _detail_time(prelock_stop_at),
         }
         return {
             "strategy": winner,
@@ -1730,10 +1937,12 @@ class TradingEngine:
             info = state.info
             qty = int(ev.qty)
             if ev.side.value == "BUY":
+                prelock_fill = state.pending_entry_strategy == "PRELOCK_ASK"
                 self._clear_pending_order_state(state)
                 state.position_qty += qty
                 state.entry_blocked_reason = ""
                 self._reset_post_entry_exit_state(state)
+                state.entry_via_prelock_ask = prelock_fill
                 if state.entry_price is None:
                     state.entry_price = ev.price
                 else:
@@ -1761,7 +1970,11 @@ class TradingEngine:
                     "price": float(ev.price),
                     "qty": qty,
                     "pnl": 0.0,
-                    "note": f"第 {state.candle_index} 根漲停",
+                    "note": (
+                        f"鎖板前委賣進場，第 {state.candle_index} 根"
+                        if prelock_fill
+                        else f"第 {state.candle_index} 根漲停"
+                    ),
                 })
                 self._emit_decision_event(
                     "FILL",
@@ -1796,6 +2009,7 @@ class TradingEngine:
                     state.entry_blocked_reason = "已賣出"
                     state.sold_today = True
                     state.entry_price = None
+                    state.entry_via_prelock_ask = False
                     self._reset_sell_trigger_state(state)
                 self.on_log("INFO",
                     f"[{ev.code}] 賣出成交 {qty} 張 @ {ev.price}，"
@@ -1834,6 +2048,7 @@ class TradingEngine:
         state.pending = False
         state.pending_side = ""
         state.pending_order_id = ""
+        state.pending_entry_strategy = ""
 
     @staticmethod
     def _fmt_decision_value(value):
@@ -1886,8 +2101,12 @@ class TradingEngine:
             "position_qty": state.position_qty,
             "first_f4_time": state.f4_first_trigger_at,
             "first_f5_time": state.f5_first_trigger_at,
+            "first_prelock_stop_time": state.prelock_stop_first_trigger_at,
             "f4_trigger_snapshot": state.f4_trigger_snapshot,
             "f5_trigger_snapshot": state.f5_trigger_snapshot,
+            "prelock_stop_trigger_snapshot": state.prelock_stop_trigger_snapshot,
+            "entry_via_prelock_ask": state.entry_via_prelock_ask,
+            "pending_entry_strategy": state.pending_entry_strategy,
             "blocked": state.entry_blocked,
             "blocked_reason": state.entry_blocked_reason,
             "sold_today": state.sold_today,

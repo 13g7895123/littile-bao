@@ -880,6 +880,10 @@ class App(QMainWindow):
         form.addLayout(ask_row)
         form.addSpacing(6)
 
+        self._checks["prelock_ask_entry_enabled"] = _checkbox("鎖板前委賣低於門檻先買")
+        form.addWidget(self._checks["prelock_ask_entry_enabled"])
+        form.addSpacing(6)
+
         form.addWidget(_label("只做起漲K", C["subtext"], 9))
         k_row = QHBoxLayout()
         k_row.addSpacing(4)
@@ -987,6 +991,19 @@ class App(QMainWindow):
         form.addSpacing(4)
         self._checks["f4_require_today_limitup"] = _checkbox("僅當日曾觸及漲停才賣")
         form.addWidget(self._checks["f4_require_today_limitup"])
+        form.addSpacing(6)
+
+        self._checks["prelock_stop_enabled"] = _checkbox("鎖板前委賣進場跌破買價自動賣")
+        form.addWidget(self._checks["prelock_stop_enabled"])
+        form.addSpacing(4)
+        prelock_stop_row = QHBoxLayout()
+        prelock_stop_row.addWidget(_label("跌破買價 >=", C["subtext"], 9))
+        prelock_stop_row.addStretch()
+        self._fields["prelock_stop_ticks"] = _entry(45)
+        prelock_stop_row.addWidget(self._fields["prelock_stop_ticks"])
+        prelock_stop_row.addSpacing(4)
+        prelock_stop_row.addWidget(_label("檔", C["subtext"], 9))
+        form.addLayout(prelock_stop_row)
         form.addSpacing(6)
 
         sp_row = QHBoxLayout()
@@ -2796,6 +2813,7 @@ class App(QMainWindow):
         f["price_max"].setText(str(int(cfg.price_max)))
         f["consume_qty_threshold"].setText(str(cfg.consume_qty_threshold))
         f["f4_open_ticks_to_sell"].setText(str(cfg.f4_open_ticks_to_sell))
+        f["prelock_stop_ticks"].setText(str(cfg.prelock_stop_ticks))
         f["volume_spike_sell_threshold"].setText(str(cfg.volume_spike_sell_threshold))
 
         c = self._checks
@@ -2808,9 +2826,11 @@ class App(QMainWindow):
         c["excl_daytrade"].setChecked(cfg.f11_enabled)
         c["consume_enabled"].setChecked(cfg.f_consume_enabled)
         c["consume_mutex_with_f1"].setChecked(cfg.consume_mutex_with_f1)
+        c["prelock_ask_entry_enabled"].setChecked(cfg.f_prelock_ask_entry_enabled)
         c["excl_open_limit"].setChecked(not cfg.f_open_limitup_entry_enabled)
         c["excl_sealed"].setChecked(cfg.f12_enabled)
         c["f4_require_today_limitup"].setChecked(cfg.f4_require_today_limitup)
+        c["prelock_stop_enabled"].setChecked(cfg.f_prelock_stop_enabled)
         if "dry_run_mode" in c:
             self._syncing_order_mode_control = True
             c["dry_run_mode"].setChecked(cfg.order_dry_run)
@@ -2891,6 +2911,9 @@ class App(QMainWindow):
             f_consume_enabled             = c["consume_enabled"].isChecked(),
             consume_qty_threshold         = max(0, ni("consume_qty_threshold")),
             consume_mutex_with_f1         = c["consume_mutex_with_f1"].isChecked(),
+            f_prelock_ask_entry_enabled   = c["prelock_ask_entry_enabled"].isChecked(),
+            f_prelock_stop_enabled        = c["prelock_stop_enabled"].isChecked(),
+            prelock_stop_ticks            = max(1, ni("prelock_stop_ticks")),
             order_dry_run                 = c["dry_run_mode"].isChecked(),
             file_logging_enabled          = c["file_logging_enabled"].isChecked(),
             recording_enabled             = (c["recording_enabled"].isChecked()

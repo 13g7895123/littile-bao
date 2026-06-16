@@ -33,6 +33,9 @@ class TestTradingConfigJsonIO(unittest.TestCase):
                         "f_consume_enabled": True,
                         "consume_qty_threshold": 300,
                         "consume_mutex_with_f1": False,
+                        "f_prelock_ask_entry_enabled": False,
+                        "f_prelock_stop_enabled": False,
+                        "prelock_stop_ticks": 4,
                         "file_logging_enabled": False,
                         "unknown_field": "ignored",
                     },
@@ -52,6 +55,9 @@ class TestTradingConfigJsonIO(unittest.TestCase):
             self.assertTrue(cfg.f_consume_enabled)
             self.assertEqual(cfg.consume_qty_threshold, 300)
             self.assertFalse(cfg.consume_mutex_with_f1)
+            self.assertFalse(cfg.f_prelock_ask_entry_enabled)
+            self.assertFalse(cfg.f_prelock_stop_enabled)
+            self.assertEqual(cfg.prelock_stop_ticks, 4)
             self.assertFalse(cfg.file_logging_enabled)
             self.assertEqual(
                 cfg.startup_limit_up_detection_mode,

@@ -107,6 +107,13 @@ class TradingConfig:
     consume_qty_threshold: int = 499
     consume_mutex_with_f1: bool = True
 
+    # ── 鎖板前進場：漲停價委賣已低於門檻就先進場 ─────────────────────────────
+    f_prelock_ask_entry_enabled: bool = True
+
+    # ── 鎖板前進場停損：僅套用於上述條件買入的部位 ───────────────────────────
+    f_prelock_stop_enabled: bool = True
+    prelock_stop_ticks: int = 2
+
     # ── 下單模式 ────────────────────────────────────────────────────────────
     order_dry_run: bool = True   # True = 模擬下單，不送出真實委託
 
