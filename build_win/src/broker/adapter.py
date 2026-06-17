@@ -437,11 +437,24 @@ class FubonAdapter(BrokerAdapter):
         self.dry_run = bool(enabled)
         if hasattr(self, "_order_mgr"):
             delattr(self, "_order_mgr")
+        cb = getattr(self, "_dry_run_account_fill_cb", None)
+        if cb is not None:
+            self.off_filled(cb)
+            self._dry_run_account_fill_cb = None
+        if hasattr(self, "_acc_svc"):
+            delattr(self, "_acc_svc")
 
     def account_service(self):
         if not hasattr(self, "_acc_svc"):
-            from .account import FubonAccountService
-            self._acc_svc = FubonAccountService(self)
+            from .account import DryRunAccountService, FubonAccountService
+            base = FubonAccountService(self)
+            if self.dry_run:
+                svc = DryRunAccountService(base)
+                self._dry_run_account_fill_cb = svc.apply_fill
+                self.on_filled(self._dry_run_account_fill_cb)
+                self._acc_svc = svc
+            else:
+                self._acc_svc = base
         return self._acc_svc
 
     def on_filled(self, callback: FillCallback) -> None:  # type: ignore[override]

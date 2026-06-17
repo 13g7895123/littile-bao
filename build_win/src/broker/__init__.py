@@ -84,6 +84,7 @@ from .orders import (
 from .account import (
     AccountService,
     AccountSnapshot,
+    DryRunAccountService,
     FubonAccountService,
     MockAccountService,
     Position,
@@ -160,6 +161,7 @@ __all__ = [
     "AccountService",
     "AccountSnapshot",
     "Position",
+    "DryRunAccountService",
     "MockAccountService",
     "FubonAccountService",
     "ScanCriteria",

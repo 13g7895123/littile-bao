@@ -5,14 +5,16 @@ import os
 import sys
 import time
 import unittest
+from datetime import datetime
 from decimal import Decimal
 from types import SimpleNamespace
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from broker import (  # noqa: E402
-    DEFAULT_MOCK_INFOS, FubonAccountService, MockAccountService, MockAdapter,
-    OrderRequest, OrderSide, Position, ScanCriteria, scan_daily,
+    DEFAULT_MOCK_INFOS, DryRunAccountService, FillEvent, FubonAccountService,
+    MockAccountService, MockAdapter, OrderRequest, OrderSide, Position,
+    ScanCriteria, scan_daily,
 )
 
 
@@ -103,6 +105,42 @@ class TestMockAdapterAccountSync(unittest.TestCase):
         self.assertEqual(len(snap.positions), 1)
         self.assertEqual(snap.positions[0].code, "2330")
         self.assertEqual(snap.positions[0].qty, 1)
+
+
+class TestDryRunAccountService(unittest.TestCase):
+    def test_dry_run_buy_and_sell_updates_buying_power(self):
+        base = MockAccountService(initial_cash=Decimal("100000"))
+        svc = DryRunAccountService(base)
+
+        svc.apply_fill(FillEvent(
+            order_id="DRY1",
+            code="3360",
+            name="尚立",
+            side=OrderSide.BUY,
+            price=Decimal("16.8"),
+            qty=5,
+            time=datetime(2026, 6, 17, 9, 39, 38),
+        ))
+
+        snap = svc.snapshot()
+        self.assertEqual(snap.buying_power, Decimal("16000"))
+        self.assertEqual(len(snap.positions), 1)
+        self.assertEqual(snap.positions[0].code, "3360")
+        self.assertEqual(snap.positions[0].qty, 5)
+
+        svc.apply_fill(FillEvent(
+            order_id="DRY2",
+            code="3360",
+            name="尚立",
+            side=OrderSide.SELL,
+            price=Decimal("16.75"),
+            qty=5,
+            time=datetime(2026, 6, 17, 9, 39, 39),
+        ))
+
+        snap = svc.snapshot()
+        self.assertEqual(snap.buying_power, Decimal("99750"))
+        self.assertEqual(snap.positions, [])
 
 
 class TestFubonAccountService(unittest.TestCase):

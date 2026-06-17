@@ -90,6 +90,8 @@ class StockState:
         self.last_price: Optional[Decimal] = None
         self.ask0_price: Optional[Decimal] = None
         self.ask0_volume: int = 0
+        self.last_limit_ask0_price: Optional[Decimal] = None
+        self.last_limit_ask0_volume: int = 0
         self.bid0_price: Optional[Decimal] = None
         self.bid0_volume: int = 0
         self.effective_bid0_price: Optional[Decimal] = None
@@ -123,6 +125,8 @@ class StockState:
         self.f5_trigger_snapshot: Optional[dict] = None
         self.prelock_stop_first_trigger_at: Optional[float] = None
         self.prelock_stop_trigger_snapshot: Optional[dict] = None
+        self.exit_monitor_start_event_ts: Optional[float] = None
+        self.prelock_relocked_after_entry: bool = False
         self.last_strategy_decision_times: Dict[str, datetime] = {}
         self.last_order_submit_times: Dict[str, datetime] = {}
         # ── Milestone 4：損益追蹤 ────────────────────
@@ -606,6 +610,13 @@ class TradingEngine:
                 state.ask0_price = None
                 state.ask0_volume = 0
             state.has_ask_levels = bool(ev.ask)
+            limit_up = Decimal(str(state.info.limit_up))
+            if state.ask0_price == limit_up and state.ask0_volume > 0:
+                state.last_limit_ask0_price = state.ask0_price
+                state.last_limit_ask0_volume = state.ask0_volume
+            elif state.ask0_price is not None and state.ask0_price != limit_up:
+                state.last_limit_ask0_price = None
+                state.last_limit_ask0_volume = 0
             if ev.bid:
                 state.bid0_price = ev.bid[0].price
                 state.bid0_volume = int(ev.bid[0].volume)
@@ -762,6 +773,8 @@ class TradingEngine:
             if not state.startup_limitup_blocked:
                 state.touched_limit_up_today = True
                 self._mark_limit_up_touched(state, now)
+                if state.position_qty > 0 and state.entry_via_prelock_ask:
+                    state.prelock_relocked_after_entry = True
         else:
             if state.is_at_limit_up and not state.startup_limitup_blocked:
                 state.is_at_limit_up = False
@@ -916,8 +929,12 @@ class TradingEngine:
             st.first_limit_up_confirmed_event_time = None
             st.effective_lock_segment_active = False
             st.effective_lock_segment_tick_confirmed = False
+            st.last_limit_ask0_price = None
+            st.last_limit_ask0_volume = 0
             st.entry_via_prelock_ask = False
             st.pending_entry_strategy = ""
+            st.exit_monitor_start_event_ts = None
+            st.prelock_relocked_after_entry = False
             self._reset_sell_trigger_state(st)
             # 注意：position_qty 不清空，避免影響真實持倉同步
         self._daily_trade_count = 0
@@ -988,7 +1005,9 @@ class TradingEngine:
             # （否則 fill 未回前，下一個 tick 仍會觸發 F4/F5 再送一張）
             if state.pending:
                 return
-            self._record_sell_trigger_candidates(state, now)
+            sell_event_ts = self._candidate_exit_event_ts(state, now)
+            if sell_event_ts is not None:
+                self._record_sell_trigger_candidates(state, sell_event_ts)
             sell_plan = self._pick_sell_strategy(state)
             if sell_plan:
                 self._log_strategy_trigger(
@@ -1202,9 +1221,19 @@ class TradingEngine:
 
         limit_up_price = Decimal(str(info.limit_up))
         ask_qty = int(state.ask_qty_at_limit or 0)
-        if state.ask0_price != limit_up_price:
-            return False
-        if ask_qty <= 0 or ask_qty >= int(cfg.ask_queue_threshold):
+        current_limit_ask = (
+            state.ask0_price == limit_up_price
+            and 0 < ask_qty < int(cfg.ask_queue_threshold)
+        )
+        disappeared_limit_ask = (
+            state.ask0_price is None
+            and ask_qty <= 0
+            and state.last_limit_ask0_price == limit_up_price
+            and state.last_limit_ask0_volume > 0
+            and state.last_price is not None
+            and state.last_price >= limit_up_price
+        )
+        if not current_limit_ask and not disappeared_limit_ask:
             return False
 
         if not self._passes_common_entry_guards(state, prelock=True):
@@ -1250,15 +1279,23 @@ class TradingEngine:
             strategy_ids.append("F1")
         if cfg.f7_enabled:
             strategy_ids.append("F7")
+        if disappeared_limit_ask:
+            entry_note = (
+                f"鎖板前漲停委賣消失（前筆 {state.last_limit_ask0_volume} 張）"
+            )
+        else:
+            entry_note = f"鎖板前漲停委賣 {ask_qty} 張 < {cfg.ask_queue_threshold} 張"
         self._submit_buy_order(
             state=state,
             qty=qty,
             strategy="+".join(strategy_ids),
-            entry_note=f"鎖板前漲停委賣 {ask_qty} 張 < {cfg.ask_queue_threshold} 張",
+            entry_note=entry_note,
             details={
                 "qty": qty,
                 "limit_up": info.limit_up,
                 "ask_qty": ask_qty,
+                "previous_limit_ask_qty": state.last_limit_ask0_volume,
+                "prelock_ask_disappeared": disappeared_limit_ask,
                 "ask0_price": state.ask0_price,
                 "last_price": state.last_price,
                 "last_1s_vol": state.last_1s_vol,
@@ -1393,7 +1430,8 @@ class TradingEngine:
                     st.entry_blocked_reason = ""
                     st.entry_price = Decimal(str(info.limit_up))
                     st.entry_via_prelock_ask = prelock_fill
-                    self._reset_sell_trigger_state(st)
+                    st.prelock_relocked_after_entry = False
+                    self._reset_post_entry_exit_state(st)
                     if code not in self._daily_trade_codes:
                         self._daily_trade_codes.add(code)
                         self._daily_trade_count = len(self._daily_trade_codes)
@@ -1439,6 +1477,8 @@ class TradingEngine:
                         state.sold_today = True
                         state.entry_price = None
                         state.entry_via_prelock_ask = False
+                        state.exit_monitor_start_event_ts = None
+                        state.prelock_relocked_after_entry = False
                         self._reset_sell_trigger_state(state)
                         return
                     if broker_qty < qty:
@@ -1493,6 +1533,8 @@ class TradingEngine:
         state.sold_today = True   # 功能 12：標記當天已賣過
         state.entry_price = None
         state.entry_via_prelock_ask = False
+        state.exit_monitor_start_event_ts = None
+        state.prelock_relocked_after_entry = False
         self._reset_sell_trigger_state(state)
         trade_time = datetime.now()
         self.on_trade({
@@ -1565,8 +1607,24 @@ class TradingEngine:
         state.tick_vols.clear()
         state.last_1s_vol = 0
         self._reset_sell_trigger_state(state)
+        state.exit_monitor_start_event_ts = self._event_time_to_ts(
+            state.last_market_event_time,
+            time.time(),
+        )
+
+    def _candidate_exit_event_ts(self, state: StockState, fallback: float) -> Optional[float]:
+        if state.exit_monitor_start_event_ts is None:
+            return fallback
+        if state.last_market_event_time is None:
+            return None
+        return self._event_time_to_ts(state.last_market_event_time, fallback)
 
     def _record_sell_trigger_candidates(self, state: StockState, event_ts: float) -> None:
+        if (
+            state.exit_monitor_start_event_ts is not None
+            and event_ts <= state.exit_monitor_start_event_ts
+        ):
+            return
         cfg = self.config
         info = state.info
         has_been_at_limit_today = state.touched_limit_up_today or state.candle_index > 0
@@ -1576,6 +1634,7 @@ class TradingEngine:
         f4_ready = (
             cfg.f4_enabled
             and (has_been_at_limit_today or not require_today_limit)
+            and (not state.entry_via_prelock_ask or state.prelock_relocked_after_entry)
             and open_ticks >= open_tick_threshold
             and state.last_price is not None
         )
@@ -1943,6 +2002,7 @@ class TradingEngine:
                 state.entry_blocked_reason = ""
                 self._reset_post_entry_exit_state(state)
                 state.entry_via_prelock_ask = prelock_fill
+                state.prelock_relocked_after_entry = False
                 if state.entry_price is None:
                     state.entry_price = ev.price
                 else:
@@ -2010,6 +2070,8 @@ class TradingEngine:
                     state.sold_today = True
                     state.entry_price = None
                     state.entry_via_prelock_ask = False
+                    state.exit_monitor_start_event_ts = None
+                    state.prelock_relocked_after_entry = False
                     self._reset_sell_trigger_state(state)
                 self.on_log("INFO",
                     f"[{ev.code}] 賣出成交 {qty} 張 @ {ev.price}，"
@@ -2077,6 +2139,8 @@ class TradingEngine:
             "startup_limit_up_mode": self._startup_limit_up_mode,
             "is_at_limit_up": state.is_at_limit_up,
             "ask_qty": state.ask_qty_at_limit,
+            "last_limit_ask0_price": state.last_limit_ask0_price,
+            "last_limit_ask0_volume": state.last_limit_ask0_volume,
             "ask0_price": state.ask0_price,
             "ask0_volume": state.ask0_volume,
             "bid0_price": state.bid0_price,
@@ -2102,6 +2166,8 @@ class TradingEngine:
             "first_f4_time": state.f4_first_trigger_at,
             "first_f5_time": state.f5_first_trigger_at,
             "first_prelock_stop_time": state.prelock_stop_first_trigger_at,
+            "exit_monitor_start_event_ts": state.exit_monitor_start_event_ts,
+            "prelock_relocked_after_entry": state.prelock_relocked_after_entry,
             "f4_trigger_snapshot": state.f4_trigger_snapshot,
             "f5_trigger_snapshot": state.f5_trigger_snapshot,
             "prelock_stop_trigger_snapshot": state.prelock_stop_trigger_snapshot,

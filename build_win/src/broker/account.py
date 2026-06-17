@@ -17,7 +17,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
-from typing import Callable, List, Optional
+from typing import Callable, Dict, List, Optional
 
 from .errors import FubonNotLoggedInError
 
@@ -94,6 +94,142 @@ class MockAccountService(AccountService):
             total_unrealized_pnl=total_unr,
             positions=list(self._positions),
             updated_at=datetime.now(),
+        )
+
+
+class DryRunAccountService(AccountService):
+    """Overlay DRY fills on top of a real account snapshot.
+
+    Fubon dry-run does not send orders to the broker, so broker-side buying
+    power and inventories will not change. This service keeps a local overlay
+    so the GUI and strategy buying-power checks reflect simulated fills.
+    """
+
+    def __init__(self, base: AccountService) -> None:
+        self.base = base
+        self._lock = threading.Lock()
+        self._cash_delta = Decimal("0")
+        self._positions: Dict[str, Position] = {}
+
+    def apply_fill(self, ev) -> None:
+        shares = Decimal(int(ev.qty) * 1000)
+        amount = Decimal(str(ev.price)) * shares
+        with self._lock:
+            side = str(getattr(ev.side, "value", ev.side) or "").upper()
+            if side == "BUY":
+                self._cash_delta -= amount
+                self._add_position(ev)
+            elif side == "SELL":
+                self._cash_delta += amount
+                self._reduce_position(ev)
+
+    def snapshot(self) -> AccountSnapshot:
+        base_snap = self.base.snapshot()
+        with self._lock:
+            cash_delta = self._cash_delta
+            overlay_positions = {
+                code: Position(
+                    code=p.code,
+                    name=p.name,
+                    qty=p.qty,
+                    avg_cost=p.avg_cost,
+                    last_price=p.last_price,
+                    market_value=p.market_value,
+                    unrealized_pnl=p.unrealized_pnl,
+                    unrealized_pnl_pct=p.unrealized_pnl_pct,
+                )
+                for code, p in self._positions.items()
+            }
+
+        merged = {p.code: p for p in base_snap.positions}
+        for code, overlay in overlay_positions.items():
+            base = merged.get(code)
+            if base is None:
+                merged[code] = overlay
+                continue
+            total_qty = base.qty + overlay.qty
+            if total_qty <= 0:
+                merged.pop(code, None)
+                continue
+            avg_cost = (
+                base.avg_cost * Decimal(base.qty)
+                + overlay.avg_cost * Decimal(overlay.qty)
+            ) / Decimal(total_qty)
+            last_price = overlay.last_price or base.last_price
+            shares = Decimal(total_qty * 1000)
+            market_value = last_price * shares
+            unrealized = (last_price - avg_cost) * shares
+            pct = (last_price - avg_cost) / avg_cost * Decimal("100") if avg_cost > 0 else Decimal("0")
+            merged[code] = Position(
+                code=code,
+                name=base.name or overlay.name,
+                qty=total_qty,
+                avg_cost=avg_cost,
+                last_price=last_price,
+                market_value=market_value,
+                unrealized_pnl=unrealized,
+                unrealized_pnl_pct=pct,
+            )
+
+        positions = list(merged.values())
+        return AccountSnapshot(
+            cash=base_snap.cash + cash_delta,
+            buying_power=base_snap.buying_power + cash_delta,
+            today_realized_pnl=base_snap.today_realized_pnl,
+            total_unrealized_pnl=sum((p.unrealized_pnl for p in positions), Decimal("0")),
+            positions=positions,
+            updated_at=datetime.now(),
+        )
+
+    def _add_position(self, ev) -> None:
+        existing = self._positions.get(ev.code)
+        if existing is None:
+            price = Decimal(str(ev.price))
+            shares = Decimal(int(ev.qty) * 1000)
+            self._positions[ev.code] = Position(
+                code=ev.code,
+                name=ev.name or ev.code,
+                qty=int(ev.qty),
+                avg_cost=price,
+                last_price=price,
+                market_value=price * shares,
+                unrealized_pnl=Decimal("0"),
+                unrealized_pnl_pct=Decimal("0"),
+            )
+            return
+        total_qty = existing.qty + int(ev.qty)
+        if total_qty <= 0:
+            self._positions.pop(ev.code, None)
+            return
+        price = Decimal(str(ev.price))
+        avg = (
+            existing.avg_cost * Decimal(existing.qty)
+            + price * Decimal(int(ev.qty))
+        ) / Decimal(total_qty)
+        existing.qty = total_qty
+        existing.avg_cost = avg
+        existing.last_price = price
+        existing.market_value = price * Decimal(total_qty * 1000)
+        existing.unrealized_pnl = (price - avg) * Decimal(total_qty * 1000)
+        existing.unrealized_pnl_pct = (
+            (price - avg) / avg * Decimal("100") if avg > 0 else Decimal("0")
+        )
+
+    def _reduce_position(self, ev) -> None:
+        existing = self._positions.get(ev.code)
+        if existing is None:
+            return
+        existing.qty = max(0, existing.qty - int(ev.qty))
+        if existing.qty <= 0:
+            self._positions.pop(ev.code, None)
+            return
+        price = Decimal(str(ev.price))
+        existing.last_price = price
+        existing.market_value = price * Decimal(existing.qty * 1000)
+        existing.unrealized_pnl = (price - existing.avg_cost) * Decimal(existing.qty * 1000)
+        existing.unrealized_pnl_pct = (
+            (price - existing.avg_cost) / existing.avg_cost * Decimal("100")
+            if existing.avg_cost > 0 else Decimal("0")
         )
 
 

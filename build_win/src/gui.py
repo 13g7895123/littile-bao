@@ -4473,6 +4473,13 @@ class App(QMainWindow):
     def _on_fill_event(self, ev) -> None:
         """從 broker 執行緒接收 FillEvent，丟回 GUI 主執行緒更新成交時間。"""
         self._dispatch_ui(lambda: self._mark_order_filled(ev))
+        svc = getattr(self, "_account_svc", None)
+        if svc is not None:
+            try:
+                snap = svc.snapshot()
+                self._on_account_snapshot(snap)
+            except Exception:  # noqa: BLE001
+                pass
 
     def _on_strategy_event(self, ev: dict) -> None:
         """從策略引擎接收結構化觸發紀錄，丟回 GUI 主執行緒繪製。"""

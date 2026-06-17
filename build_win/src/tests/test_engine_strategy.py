@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from broker import BookEvent, OrderEvent, OrderSide, OrderStatus, TickEvent, build_symbol_info  # noqa: E402
+from broker import BookEvent, FillEvent, OrderEvent, OrderSide, OrderStatus, TickEvent, build_symbol_info  # noqa: E402
 from config import TradingConfig  # noqa: E402
 from engine import TradingEngine  # noqa: E402
 
@@ -121,6 +121,56 @@ class TestTradingEngineStrategyRules(unittest.TestCase):
         self.assertEqual(state.position_qty, 0)
         self.assertEqual(trades[-1]["action"], "SELL")
         self.assertTrue(any("策略=F4" in msg for _level, msg in logs))
+        self.assertEqual(strategy_events[-1]["strategy"], "F4")
+
+    def test_f4_ignores_market_event_that_triggered_buy_fill(self):
+        cfg = TradingConfig(
+            f9_enabled=False,
+            f5_enabled=False,
+            f4_open_ticks_to_sell=1,
+        )
+        engine, _logs, trades, strategy_events = self._make_engine(cfg)
+        state = engine._states["2330"]
+        entry_event_time = datetime(2026, 6, 17, 9, 17, 4, 73000)
+        state.pending = True
+        state.pending_side = "BUY"
+        state.pending_order_id = "B1"
+        state.pending_entry_strategy = "PRELOCK_ASK"
+        state.candle_index = 1
+        state.touched_limit_up_today = True
+        state.is_at_limit_up = False
+        state.last_price = Decimal(str(state.info.limit_up))
+        state.ask0_price = Decimal(str(state.info.limit_up))
+        state.last_market_event_time = entry_event_time
+
+        engine._on_broker_fill(FillEvent(
+            order_id="B1",
+            code="2330",
+            name="台積電",
+            side=OrderSide.BUY,
+            price=Decimal(str(state.info.limit_up)),
+            qty=1,
+            time=datetime(2026, 6, 17, 9, 17, 5, 718000),
+        ))
+
+        engine._tick(state, entry_event_time.timestamp() + 2)
+
+        self.assertEqual(state.position_qty, 1)
+        self.assertEqual([t["action"] for t in trades], ["BUY"])
+        self.assertFalse(any(ev["side"] == "SELL" for ev in strategy_events))
+
+        state.last_market_event_time = datetime(2026, 6, 17, 9, 17, 6)
+        engine._tick(state, entry_event_time.timestamp() + 3)
+
+        self.assertEqual(state.position_qty, 1)
+        self.assertEqual([t["action"] for t in trades], ["BUY"])
+
+        state.prelock_relocked_after_entry = True
+        state.last_market_event_time = datetime(2026, 6, 17, 9, 17, 7)
+        engine._tick(state, entry_event_time.timestamp() + 4)
+
+        self.assertEqual(state.position_qty, 0)
+        self.assertEqual(trades[-1]["action"], "SELL")
         self.assertEqual(strategy_events[-1]["strategy"], "F4")
 
     def test_f5_threshold_is_inclusive_at_499(self):
@@ -263,6 +313,37 @@ class TestTradingEngineStrategyRules(unittest.TestCase):
             self.assertTrue(state.entry_via_prelock_ask)
         self.assertEqual(strategy_events[-1]["strategy"], "鎖前委賣+F7")
         self.assertTrue(any("鎖板前漲停委賣 44 張 < 100 張" in msg for _level, msg in logs))
+
+    def test_prelock_ask_entry_buys_when_limit_ask_disappears(self):
+        cfg = TradingConfig(
+            f1_enabled=False,
+            f9_enabled=False,
+            f10_enabled=False,
+            f11_enabled=False,
+            f_prelock_ask_entry_enabled=True,
+            per_stock_amount=2_000_000,
+        )
+        engine, logs, _trades, strategy_events = self._make_engine(cfg)
+        state = engine._states["2330"]
+        state.last_limit_ask0_price = Decimal(str(state.info.limit_up))
+        state.last_limit_ask0_volume = 249
+        state.ask0_price = None
+        state.ask0_volume = 0
+        state.ask_qty_at_limit = 0
+        state.last_price = Decimal(str(state.info.limit_up))
+        state.is_at_limit_up = False
+
+        engine._tick(state, time.time())
+
+        self.assertTrue(state.pending or state.position_qty > 0)
+        if state.pending:
+            self.assertEqual(state.pending_entry_strategy, "PRELOCK_ASK")
+        else:
+            self.assertTrue(state.entry_via_prelock_ask)
+        self.assertEqual(strategy_events[-1]["strategy"], "鎖前委賣+F7")
+        self.assertTrue(strategy_events[-1]["details"]["prelock_ask_disappeared"])
+        self.assertEqual(strategy_events[-1]["details"]["previous_limit_ask_qty"], "249")
+        self.assertTrue(any("鎖板前漲停委賣消失（前筆 249 張）" in msg for _level, msg in logs))
 
     def test_prelock_ask_entry_requires_best_ask_at_limit(self):
         cfg = TradingConfig(
