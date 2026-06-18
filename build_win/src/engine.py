@@ -1027,6 +1027,8 @@ class TradingEngine:
         # ── 進場邏輯 ──────────────────────────────────────────────
         cfg = self.config
         info = state.info
+        if state.position_qty > 0:
+            return
         if state.pending or state.entry_blocked:
             return
         if self._try_prelock_ask_entry(state):
@@ -1309,6 +1311,8 @@ class TradingEngine:
         cfg = self.config
         info = state.info
 
+        if state.position_qty > 0 or state.pending:
+            return False
         if cfg.f12_enabled and info.open_limit_up and state.sold_today:
             self._skip_entry(state, "F12:開盤即漲停且當日已賣過")
             return False

@@ -1232,6 +1232,120 @@ class TestTradingEngineStrategyRules(unittest.TestCase):
 
         self.assertEqual(len(broker.orders), 1)
 
+    def test_today_20260618_duplicate_buy_sequences_do_not_reenter_after_fill(self):
+        class FakeBroker:
+            def __init__(self):
+                self.orders = []
+
+            def place_order(self, req):
+                self.orders.append(req)
+                return f"O{len(self.orders)}"
+
+        cfg = TradingConfig(
+            f1_enabled=False,
+            f9_enabled=False,
+            f10_enabled=False,
+            f11_enabled=False,
+            f_prelock_ask_entry_enabled=True,
+            limit_up_detection_mode="ask_or_bid_or_last",
+            per_stock_amount=2_000_000,
+        )
+
+        scenarios = [
+            {
+                "code": "6603",
+                "name": "富強鑫",
+                "limit_up": Decimal("24.2"),
+                "prelock_ask_qty": 14,
+                "fill_time": datetime(2026, 6, 18, 11, 2, 45, 229000),
+                "reenter_time": datetime(2026, 6, 18, 11, 2, 52, 249000),
+                "last_1s_vol": 10,
+            },
+            {
+                "code": "6224",
+                "name": "聚鼎",
+                "limit_up": Decimal("86.4"),
+                "prelock_ask_qty": 1,
+                "fill_time": datetime(2026, 6, 18, 11, 10, 23, 715000),
+                "reenter_time": datetime(2026, 6, 18, 11, 10, 23, 837000),
+                "last_1s_vol": 2,
+            },
+            {
+                "code": "5328",
+                "name": "華容",
+                "limit_up": Decimal("56.5"),
+                "prelock_ask_qty": 80,
+                "fill_time": datetime(2026, 6, 18, 11, 28, 33, 273000),
+                "reenter_time": datetime(2026, 6, 18, 11, 28, 43, 113000),
+                "last_1s_vol": 1,
+            },
+        ]
+
+        for scenario in scenarios:
+            broker = FakeBroker()
+            engine = TradingEngine(
+                cfg,
+                on_log=lambda _level, _msg: None,
+                on_trade=lambda _trade: None,
+                on_status=lambda _summary: None,
+                broker=broker,
+                symbol_infos={
+                    scenario["code"]: build_symbol_info(
+                        scenario["code"],
+                        scenario["name"],
+                        "TSE",
+                        scenario["limit_up"],
+                        is_disposal=False,
+                        is_attention=False,
+                        is_day_trade_restricted=False,
+                        prior_limit_up_streak=0,
+                    )
+                },
+            )
+            engine._running = True
+            engine._current_datetime = lambda dt=scenario["fill_time"]: dt
+            state = engine._states[scenario["code"]]
+            state.info.limit_up = float(scenario["limit_up"])
+            state.last_price = scenario["limit_up"]
+            state.ask0_price = scenario["limit_up"]
+            state.ask0_volume = scenario["prelock_ask_qty"]
+            state.ask_qty_at_limit = scenario["prelock_ask_qty"]
+            state.is_at_limit_up = False
+            state.last_market_event_time = scenario["fill_time"]
+
+            engine._tick(state, scenario["fill_time"].timestamp())
+
+            self.assertEqual(len(broker.orders), 1, scenario["code"])
+            self.assertTrue(state.pending, scenario["code"])
+
+            engine._on_broker_fill(FillEvent(
+                order_id="B1",
+                code=scenario["code"],
+                name=scenario["name"],
+                side=OrderSide.BUY,
+                price=scenario["limit_up"],
+                qty=broker.orders[0].qty,
+                time=scenario["fill_time"],
+            ))
+
+            self.assertEqual(state.position_qty, broker.orders[0].qty, scenario["code"])
+            self.assertFalse(state.pending, scenario["code"])
+
+            state.is_at_limit_up = True
+            state.limit_up_since = scenario["reenter_time"].timestamp()
+            state.ask0_price = scenario["limit_up"]
+            state.ask0_volume = 0
+            state.ask_qty_at_limit = 0
+            state.last_price = scenario["limit_up"]
+            state.last_1s_vol = scenario["last_1s_vol"]
+            state.last_market_event_time = scenario["reenter_time"]
+            engine._current_datetime = lambda dt=scenario["reenter_time"]: dt
+
+            engine._tick(state, scenario["reenter_time"].timestamp())
+
+            self.assertEqual(len(broker.orders), 1, scenario["code"])
+            self.assertEqual(state.position_qty, broker.orders[0].qty, scenario["code"])
+
     def test_open_board_sell_triggers_without_waiting_for_tick_loop(self):
         cfg = TradingConfig(
             f9_enabled=False,
