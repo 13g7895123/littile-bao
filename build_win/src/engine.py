@@ -109,6 +109,7 @@ class StockState:
         self.last_recv_time: Optional[datetime] = None
         self.first_limit_up_candidate_event_time: Optional[datetime] = None
         self.first_limit_up_confirmed_event_time: Optional[datetime] = None
+        self.limit_up_book_confirmed: bool = False
         self.has_ask_levels: bool = False
         self.has_bid_levels: bool = False
         self.limit_up_signal_states: Dict[str, bool] = {}
@@ -133,6 +134,7 @@ class StockState:
         self.entry_price: Optional[Decimal] = None  # 進場成交均價
         self.entry_via_prelock_ask: bool = False
         self.pending_entry_strategy: str = ""
+        self.last_cleared_buy_entry_strategy: str = ""
 
 
 MOCK_STOCKS = [
@@ -705,6 +707,8 @@ class TradingEngine:
         )
         mode = state.active_limit_up_mode or self._limit_up_mode
         sealed = bool(state.limit_up_candidate_states.get(mode, False))
+        if sealed and source == "book":
+            state.limit_up_book_confirmed = True
         startup_mode = self._startup_limit_up_mode or LOCKED_STARTUP_LIMIT_UP_DETECTION_MODE
         startup_sealed = bool(state.limit_up_candidate_states.get(startup_mode, False))
         candidate_sealed = bool(
@@ -761,6 +765,9 @@ class TradingEngine:
                 state.startup_limitup_blocked = False
                 state.last_skip_reason = ""
                 state.is_at_limit_up = False
+                state.limit_up_book_confirmed = False
+                state.first_limit_up_candidate_event_time = None
+                state.first_limit_up_confirmed_event_time = None
                 self.on_log(
                     "INFO",
                     f"[{state.info.code} {state.info.name}] 啟用後既有漲停已撬開，恢復觀察重鎖進場",
@@ -779,6 +786,9 @@ class TradingEngine:
             if state.is_at_limit_up and not state.startup_limitup_blocked:
                 state.is_at_limit_up = False
                 state.limit_up_since = None
+                state.limit_up_book_confirmed = False
+                state.first_limit_up_candidate_event_time = None
+                state.first_limit_up_confirmed_event_time = None
 
         self._log_limit_up_signal_change(
             state,
@@ -984,6 +994,7 @@ class TradingEngine:
                         cancel_ok = bool(self.broker.cancel_order(state.pending_order_id))
                     except Exception as e:  # noqa: BLE001
                         self.on_log("WARN", f"[{info.code}] 取消委託失敗：{e}")
+                state.last_cleared_buy_entry_strategy = state.pending_entry_strategy
                 self._clear_pending_order_state(state)
                 state.entry_blocked = True
                 state.entry_blocked_reason = "爆量取消"
@@ -1030,6 +1041,13 @@ class TradingEngine:
         if state.position_qty > 0:
             return
         if state.pending or state.entry_blocked:
+            return
+        if (
+            state.active_limit_up_mode == "strict_lock_with_effective_bid_tick_confirmed"
+            and state.is_at_limit_up
+            and not state.limit_up_book_confirmed
+        ):
+            self._skip_entry(state, "等待 book 確認鎖板", log=False)
             return
         if self._try_prelock_ask_entry(state):
             return
@@ -1383,6 +1401,7 @@ class TradingEngine:
         state.pending_side = "BUY"
         state.pending_order_id = ""
         state.pending_entry_strategy = "PRELOCK_ASK" if prelock else "LIMIT_LOCK"
+        state.last_cleared_buy_entry_strategy = ""
         state.last_skip_reason = ""
         self._log_strategy_trigger("BUY", state, strategy, details)
         bypass_note = (
@@ -1949,6 +1968,7 @@ class TradingEngine:
                 state.pending_side = side_value
                 state.pending_order_id = order_id_value
             elif status_value in {"CANCELLED", "REJECTED"} and state.pending_order_id == order_id_value:
+                state.last_cleared_buy_entry_strategy = ""
                 self._clear_pending_order_state(state)
             side_key = str(getattr(ev.side, "value", ev.side) or "").upper()
             trigger_decision_time = state.last_strategy_decision_times.get(side_key)
@@ -2000,8 +2020,12 @@ class TradingEngine:
             info = state.info
             qty = int(ev.qty)
             if ev.side.value == "BUY":
-                prelock_fill = state.pending_entry_strategy == "PRELOCK_ASK"
+                prelock_fill = (
+                    state.pending_entry_strategy == "PRELOCK_ASK"
+                    or state.last_cleared_buy_entry_strategy == "PRELOCK_ASK"
+                )
                 self._clear_pending_order_state(state)
+                state.last_cleared_buy_entry_strategy = ""
                 state.position_qty += qty
                 state.entry_blocked_reason = ""
                 self._reset_post_entry_exit_state(state)

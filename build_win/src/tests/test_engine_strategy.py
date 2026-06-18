@@ -948,6 +948,85 @@ class TestTradingEngineStrategyRules(unittest.TestCase):
 
         self.assertTrue(engine._states["2330"].is_at_limit_up)
         self.assertTrue(engine._states["2330"].limit_up_candidate_states["strict_lock_with_effective_bid_tick_confirmed"])
+        self.assertFalse(engine._states["2330"].limit_up_book_confirmed)
+
+        engine._on_book(BookEvent(
+            code="2330",
+            time=datetime(2026, 5, 19, 9, 1, 2, 500000),
+            ask=[],
+            bid=[
+                SimpleNamespace(price=Decimal("0"), volume=999),
+                SimpleNamespace(price=Decimal("1100"), volume=99),
+            ],
+        ))
+
+        self.assertTrue(engine._states["2330"].is_at_limit_up)
+        self.assertTrue(engine._states["2330"].limit_up_book_confirmed)
+
+    def test_strict_lock_entry_waits_for_book_confirmation(self):
+        class FakeBroker:
+            def __init__(self):
+                self.orders = []
+
+            def place_order(self, req):
+                self.orders.append(req)
+                return "O1"
+
+        cfg = TradingConfig(
+            f1_enabled=False,
+            f9_enabled=False,
+            f10_enabled=False,
+            f11_enabled=False,
+            per_stock_amount=2_000_000,
+            limit_up_detection_mode="strict_lock_with_effective_bid_tick_confirmed",
+        )
+        broker = FakeBroker()
+        engine = TradingEngine(
+            cfg,
+            on_log=lambda _level, _msg: None,
+            on_trade=lambda _trade: None,
+            on_status=lambda _summary: None,
+            broker=broker,
+        )
+        engine._running = True
+        engine._current_datetime = lambda: datetime(2026, 5, 19, 9, 1, 2)
+
+        engine._on_book(BookEvent(
+            code="2330",
+            time=datetime(2026, 5, 19, 9, 1, 1, 500000),
+            ask=[],
+            bid=[
+                SimpleNamespace(price=Decimal("0"), volume=999),
+                SimpleNamespace(price=Decimal("1100"), volume=99),
+            ],
+        ))
+        engine._on_tick(TickEvent(
+            code="2330",
+            time=datetime(2026, 5, 19, 9, 1, 2),
+            price=Decimal("1100"),
+            volume=10,
+            cum_volume=110,
+            is_limit_up_price=True,
+            is_limit_up_bid=True,
+        ))
+
+        state = engine._states["2330"]
+        self.assertTrue(state.is_at_limit_up)
+        self.assertFalse(state.limit_up_book_confirmed)
+        self.assertEqual(len(broker.orders), 0)
+
+        engine._on_book(BookEvent(
+            code="2330",
+            time=datetime(2026, 5, 19, 9, 1, 2, 500000),
+            ask=[],
+            bid=[
+                SimpleNamespace(price=Decimal("0"), volume=999),
+                SimpleNamespace(price=Decimal("1100"), volume=99),
+            ],
+        ))
+
+        self.assertTrue(state.limit_up_book_confirmed)
+        self.assertEqual(len(broker.orders), 1)
 
     def test_tick_confirmed_lock_does_not_reuse_stale_tick_from_previous_segment(self):
         cfg = TradingConfig(
@@ -1054,6 +1133,68 @@ class TestTradingEngineStrategyRules(unittest.TestCase):
             decision_events[-1]["details"]["confirmed_lock_event_time"],
             "2026-05-19T09:32:24",
         )
+
+    def test_strict_lock_unlock_resets_confirmed_time_and_book_confirmation(self):
+        cfg = TradingConfig(
+            f1_enabled=False,
+            f9_enabled=False,
+            f10_enabled=False,
+            limit_up_detection_mode="strict_lock_with_effective_bid_tick_confirmed",
+        )
+        engine, _logs, _trades, _strategy_events = self._make_engine(cfg)
+        state = engine._states["2330"]
+
+        engine._on_book(BookEvent(
+            code="2330",
+            time=datetime(2026, 5, 19, 11, 6, 17, 700000),
+            ask=[],
+            bid=[
+                SimpleNamespace(price=Decimal("0"), volume=248),
+                SimpleNamespace(price=Decimal("1100"), volume=194),
+            ],
+        ))
+        engine._on_tick(TickEvent(
+            code="2330",
+            time=datetime(2026, 5, 19, 11, 6, 17, 714352),
+            price=Decimal("1100"),
+            volume=10,
+            is_limit_up_price=True,
+            is_limit_up_bid=True,
+        ))
+        engine._on_book(BookEvent(
+            code="2330",
+            time=datetime(2026, 5, 19, 11, 6, 17, 720000),
+            ask=[],
+            bid=[
+                SimpleNamespace(price=Decimal("0"), volume=248),
+                SimpleNamespace(price=Decimal("1100"), volume=194),
+            ],
+        ))
+
+        self.assertTrue(state.is_at_limit_up)
+        self.assertTrue(state.limit_up_book_confirmed)
+        self.assertIsNotNone(state.first_limit_up_confirmed_event_time)
+
+        engine._on_book(BookEvent(
+            code="2330",
+            time=datetime(2026, 5, 19, 11, 6, 17, 747129),
+            ask=[SimpleNamespace(price=Decimal("1100"), volume=55)],
+            bid=[SimpleNamespace(price=Decimal("1095"), volume=19)],
+        ))
+        engine._on_tick(TickEvent(
+            code="2330",
+            time=datetime(2026, 5, 19, 11, 6, 17, 747130),
+            price=Decimal("1095"),
+            volume=1,
+            is_limit_up_price=False,
+            is_limit_up_bid=False,
+            is_limit_up_ask=True,
+        ))
+
+        self.assertFalse(state.is_at_limit_up)
+        self.assertFalse(state.limit_up_book_confirmed)
+        self.assertIsNone(state.first_limit_up_confirmed_event_time)
+        self.assertIsNone(state.first_limit_up_candidate_event_time)
 
     def test_update_limitup_mode_refreshes_state_and_summary_signals(self):
         cfg = TradingConfig(
@@ -1602,6 +1743,49 @@ class TestTradingEngineStrategyRules(unittest.TestCase):
         self.assertFalse(state.pending)
         self.assertEqual(state.entry_blocked_reason, "爆量取消")
         self.assertEqual(strategy_events[-1]["strategy"], "F6")
+
+    def test_buy_fill_after_f6_cancel_keeps_prelock_entry_flag(self):
+        class FakeBroker:
+            def __init__(self):
+                self.cancelled = []
+
+            def cancel_order(self, order_id):
+                self.cancelled.append(order_id)
+                return True
+
+        cfg = TradingConfig(f9_enabled=False, f6_enabled=True, f4_enabled=False, f5_enabled=False)
+        engine, _logs, trades, _strategy_events = self._make_engine(cfg)
+        engine.broker = FakeBroker()
+        state = engine._states["2330"]
+        state.pending = True
+        state.pending_side = "BUY"
+        state.pending_order_id = "B1"
+        state.pending_entry_strategy = "PRELOCK_ASK"
+        state.candle_index = 1
+        state.is_at_limit_up = False
+        state.last_price = Decimal(str(state.info.limit_up))
+        now = time.time()
+        state.tick_vols.append((now, 600))
+
+        engine._tick(state, now)
+
+        self.assertEqual(engine.broker.cancelled, ["B1"])
+        self.assertEqual(state.last_cleared_buy_entry_strategy, "PRELOCK_ASK")
+
+        engine._on_broker_fill(FillEvent(
+            order_id="B1",
+            code="2330",
+            name="台積電",
+            side=OrderSide.BUY,
+            price=Decimal(str(state.info.limit_up)),
+            qty=1,
+            time=datetime.fromtimestamp(now),
+        ))
+
+        self.assertEqual(state.position_qty, 1)
+        self.assertTrue(state.entry_via_prelock_ask)
+        self.assertEqual(state.last_cleared_buy_entry_strategy, "")
+        self.assertEqual(trades[-1]["action"], "BUY")
 
     def test_f6_does_not_cancel_pending_sell_order(self):
         class FakeBroker:
