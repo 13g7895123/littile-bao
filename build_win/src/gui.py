@@ -34,6 +34,7 @@ from config import (
 )
 from engine import TradingEngine
 from limitup_detection import LIMIT_UP_DETECTION_MODES, resolve_limit_up_mode
+import official_special_flags
 
 # ──────────────────────────────────────────────
 #  配色（暗色交易終端風格）
@@ -377,6 +378,7 @@ class App(QMainWindow):
         self._current_tab = "dashboard"
         self._hidden_tabs = {"risk"}
         self._latest_monitor_summary = []
+        self._official_special_flags_meta: Optional[dict] = None
         self._limitup_test_selected_code = ""
         self._limitup_test_selected_mode = resolve_limit_up_mode(
             getattr(self.cfg, "limit_up_detection_mode", "")
@@ -4114,6 +4116,22 @@ class App(QMainWindow):
     def _confirm_fubon_special_candidates(self, loader, candidates: list, cfg: TradingConfig) -> list:
         if not cfg.f11_enabled or not candidates:
             return candidates
+        payload, source = official_special_flags.resolve_today_payload(
+            base_dir=runtime_base_dir(),
+            markets=cfg.get_markets(),
+        )
+        if payload is not None:
+            return self._confirm_candidates_with_official_special_flags(
+                candidates,
+                payload,
+                source=source,
+            )
+
+        push_log(
+            "WARN",
+            "F11 官方清單未取得當日更新資料，退回富邦 API 最後確認",
+            include_traceback=False,
+        )
         codes = [si.code for si in candidates]
         try:
             refreshed = loader.load(codes) or {}
@@ -4161,6 +4179,63 @@ class App(QMainWindow):
         push_log(
             "INFO",
             f"F11 富邦 API 已最後確認 {len(codes)} 支候選股，保留 {len(kept)} 支",
+            include_traceback=False,
+        )
+        return kept
+
+    def _confirm_candidates_with_official_special_flags(
+        self,
+        candidates: list,
+        payload: dict,
+        *,
+        source: str,
+    ) -> list:
+        flags_map = payload.get("flags") if isinstance(payload, dict) else {}
+        flags_map = flags_map if isinstance(flags_map, dict) else {}
+        trade_date = str(payload.get("trade_date_roc") or "")
+        path = official_special_flags.cache_path(
+            runtime_base_dir(),
+            datetime.now().date(),
+        )
+        source_text = "本地快取" if source == "cache" else "官方 API"
+        self._official_special_flags_meta = {
+            "source": source,
+            "trade_date_roc": trade_date,
+            "flagged_count": len(flags_map),
+            "cache_path": str(path),
+        }
+        push_log(
+            "INFO",
+            f"F11 官方清單已由{source_text}載入 {len(flags_map)} 筆"
+            f"（trade_date={trade_date}，cache={path}）",
+            include_traceback=False,
+        )
+
+        kept = []
+        excluded = []
+        for si in candidates:
+            raw = flags_map.get(si.code)
+            info = raw if isinstance(raw, dict) else {}
+            si.is_disposal = bool(info.get("is_disposal", False))
+            si.is_attention = bool(info.get("is_attention", False))
+            si.is_day_trade_restricted = bool(info.get("is_day_trade_restricted", False))
+            reasons = self._special_flag_reasons(si)
+            if reasons:
+                excluded.append(f"{si.code} {si.name}（{'/'.join(reasons)}）")
+            else:
+                kept.append(si)
+
+        if excluded:
+            preview = "、".join(excluded[:20])
+            more = "" if len(excluded) <= 20 else f"，另 {len(excluded) - 20} 支"
+            push_log(
+                "INFO",
+                f"F11 官方清單排除 {len(excluded)} 支特殊股：{preview}{more}",
+                include_traceback=False,
+            )
+        push_log(
+            "INFO",
+            f"F11 官方清單已最後確認 {len(candidates)} 支候選股，保留 {len(kept)} 支",
             include_traceback=False,
         )
         return kept

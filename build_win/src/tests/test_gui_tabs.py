@@ -1010,6 +1010,41 @@ class TestGuiTabLayout(unittest.TestCase):
         self.assertFalse(set(symbol_infos).intersection(reserve_pool))
         self.assertEqual(list(reserve_pool.keys()), ["1500", "1501", "1502"])
 
+    def test_confirm_candidates_prefers_official_special_flags_cache(self):
+        from broker.universe import build_symbol_info
+
+        class FakeLoader:
+            def load(self, _codes):
+                raise AssertionError("unexpected fubon special lookup")
+
+        candidates = [
+            build_symbol_info("2330", "台積電", "TSE", Decimal("100"), prev_volume=1000),
+            build_symbol_info("2317", "鴻海", "TSE", Decimal("100"), prev_volume=1000),
+        ]
+        payload = {
+            "trade_date_roc": "1150623",
+            "flags": {
+                "2317": {
+                    "is_attention": True,
+                    "is_disposal": False,
+                    "is_day_trade_restricted": False,
+                }
+            },
+        }
+
+        with mock.patch(
+            "gui.official_special_flags.resolve_today_payload",
+            return_value=(payload, "cache"),
+        ):
+            kept = self.win._confirm_fubon_special_candidates(
+                FakeLoader(),
+                candidates,
+                self.win._collect_config(),
+            )
+
+        self.assertEqual([item.code for item in kept], ["2330"])
+        self.assertTrue(candidates[1].is_attention)
+
 
 if __name__ == "__main__":
     unittest.main()
