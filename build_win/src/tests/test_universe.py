@@ -443,6 +443,31 @@ class TestPreviousTradingDaysApi(unittest.TestCase):
             self.assertEqual(cached_client.calls, [])
             self.assertEqual(set(cached_infos.keys()), {"1111", "2222"})
 
+    def test_parse_payload_preserves_special_flags(self):
+        payload = {
+            "as_of": "2026-05-10",
+            "data": [
+                {
+                    "symbol": "1111",
+                    "name": "甲",
+                    "market": "TWSE",
+                    "is_disposition": True,
+                    "is_attention": False,
+                    "is_day_trade_restricted": True,
+                    "data": [
+                        {"date": "2026-05-08", "close": "50", "volume": "1000"},
+                        {"date": "2026-05-07", "close": "49", "volume": "900"},
+                    ],
+                }
+            ],
+        }
+
+        infos = PreviousTradingDaysApiClient.parse_payload(payload, markets=("TSE",))
+
+        self.assertTrue(infos["1111"].is_disposal)
+        self.assertFalse(infos["1111"].is_attention)
+        self.assertTrue(infos["1111"].is_day_trade_restricted)
+
 
 if __name__ == "__main__":
     unittest.main()

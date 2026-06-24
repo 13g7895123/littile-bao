@@ -505,6 +505,19 @@ class PreviousTradingDaysApiClient:
             prev_close=latest[1],
             quote_price=latest[1],
             prev_volume=latest[2],
+            is_disposal=cls._bool_flag(
+                item,
+                "is_disposition", "is_disposal", "isDisposition", "isDisposal",
+            ),
+            is_attention=cls._bool_flag(
+                item,
+                "is_attention", "isAttention", "attention",
+            ),
+            is_day_trade_restricted=cls._bool_flag(
+                item,
+                "is_day_trade_restricted", "isDayTradeRestricted",
+                "dayTradeRestricted",
+            ),
             prior_limit_up_streak=prior_streak,
             display_prev_close=prior[1] if prior is not None else None,
             closed_at_limit_up=(prior_streak == 1) if prior is not None else None,
@@ -545,6 +558,23 @@ class PreviousTradingDaysApiClient:
             return int(Decimal(str(raw)))
         except Exception:
             return 0
+
+    @staticmethod
+    def _bool_flag(item: dict, *names: str) -> bool:
+        for name in names:
+            value = item.get(name)
+            if value is None:
+                continue
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, (int, float, Decimal)):
+                return bool(value)
+            text = str(value).strip().lower()
+            if text in ("1", "true", "t", "yes", "y", "是", "有"):
+                return True
+            if text in ("0", "false", "f", "no", "n", "否", "無", ""):
+                return False
+        return False
 
 
 # ─────────────────────────────────────────────────────────

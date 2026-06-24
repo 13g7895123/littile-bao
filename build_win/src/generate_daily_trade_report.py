@@ -261,6 +261,10 @@ def render_report(
     orphan_sells: list[OrphanSell],
     runtime: dict[str, object],
 ) -> str:
+    def is_time_sync_related(line: str) -> bool:
+        keywords = ("校時", "stripchart", "修復完成", "時間基準", "修復後")
+        return any(keyword in line for keyword in keywords)
+
     sell_fills = [fill for fill in fills if fill.side == "SELL"]
     buy_amount = sum(fill.price * fill.qty * Decimal("1000") for fill in buys)
     sell_amount = sum(fill.price * fill.qty * Decimal("1000") for fill in sell_fills)
@@ -352,6 +356,7 @@ def render_report(
     runtime_lines.append(f"- 最後一筆進場：`{last_buy_time}`；其後多次出現「F1:已過進場時段 {entry_cutoff_text}」略過新進場。")
     if len(modes) >= 2 and modes[0] != modes[-1]:
         runtime_lines.append(f"- 鎖漲停判斷模式曾在盤中變更：上午先用 `{modes[0]}`，重連後改為 `{modes[-1]}`。")
+    runtime_lines = [line for line in runtime_lines if not is_time_sync_related(line)]
 
     obs_lines = [
         f"- 今日 {len(buys)} 筆買進全部屬 `鎖漲停` 情境，`program.log` 在進場前都出現「已鎖漲停，忽略 F1 委賣張數限制」與「已鎖漲停，忽略 F10 進場確認」。",
@@ -369,6 +374,8 @@ def render_report(
         if config_path.exists()
         else "- 本次未找到可用 `config.json`，策略摘要改以當日 log 觀察值為準。",
     ]
+    important_lines = [line for line in important_lines if not is_time_sync_related(line)]
+    obs_lines = [line for line in obs_lines if not is_time_sync_related(line)]
 
     return f"""# {report_date} 今日交易整理
 

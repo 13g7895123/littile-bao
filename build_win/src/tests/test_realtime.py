@@ -32,6 +32,7 @@ class _FakeStockWebSocket:
     def __init__(self) -> None:
         self.handlers: dict = {}
         self.subscribe_calls: list = []
+        self.unsubscribe_calls: list = []
         self.connected = False
         self.disconnected = False
 
@@ -46,6 +47,9 @@ class _FakeStockWebSocket:
 
     def subscribe(self, payload) -> None:
         self.subscribe_calls.append(payload)
+
+    def unsubscribe(self, payload) -> None:
+        self.unsubscribe_calls.append(payload)
 
 
 class TestMockRealtimeFeed(unittest.TestCase):
@@ -314,6 +318,52 @@ class TestFubonRealtimeFeedSkeleton(unittest.TestCase):
             feed.stop()
 
         self.assertEqual(len(events), 1)
+
+    def test_swap_symbols_uses_incremental_unsubscribe_and_subscribe(self):
+        clients: list[_FakeStockWebSocket] = []
+
+        def factory(_adapter, _mode, _index):
+            client = _FakeStockWebSocket()
+            clients.append(client)
+            return client
+
+        feed = FubonRealtimeFeed(SimpleNamespace(sdk=SimpleNamespace()), ws_client_factory=factory)
+        codes = [f"{i:04d}" for i in range(150)]
+        feed.subscribe(codes, {})
+
+        feed.start()
+        try:
+            ok = feed.swap_symbols(
+                ["0000", "0100"],
+                ["9000", "9001"],
+                {
+                    "9000": SymbolMeta(code="9000", limit_up=Decimal("10"), prev_close=Decimal("9")),
+                    "9001": SymbolMeta(code="9001", limit_up=Decimal("10"), prev_close=Decimal("9")),
+                },
+            )
+        finally:
+            feed.stop()
+
+        self.assertTrue(ok)
+        self.assertEqual(len(clients), 2)
+        self.assertEqual(clients[0].unsubscribe_calls, [
+            {"channel": "trades", "symbols": ["0000"]},
+            {"channel": "books", "symbols": ["0000"]},
+        ])
+        self.assertEqual(clients[1].unsubscribe_calls, [
+            {"channel": "trades", "symbols": ["0100"]},
+            {"channel": "books", "symbols": ["0100"]},
+        ])
+        self.assertEqual(clients[0].subscribe_calls[-2:], [
+            {"channel": "trades", "symbols": ["9000"]},
+            {"channel": "books", "symbols": ["9000"]},
+        ])
+        self.assertEqual(clients[1].subscribe_calls[-2:], [
+            {"channel": "trades", "symbols": ["9001"]},
+            {"channel": "books", "symbols": ["9001"]},
+        ])
+        self.assertIn("9000", feed._subscribed)
+        self.assertIn("9001", feed._subscribed)
 
 
 if __name__ == "__main__":

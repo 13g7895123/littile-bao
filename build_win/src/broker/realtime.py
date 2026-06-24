@@ -102,6 +102,15 @@ class RealtimeFeed(ABC):
     ) -> None:
         """訂閱代碼清單；meta 提供漲停價等資訊（Mock 用，FubonFeed 可忽略）。"""
 
+    def swap_symbols(
+        self,
+        removed_codes: List[str],
+        added_codes: List[str],
+        meta: Dict[str, "SymbolMeta"],
+    ) -> bool:
+        """盡量以增量方式替換訂閱；回傳是否成功走局部更新。"""
+        return False
+
     def _emit_tick(self, ev: TickEvent) -> None:
         if self._tick_cb is not None:
             try:
@@ -284,6 +293,7 @@ class FubonRealtimeFeed(RealtimeFeed):
         self._ws_clients: List[Any] = []
         self._ws_client_factory = ws_client_factory
         self._subscribed: List[str] = []
+        self._code_to_ws_index: Dict[str, int] = {}
         self._sdk_token: Optional[str] = None
         self._started = False
         self._lock = threading.Lock()
@@ -346,9 +356,74 @@ class FubonRealtimeFeed(RealtimeFeed):
             unique_codes = unique_codes[:max_symbols]
         with self._lock:
             self._subscribed = unique_codes
+            self._rebuild_code_to_ws_index_locked()
         self._log("INFO", f"[FubonFeed] subscribe() 登記 {len(unique_codes)} 支股票代碼")
         if self._started:
             self._do_subscribe()
+
+    def swap_symbols(
+        self,
+        removed_codes: List[str],
+        added_codes: List[str],
+        meta: Dict[str, SymbolMeta],
+    ) -> bool:
+        if not self._started or not self._ws_clients:
+            return False
+        if len(removed_codes) != len(added_codes):
+            self._log("WARN", "[FubonFeed] swap_symbols() 移除/新增數量不一致，改走全量重訂閱")
+            return False
+
+        removed = [code for code in removed_codes if code]
+        added = [code for code in added_codes if code]
+        if not removed and not added:
+            return True
+
+        with self._lock:
+            code_to_ws = dict(self._code_to_ws_index)
+            subscribed = list(self._subscribed)
+
+        plan: List[Tuple[int, str, str]] = []
+        seen_removed = set()
+        seen_added = set()
+        for old_code, new_code in zip(removed, added):
+            if old_code in seen_removed or new_code in seen_added:
+                self._log("WARN", "[FubonFeed] swap_symbols() 偵測到重複代碼，改走全量重訂閱")
+                return False
+            ws_index = code_to_ws.get(old_code)
+            if ws_index is None or ws_index >= len(self._ws_clients):
+                self._log("WARN", f"[FubonFeed] 找不到 {old_code} 的 websocket 指派，改走全量重訂閱")
+                return False
+            plan.append((ws_index, old_code, new_code))
+            seen_removed.add(old_code)
+            seen_added.add(new_code)
+
+        try:
+            for ws_index, old_code, new_code in plan:
+                ws = self._ws_clients[ws_index]
+                unsub = getattr(ws, "unsubscribe", None)
+                sub = getattr(ws, "subscribe", None)
+                if not callable(unsub) or not callable(sub):
+                    self._log("WARN", f"[FubonFeed] websocket #{ws_index + 1} 不支援 unsubscribe()/subscribe()，改走全量重訂閱")
+                    return False
+                for channel in self._channels:
+                    unsub({"channel": channel, "symbols": [old_code]})
+                    sub({"channel": channel, "symbols": [new_code]})
+            with self._lock:
+                for _ws_index, old_code, new_code in plan:
+                    try:
+                        pos = self._subscribed.index(old_code)
+                    except ValueError:
+                        continue
+                    self._subscribed[pos] = new_code
+                self._rebuild_code_to_ws_index_locked()
+            self._log(
+                "INFO",
+                f"[FubonFeed] 已局部換股：移除 {len(removed)} 支、補入 {len(added)} 支，不重建 websocket",
+            )
+            return True
+        except Exception as e:  # noqa: BLE001
+            self._log("ERROR", f"[FubonFeed] 局部換股失敗，改走全量重訂閱：{e}")
+            return False
 
     def start(self) -> None:
         if self._started:
@@ -469,6 +544,7 @@ class FubonRealtimeFeed(RealtimeFeed):
             self._sdk_token = None
             self._started = False
             self._disconnect_notified = False
+            self._code_to_ws_index = {}
 
     # ── 內部 ────────────────────────────────
 
@@ -521,6 +597,13 @@ class FubonRealtimeFeed(RealtimeFeed):
             self._subscribed[index:index + per_connection]
             for index in range(0, len(self._subscribed), per_connection)
         ]
+
+    def _rebuild_code_to_ws_index_locked(self) -> None:
+        per_connection = self._symbols_per_connection()
+        self._code_to_ws_index = {
+            code: index // per_connection
+            for index, code in enumerate(self._subscribed)
+        }
 
     def _required_connection_count(self) -> int:
         chunks = len(self._symbol_chunks())

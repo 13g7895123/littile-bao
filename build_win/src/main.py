@@ -12,6 +12,7 @@ from typing import List, Tuple
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from app_logging import configure_runtime_logging, get_runtime_log_path, read_file_logging_flag
+from windows_time_sync import verify_and_repair_cached
 
 
 def _log_dir():
@@ -159,11 +160,11 @@ def _run_windows_time_startup_checks() -> Tuple[List[str], List[str]]:
     if not _is_windows():
         return startup_notes, startup_warnings
 
-    if not _ensure_w32time_running(startup_notes):
-        startup_warnings.append(startup_notes[-1])
-        return startup_notes, startup_warnings
-    if not _resync_windows_clock(startup_notes):
-        startup_warnings.append(startup_notes[-1])
+    result = verify_and_repair_cached(threshold_seconds=0.05, force_step_correction=True)
+    startup_notes.extend(result.notes)
+    startup_warnings.extend(result.warnings)
+    if not result.success and not startup_warnings:
+        startup_warnings.append("Windows 校時未完成")
     return startup_notes, startup_warnings
 
 
