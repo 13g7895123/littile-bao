@@ -10,6 +10,7 @@ from __future__ import annotations
 import random
 import threading
 import time
+import math
 from collections import deque
 from datetime import date, datetime, time as dtime
 from decimal import Decimal
@@ -1607,6 +1608,45 @@ class TradingEngine:
             return 1
         return max(1, int((limit_up - state.ask0_price) / tick))
 
+    def _limit_bid_queue_qty(self, state: StockState) -> int:
+        limit_up = Decimal(str(state.info.limit_up))
+        if state.effective_bid0_price == limit_up and state.effective_bid0_volume > 0:
+            return int(state.effective_bid0_volume)
+        if state.bid0_price == limit_up and state.bid0_volume > 0:
+            return int(state.bid0_volume)
+        return 0
+
+    def _f5_sell_trigger_snapshot(self, state: StockState) -> Optional[dict]:
+        if not self.config.f5_enabled:
+            return None
+        mode = str(getattr(self.config, "volume_spike_sell_mode", "qty") or "qty").strip().lower()
+        if mode == "ratio":
+            queue_qty = self._limit_bid_queue_qty(state)
+            ratio_percent = max(0.0, float(getattr(self.config, "volume_spike_sell_ratio_percent", 0.0) or 0.0))
+            if queue_qty <= 0 or ratio_percent <= 0:
+                return None
+            threshold = max(1, int(math.ceil(queue_qty * ratio_percent / 100.0)))
+            if state.last_1s_vol < threshold:
+                return None
+            actual_ratio = state.last_1s_vol / queue_qty * 100.0
+            return {
+                "mode": "ratio",
+                "last_1s_vol": state.last_1s_vol,
+                "threshold": threshold,
+                "ratio_percent": ratio_percent,
+                "actual_ratio_percent": actual_ratio,
+                "limit_bid_queue_qty": queue_qty,
+            }
+
+        threshold = max(0, int(getattr(self.config, "volume_spike_sell_threshold", 0) or 0))
+        if state.last_1s_vol < threshold:
+            return None
+        return {
+            "mode": "qty",
+            "last_1s_vol": state.last_1s_vol,
+            "threshold": threshold,
+        }
+
     @staticmethod
     def _event_time_to_ts(event_time, fallback: float) -> float:
         if event_time is not None and hasattr(event_time, "timestamp"):
@@ -1671,12 +1711,12 @@ class TradingEngine:
                 "trigger_time": event_ts,
             }
 
-        if cfg.f5_enabled and state.last_1s_vol >= cfg.volume_spike_sell_threshold:
+        f5_snapshot = self._f5_sell_trigger_snapshot(state)
+        if f5_snapshot is not None:
             if state.f5_first_trigger_at is None:
                 state.f5_first_trigger_at = event_ts
                 state.f5_trigger_snapshot = {
-                    "last_1s_vol": state.last_1s_vol,
-                    "threshold": cfg.volume_spike_sell_threshold,
+                    **f5_snapshot,
                     "trigger_time": event_ts,
                 }
 
@@ -1729,10 +1769,18 @@ class TradingEngine:
             )
         elif winner == "F5":
             snapshot = dict(state.f5_trigger_snapshot or {})
-            reason = (
-                f"1秒量 {snapshot.get('last_1s_vol')} 張 >= "
-                f"{snapshot.get('threshold')} 張，爆量出場"
-            )
+            if snapshot.get("mode") == "ratio":
+                reason = (
+                    f"1秒量 {snapshot.get('last_1s_vol')} 張 >= "
+                    f"漲停買一 {snapshot.get('limit_bid_queue_qty')} 張的 "
+                    f"{snapshot.get('ratio_percent')}% "
+                    f"（門檻 {snapshot.get('threshold')} 張），爆量出場"
+                )
+            else:
+                reason = (
+                    f"1秒量 {snapshot.get('last_1s_vol')} 張 >= "
+                    f"{snapshot.get('threshold')} 張，爆量出場"
+                )
         else:
             snapshot = dict(state.prelock_stop_trigger_snapshot or {})
             reason = (

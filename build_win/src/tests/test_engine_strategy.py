@@ -192,6 +192,70 @@ class TestTradingEngineStrategyRules(unittest.TestCase):
         self.assertTrue(any("策略=F5" in msg for _level, msg in logs))
         self.assertEqual(strategy_events[-1]["strategy"], "F5")
 
+    def test_f5_ratio_mode_sells_when_volume_reaches_limit_bid_queue_ratio(self):
+        cfg = TradingConfig(
+            f9_enabled=False,
+            f4_enabled=False,
+            volume_spike_sell_mode="ratio",
+            volume_spike_sell_threshold=9999,
+            volume_spike_sell_ratio_percent=10,
+        )
+        engine, _logs, trades, strategy_events = self._make_engine(cfg)
+        state = self._arm_exit_state(engine)
+        state.bid0_price = Decimal(str(state.info.limit_up))
+        state.bid0_volume = 2000
+        now = time.time()
+        state.tick_vols.append((now, 200))
+
+        engine._tick(state, now)
+
+        self.assertEqual(state.position_qty, 0)
+        self.assertEqual(trades[-1]["action"], "SELL")
+        self.assertIn("漲停買一 2000 張的 10", trades[-1]["note"])
+        self.assertEqual(strategy_events[-1]["details"]["mode"], "ratio")
+        self.assertEqual(strategy_events[-1]["details"]["threshold"], "200")
+
+    def test_f5_ratio_mode_ignores_fixed_qty_threshold(self):
+        cfg = TradingConfig(
+            f9_enabled=False,
+            f4_enabled=False,
+            volume_spike_sell_mode="ratio",
+            volume_spike_sell_threshold=100,
+            volume_spike_sell_ratio_percent=10,
+        )
+        engine, _logs, trades, strategy_events = self._make_engine(cfg)
+        state = self._arm_exit_state(engine)
+        state.bid0_price = Decimal(str(state.info.limit_up))
+        state.bid0_volume = 2000
+        now = time.time()
+        state.tick_vols.append((now, 199))
+
+        engine._tick(state, now)
+
+        self.assertEqual(state.position_qty, 1)
+        self.assertEqual(trades, [])
+        self.assertEqual(strategy_events, [])
+
+    def test_f5_ratio_mode_requires_limit_bid_queue(self):
+        cfg = TradingConfig(
+            f9_enabled=False,
+            f4_enabled=False,
+            volume_spike_sell_mode="ratio",
+            volume_spike_sell_ratio_percent=10,
+        )
+        engine, _logs, trades, strategy_events = self._make_engine(cfg)
+        state = self._arm_exit_state(engine)
+        state.bid0_price = Decimal("1095")
+        state.bid0_volume = 2000
+        now = time.time()
+        state.tick_vols.append((now, 500))
+
+        engine._tick(state, now)
+
+        self.assertEqual(state.position_qty, 1)
+        self.assertEqual(trades, [])
+        self.assertEqual(strategy_events, [])
+
     def test_sell_prefers_f5_when_spike_occurs_before_open_board(self):
         cfg = TradingConfig(
             f9_enabled=False,

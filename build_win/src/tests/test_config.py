@@ -29,10 +29,13 @@ class TestTradingConfigJsonIO(unittest.TestCase):
                         "per_stock_amount": 250000,
                         "f4_open_ticks_to_sell": 3,
                         "f4_require_today_limitup": False,
+                        "volume_spike_sell_mode": "ratio",
+                        "volume_spike_sell_ratio_percent": 12.5,
                         "f_open_limitup_entry_enabled": False,
                         "f_consume_enabled": True,
                         "consume_qty_threshold": 300,
                         "consume_mutex_with_f1": False,
+                        "f11_allow_previous_day_official_cache": False,
                         "f_prelock_ask_entry_enabled": False,
                         "f_prelock_stop_enabled": False,
                         "prelock_stop_ticks": 4,
@@ -51,14 +54,18 @@ class TestTradingConfigJsonIO(unittest.TestCase):
             self.assertEqual(cfg.per_stock_amount, 250000)
             self.assertEqual(cfg.f4_open_ticks_to_sell, 3)
             self.assertFalse(cfg.f4_require_today_limitup)
+            self.assertEqual(cfg.volume_spike_sell_mode, "ratio")
+            self.assertEqual(cfg.volume_spike_sell_ratio_percent, 12.5)
             self.assertFalse(cfg.f_open_limitup_entry_enabled)
             self.assertTrue(cfg.f_consume_enabled)
             self.assertEqual(cfg.consume_qty_threshold, 300)
             self.assertFalse(cfg.consume_mutex_with_f1)
+            self.assertFalse(cfg.f11_allow_previous_day_official_cache)
             self.assertFalse(cfg.f_prelock_ask_entry_enabled)
             self.assertFalse(cfg.f_prelock_stop_enabled)
             self.assertEqual(cfg.prelock_stop_ticks, 4)
             self.assertFalse(cfg.file_logging_enabled)
+            self.assertFalse(cfg.dynamic_pool_swap_enabled)
             self.assertEqual(
                 cfg.startup_limit_up_detection_mode,
                 LOCKED_STARTUP_LIMIT_UP_DETECTION_MODE,

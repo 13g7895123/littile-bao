@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Callable, Dict, Iterable, Optional
 from urllib.request import urlopen
@@ -35,6 +35,21 @@ def load_cached_payload(
     return None
 
 
+def load_recent_cached_payload(
+    base_dir: str,
+    day: date,
+    markets: Iterable[str],
+    *,
+    max_lookback_days: int = 7,
+) -> Optional[dict]:
+    for offset in range(1, max(1, int(max_lookback_days or 1)) + 1):
+        candidate_day = day - timedelta(days=offset)
+        payload = load_cached_payload(base_dir, candidate_day, markets)
+        if payload is not None:
+            return payload
+    return None
+
+
 def save_payload(base_dir: str, day: date, payload: dict) -> Path:
     path = cache_path(base_dir, day)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -48,6 +63,7 @@ def resolve_today_payload(
     markets: Iterable[str],
     now: Optional[datetime] = None,
     json_loader: Optional[JsonLoader] = None,
+    allow_previous_cache: bool = False,
 ) -> tuple[Optional[dict], str]:
     current = now or datetime.now()
     day = current.date()
@@ -57,6 +73,10 @@ def resolve_today_payload(
 
     payload = fetch_payload(markets=markets, now=current, json_loader=json_loader)
     if not is_payload_fresh(payload, day, markets):
+        if allow_previous_cache:
+            previous_payload = load_recent_cached_payload(base_dir, day, markets)
+            if previous_payload is not None:
+                return previous_payload, "previous_cache"
         return None, "stale"
 
     save_payload(base_dir, day, payload)

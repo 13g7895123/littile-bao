@@ -86,6 +86,71 @@ class TestOfficialSpecialFlags(unittest.TestCase):
         self.assertEqual(result["trade_date_roc"], "1150623")
         self.assertEqual(saved["trade_date_roc"], "1150623")
 
+    def test_resolve_today_payload_uses_previous_cache_when_today_sources_are_stale(self):
+        now = datetime(2026, 6, 24, 9, 5)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            previous = {
+                "generated_date": "2026-06-23",
+                "trade_date_roc": "1150623",
+                "source_dates": {"twse_daytrade_daily": ["1150623"]},
+                "flags": {"2317": {"is_attention": True}},
+            }
+            previous_path = official_special_flags.cache_path(tmpdir, datetime(2026, 6, 23).date())
+            previous_path.parent.mkdir(parents=True, exist_ok=True)
+            previous_path.write_text(json.dumps(previous), encoding="utf-8")
+
+            responses = {
+                "https://openapi.twse.com.tw/v1/announcement/notice": [],
+                "https://openapi.twse.com.tw/v1/announcement/punish": [],
+                "https://openapi.twse.com.tw/v1/exchangeReport/TWTB4U": [
+                    {"Date": "1150623", "Code": "2330", "Name": "台積電", "Suspension": ""}
+                ],
+                "https://openapi.twse.com.tw/v1/exchangeReport/TWTBAU1": [],
+            }
+
+            result, source = official_special_flags.resolve_today_payload(
+                base_dir=tmpdir,
+                markets=["TSE"],
+                now=now,
+                json_loader=lambda url: responses[url],
+                allow_previous_cache=True,
+            )
+
+        self.assertEqual(source, "previous_cache")
+        self.assertEqual(result["trade_date_roc"], "1150623")
+        self.assertTrue(result["flags"]["2317"]["is_attention"])
+
+    def test_resolve_today_payload_does_not_use_previous_cache_when_disabled(self):
+        now = datetime(2026, 6, 24, 9, 5)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            previous = {
+                "generated_date": "2026-06-23",
+                "trade_date_roc": "1150623",
+                "source_dates": {"twse_daytrade_daily": ["1150623"]},
+                "flags": {"2317": {"is_attention": True}},
+            }
+            previous_path = official_special_flags.cache_path(tmpdir, datetime(2026, 6, 23).date())
+            previous_path.parent.mkdir(parents=True, exist_ok=True)
+            previous_path.write_text(json.dumps(previous), encoding="utf-8")
+
+            responses = {
+                "https://openapi.twse.com.tw/v1/announcement/notice": [],
+                "https://openapi.twse.com.tw/v1/announcement/punish": [],
+                "https://openapi.twse.com.tw/v1/exchangeReport/TWTB4U": [],
+                "https://openapi.twse.com.tw/v1/exchangeReport/TWTBAU1": [],
+            }
+
+            result, source = official_special_flags.resolve_today_payload(
+                base_dir=tmpdir,
+                markets=["TSE"],
+                now=now,
+                json_loader=lambda url: responses[url],
+                allow_previous_cache=False,
+            )
+
+        self.assertIsNone(result)
+        self.assertEqual(source, "stale")
+
 
 if __name__ == "__main__":
     unittest.main()

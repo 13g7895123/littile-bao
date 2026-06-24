@@ -65,9 +65,11 @@ class TradingConfig:
     f4_open_ticks_to_sell: int = 1       # 漲停板打開幾檔才賣；1=打開1檔就賣
     f4_require_today_limitup: bool = True  # F4 須當日曾觸及漲停才生效
 
-    # ── 功能 5：持倉中，1秒成交量達 N 張就賣（含等於門檻）──────────────────
+    # ── 功能 5：持倉中，1秒成交量達固定張數或漲停買一排隊比例就賣（含等於門檻）
     f5_enabled: bool = True
+    volume_spike_sell_mode: str = "qty"  # qty=固定張數；ratio=漲停買一排隊量比例
     volume_spike_sell_threshold: int = 499
+    volume_spike_sell_ratio_percent: float = 10.0
 
     # ── 功能 6：委託排隊中，1秒成交量超過N張就取消委託 ─────────────────────
     f6_enabled: bool = True
@@ -127,6 +129,15 @@ class TradingConfig:
     recording_dir: str = ""              # 留空 → 使用預設 log/recordings/
     recording_keep_days: int = 7         # 自動清除超過 N 天的舊錄製；<=0 = 不清理
     recording_record_raw: bool = True    # 是否錄製原始 SDK JSON 字串（吃較多空間）
+
+    # ── 動態換股池 ──────────────────────────────────────────────────────────
+    # 啟用後會定期把超出 500 檔上限的備用股換進主訂閱池。
+    # 此流程需要 stop/start realtime feed，會干擾盤中延遲量測，因此預設關閉。
+    dynamic_pool_swap_enabled: bool = False
+
+    # ── F11 官方特殊股清單 fallback ───────────────────────────────────────
+    # 早盤若官方當日清單尚未更新，先用最近一個交易日快取避免啟動卡在富邦逐支查詢。
+    f11_allow_previous_day_official_cache: bool = True
 
     # ── 鎖漲停判斷模式 ──────────────────────────────────────────────────────
     # 啟動時「是否已鎖板」與盤中新鎖進場拆成兩套規則：

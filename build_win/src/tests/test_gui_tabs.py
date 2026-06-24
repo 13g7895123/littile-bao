@@ -922,6 +922,59 @@ class TestGuiTabLayout(unittest.TestCase):
         self.assertEqual(symbol_infos["2330"].is_attention, False)
         self.assertEqual(list(symbol_infos.keys()), ["2330"])
 
+    def test_strategy_start_uses_previous_days_special_flags_without_fubon_fallback(self):
+        from broker.universe import build_symbol_info
+
+        class FakeSdk:
+            def init_realtime(self):
+                return None
+
+        class FakeBroker:
+            def __init__(self):
+                self._sdk = FakeSdk()
+                self.sdk = self._sdk
+
+            def create_realtime_feed(self):
+                return None
+
+        class FakePreviousDaysClient:
+            def __init__(self):
+                self.last_from_cache = True
+                self.last_as_of = "2026-05-10"
+
+            def load_symbol_infos(self, markets):
+                return {
+                    "1111": build_symbol_info(
+                        "1111", "正常股", "TSE", Decimal("50"),
+                        quote_price=Decimal("50"), prev_volume=2000,
+                        is_attention=False,
+                        prior_limit_up_streak=0,
+                    ),
+                    "2222": build_symbol_info(
+                        "2222", "注意股", "TSE", Decimal("50"),
+                        quote_price=Decimal("50"), prev_volume=1900,
+                        is_attention=True,
+                        prior_limit_up_streak=0,
+                    ),
+                }
+
+        self.win._checks["market_twse"].setChecked(True)
+        self.win._checks["market_tpex"].setChecked(False)
+        self.win._fields["daily_volume_min"].setText("1")
+
+        with mock.patch("broker.universe.PreviousTradingDaysApiClient", FakePreviousDaysClient):
+            with mock.patch.object(
+                self.win,
+                "_confirm_fubon_special_candidates",
+                side_effect=AssertionError("unexpected fubon special fallback"),
+            ):
+                symbol_infos, feed, reserve_pool = self.win._load_trading_runtime(
+                    FakeBroker(), self.win._collect_config())
+
+        self.assertIsNone(feed)
+        self.assertEqual(reserve_pool, {})
+        self.assertEqual(list(symbol_infos.keys()), ["1111"])
+
     def test_runtime_does_not_build_reserve_pool_below_symbol_limit(self):
         from broker.universe import build_symbol_info
 

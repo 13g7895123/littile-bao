@@ -5,6 +5,7 @@ gui.py — 打板策略系統 主視窗
 from __future__ import annotations
 import html
 import json
+import math
 import os
 import queue
 import threading
@@ -23,6 +24,7 @@ from PyQt6.QtCore import Qt, QTimer, QPoint, pyqtSignal
 from PyQt6.QtGui import QPainter, QColor, QFont, QBrush
 
 from app_logging import compose_log_message, configure_runtime_logging, runtime_base_dir, write_log_event
+from broker import SymbolMeta
 from config import (
     BROKER_SETTINGS_FILE,
     CONFIG_FILE,
@@ -35,6 +37,7 @@ from config import (
 from engine import TradingEngine
 from limitup_detection import LIMIT_UP_DETECTION_MODES, resolve_limit_up_mode
 import official_special_flags
+from windows_time_sync import verify_and_repair_cached
 
 # ──────────────────────────────────────────────
 #  配色（暗色交易終端風格）
@@ -1008,14 +1011,34 @@ class App(QMainWindow):
         form.addLayout(prelock_stop_row)
         form.addSpacing(6)
 
+        sp_mode_row = QHBoxLayout()
+        sp_mode_row.addWidget(_label("1秒爆量方式", C["subtext"], 9))
+        sp_mode_row.addStretch()
+        self._combos["volume_spike_sell_mode"] = _combo(["固定張數", "比例"], 88)
+        self._combos["volume_spike_sell_mode"].currentIndexChanged.connect(
+            self._sync_volume_spike_mode_fields
+        )
+        sp_mode_row.addWidget(self._combos["volume_spike_sell_mode"])
+        form.addLayout(sp_mode_row)
+        form.addSpacing(4)
+
         sp_row = QHBoxLayout()
-        sp_row.addWidget(_label("1秒成交量 >", C["subtext"], 9))
+        sp_row.addWidget(_label("1秒成交量 >=", C["subtext"], 9))
         sp_row.addStretch()
         self._fields["volume_spike_sell_threshold"] = _entry(55)
         sp_row.addWidget(self._fields["volume_spike_sell_threshold"])
         sp_row.addSpacing(4)
         sp_row.addWidget(_label("張", C["subtext"], 9))
         form.addLayout(sp_row)
+
+        sp_ratio_row = QHBoxLayout()
+        sp_ratio_row.addWidget(_label("占漲停買一 >=", C["subtext"], 9))
+        sp_ratio_row.addStretch()
+        self._fields["volume_spike_sell_ratio_percent"] = _entry(55)
+        sp_ratio_row.addWidget(self._fields["volume_spike_sell_ratio_percent"])
+        sp_ratio_row.addSpacing(4)
+        sp_ratio_row.addWidget(_label("%", C["subtext"], 9))
+        form.addLayout(sp_ratio_row)
         form.addSpacing(6)
 
         ex_row3 = QHBoxLayout()
@@ -2803,6 +2826,15 @@ class App(QMainWindow):
     #  設定讀寫
     # ══════════════════════════════════════════
 
+    def _sync_volume_spike_mode_fields(self):
+        if "volume_spike_sell_mode" not in self._combos:
+            return
+        ratio_mode = self._combos["volume_spike_sell_mode"].currentIndex() == 1
+        if "volume_spike_sell_threshold" in self._fields:
+            self._fields["volume_spike_sell_threshold"].setEnabled(not ratio_mode)
+        if "volume_spike_sell_ratio_percent" in self._fields:
+            self._fields["volume_spike_sell_ratio_percent"].setEnabled(ratio_mode)
+
     def _apply_config(self, cfg: TradingConfig):
         f = self._fields
         f["per_stock_amount"].setText(str(cfg.per_stock_amount))
@@ -2817,6 +2849,11 @@ class App(QMainWindow):
         f["f4_open_ticks_to_sell"].setText(str(cfg.f4_open_ticks_to_sell))
         f["prelock_stop_ticks"].setText(str(cfg.prelock_stop_ticks))
         f["volume_spike_sell_threshold"].setText(str(cfg.volume_spike_sell_threshold))
+        f["volume_spike_sell_ratio_percent"].setText(str(cfg.volume_spike_sell_ratio_percent))
+        self._combos["volume_spike_sell_mode"].setCurrentIndex(
+            1 if getattr(cfg, "volume_spike_sell_mode", "qty") == "ratio" else 0
+        )
+        self._sync_volume_spike_mode_fields()
 
         c = self._checks
         c["market_twse"].setChecked(cfg.market_twse)
@@ -2876,6 +2913,9 @@ class App(QMainWindow):
         f11 = (c["excl_disposal"].isChecked() or
                c["excl_attention"].isChecked() or
                c["excl_daytrade"].isChecked())
+        volume_spike_sell_mode = (
+            "ratio" if self._combos["volume_spike_sell_mode"].currentIndex() == 1 else "qty"
+        )
 
         return TradingConfig(
             api_id                        = self.cfg.api_id,
@@ -2892,7 +2932,9 @@ class App(QMainWindow):
             f4_open_ticks_to_sell         = max(1, ni("f4_open_ticks_to_sell")),
             f4_require_today_limitup      = c["f4_require_today_limitup"].isChecked(),
             f5_enabled                    = True,
+            volume_spike_sell_mode        = volume_spike_sell_mode,
             volume_spike_sell_threshold   = ni("volume_spike_sell_threshold"),
+            volume_spike_sell_ratio_percent = max(0.0, nf("volume_spike_sell_ratio_percent")),
             f6_enabled                    = True,
             volume_spike_cancel_threshold = ni("volume_spike_sell_threshold"),
             f7_enabled                    = candle_limit > 0,
@@ -2906,6 +2948,9 @@ class App(QMainWindow):
             ask_price_ratio               = self.cfg.ask_price_ratio,
             entry_volume_confirm          = self.cfg.entry_volume_confirm,
             f11_enabled                   = f11,
+            f11_allow_previous_day_official_cache = getattr(
+                self.cfg, "f11_allow_previous_day_official_cache", True
+            ),
             f12_enabled                   = c["excl_sealed"].isChecked(),
             f_open_limitup_entry_enabled  = not c["excl_open_limit"].isChecked(),
             f13_enabled                   = True,
@@ -3131,6 +3176,13 @@ class App(QMainWindow):
 
     def _start_pool_swap_timer(self) -> None:
         self._stop_pool_swap_timer()
+        if not getattr(self.cfg, "dynamic_pool_swap_enabled", False):
+            push_log(
+                "INFO",
+                "[PoolSwap] 動態換股已停用，不啟動每分鐘換股與重訂閱",
+                include_traceback=False,
+            )
+            return
         if not self._reserve_pool:
             return
         t = QTimer(self)
@@ -3485,20 +3537,38 @@ class App(QMainWindow):
                     if code in engine._states
                 }
 
-            # ── 停 feed → replace → resubscribe ──
-            if engine.feed is not None:
-                try:
-                    engine.feed.stop()
-                except Exception as e:
-                    push_log("WARN", f"[PoolSwap] 停止 feed 時警告：{e}")
-
             diff = engine.replace_universe(new_infos)
 
-            try:
-                engine.resubscribe_feed()
-            except Exception as e:
-                push_log("ERROR", f"[PoolSwap] 重新訂閱失敗：{e}")
-                return
+            feed_swapped = False
+            if engine.feed is not None and hasattr(engine.feed, "swap_symbols"):
+                try:
+                    meta = {
+                        code: SymbolMeta(
+                            code=code,
+                            limit_up=Decimal(str(new_infos[code].limit_up)),
+                            prev_close=Decimal(str(new_infos[code].prev_close)),
+                            open_limit_up=new_infos[code].open_limit_up,
+                        )
+                        for code in to_add
+                        if code in new_infos
+                    }
+                    feed_swapped = bool(engine.feed.swap_symbols(to_remove, to_add, meta))
+                except Exception as e:
+                    push_log("WARN", f"[PoolSwap] 局部換股失敗，改走全量重訂閱：{e}")
+                    feed_swapped = False
+
+            if not feed_swapped:
+                if engine.feed is not None:
+                    try:
+                        engine.feed.stop()
+                    except Exception as e:
+                        push_log("WARN", f"[PoolSwap] 停止 feed 時警告：{e}")
+
+                try:
+                    engine.resubscribe_feed()
+                except Exception as e:
+                    push_log("ERROR", f"[PoolSwap] 重新訂閱失敗：{e}")
+                    return
 
             # 更新備用池：換進來的從備用池移除；換出去的（evicted）加回備用池
             actual_removed = set(diff["removed"])
@@ -3822,6 +3892,10 @@ class App(QMainWindow):
 
     def _start_trading_worker(self, token: int, cfg: TradingConfig, broker) -> None:
         try:
+            self._verify_time_before_strategy_start()
+            if not self._is_start_token_current(token):
+                return
+
             symbol_infos, feed, reserve_pool = self._load_trading_runtime(broker, cfg)
             if not self._is_start_token_current(token):
                 return
@@ -3860,6 +3934,19 @@ class App(QMainWindow):
             self._stop_recorder()
             self._dispatch_ui(
                 lambda token=token, e=e: self._fail_start_trading(token, e))
+
+    def _verify_time_before_strategy_start(self) -> None:
+        result = verify_and_repair_cached(
+            threshold_seconds=0.05,
+            force_step_correction=True,
+            cache_ttl_seconds=300.0,
+        )
+        for note in result.notes:
+            push_log("INFO", f"[WindowsTime] {note}", include_traceback=False)
+        for warning in result.warnings:
+            push_log("WARN", f"[WindowsTime] {warning}", include_traceback=False)
+        if not result.success:
+            raise RuntimeError("Windows 時間偏移超過 50ms，且自動校正未成功，策略啟動已停止。")
 
     def _is_start_token_current(self, token: int) -> bool:
         return self._strategy_starting and self._strategy_start_token == token
@@ -4068,8 +4155,15 @@ class App(QMainWindow):
                                         "部分候選股缺少昨日起漲停序列資料，已保守保留；"
                                         "建議收盤後更新一次全市場快照快取",
                                         include_traceback=False)
-                        candidates = self._confirm_fubon_special_candidates(
-                            loader, candidates, cfg)
+                        if cfg.f11_enabled:
+                            if api_loaded:
+                                candidates = self._confirm_embedded_special_candidates(
+                                    candidates,
+                                    source="前兩個交易日價量 API",
+                                )
+                            else:
+                                candidates = self._confirm_fubon_special_candidates(
+                                    loader, candidates, cfg)
                         subscribed_candidates = candidates[:FUBON_REALTIME_SYMBOL_LIMIT]
                         reserve_candidates = candidates[FUBON_REALTIME_SYMBOL_LIMIT:]
                         symbol_infos = {si.code: si for si in subscribed_candidates}
@@ -4113,12 +4207,40 @@ class App(QMainWindow):
                 push_log("WARN", f"載入個股基本資料失敗：{e}")
         return symbol_infos, feed, reserve_pool
 
+    def _confirm_embedded_special_candidates(self, candidates: list, *, source: str) -> list:
+        """Use special-stock flags already embedded in the upstream candidate data."""
+        kept = []
+        excluded = []
+        for si in candidates:
+            reasons = self._special_flag_reasons(si)
+            if reasons:
+                excluded.append(f"{si.code} {si.name}（{'/'.join(reasons)}）")
+            else:
+                kept.append(si)
+
+        if excluded:
+            preview = "、".join(excluded[:20])
+            more = "" if len(excluded) <= 20 else f"，另 {len(excluded) - 20} 支"
+            push_log(
+                "INFO",
+                f"F11 {source} 排除 {len(excluded)} 支特殊股：{preview}{more}",
+                include_traceback=False,
+            )
+        push_log(
+            "INFO",
+            f"F11 {source} 已確認 {len(candidates)} 支候選股，保留 {len(kept)} 支；"
+            "不使用富邦 API 特殊股 fallback",
+            include_traceback=False,
+        )
+        return kept
+
     def _confirm_fubon_special_candidates(self, loader, candidates: list, cfg: TradingConfig) -> list:
         if not cfg.f11_enabled or not candidates:
             return candidates
         payload, source = official_special_flags.resolve_today_payload(
             base_dir=runtime_base_dir(),
             markets=cfg.get_markets(),
+            allow_previous_cache=bool(getattr(cfg, "f11_allow_previous_day_official_cache", True)),
         )
         if payload is not None:
             return self._confirm_candidates_with_official_special_flags(
@@ -4193,11 +4315,20 @@ class App(QMainWindow):
         flags_map = payload.get("flags") if isinstance(payload, dict) else {}
         flags_map = flags_map if isinstance(flags_map, dict) else {}
         trade_date = str(payload.get("trade_date_roc") or "")
+        generated_date = str(payload.get("generated_date") or "")
+        try:
+            payload_day = datetime.strptime(generated_date, "%Y-%m-%d").date()
+        except Exception:
+            payload_day = datetime.now().date()
         path = official_special_flags.cache_path(
             runtime_base_dir(),
-            datetime.now().date(),
+            payload_day,
         )
-        source_text = "本地快取" if source == "cache" else "官方 API"
+        source_text = {
+            "cache": "本地快取",
+            "api": "官方 API",
+            "previous_cache": "前一交易日快取",
+        }.get(source, source)
         self._official_special_flags_meta = {
             "source": source,
             "trade_date_roc": trade_date,
@@ -4210,6 +4341,12 @@ class App(QMainWindow):
             f"（trade_date={trade_date}，cache={path}）",
             include_traceback=False,
         )
+        if source == "previous_cache":
+            push_log(
+                "WARN",
+                f"F11 今日官方清單尚未更新，先使用前一交易日官方快取 trade_date={trade_date}",
+                include_traceback=False,
+            )
 
         kept = []
         excluded = []
@@ -5094,7 +5231,6 @@ class App(QMainWindow):
 
         summary = sorted(summary, key=_sort_key)
 
-        threshold = self.cfg.volume_spike_sell_threshold
         pos_cnt = 0
         next_excluded_cnt = sum(1 for s in summary if s.get("next_day_excluded"))
         after_close_cnt = sum(
@@ -5133,7 +5269,7 @@ class App(QMainWindow):
             else:
                 candle_txt = f"第{s['candle']}根" if s["candle"] > 0 else "—"
             fg = QColor(STATUS_COLOR.get(status, C["text"]))
-            vol_fg = QColor(C["red"]) if s["vol_1s"] > threshold else fg
+            vol_fg = QColor(C["red"]) if self._is_volume_spike_highlighted(s) else fg
 
             # ── 價格欄位 ──────────────────────────────────
             price = s.get("price")
@@ -5192,6 +5328,28 @@ class App(QMainWindow):
         self.stat_positions.setText(str(pos_cnt))
         self._update_trade_count_stat()
         self._autosize_monitor_columns()
+
+    def _is_volume_spike_highlighted(self, item: dict) -> bool:
+        vol_1s = int(item.get("vol_1s") or 0)
+        mode = str(getattr(self.cfg, "volume_spike_sell_mode", "qty") or "qty").lower()
+        if mode == "ratio":
+            limit_up = item.get("limit_up")
+            bid0_price = item.get("bid0_price")
+            bid0_volume = int(item.get("bid0_volume") or 0)
+            if limit_up is None or bid0_price is None or bid0_volume <= 0:
+                return False
+            try:
+                if Decimal(str(bid0_price)) != Decimal(str(limit_up)):
+                    return False
+            except Exception:
+                return False
+            ratio_percent = max(0.0, float(getattr(self.cfg, "volume_spike_sell_ratio_percent", 0.0) or 0.0))
+            if ratio_percent <= 0:
+                return False
+            threshold = max(1, int(math.ceil(bid0_volume * ratio_percent / 100.0)))
+            return vol_1s >= threshold
+        threshold = int(getattr(self.cfg, "volume_spike_sell_threshold", 0) or 0)
+        return vol_1s >= threshold
 
     def _monitor_action_text(self, summary_item: dict, status: str) -> tuple[str, str]:
         if status == "啟用後已漲停":
