@@ -836,7 +836,8 @@ class TestGuiTabLayout(unittest.TestCase):
         self.win._checks["market_tpex"].setChecked(False)
         self.win._fields["daily_volume_min"].setText("1")
 
-        with mock.patch("broker.universe.PreviousTradingDaysApiClient", side_effect=RuntimeError("api off")):
+        with mock.patch("broker.universe.PreviousTradingDaysApiClient", side_effect=RuntimeError("api off")), \
+             mock.patch("official_special_flags.resolve_today_payload", return_value=(None, "missing")):
             symbol_infos, feed, reserve_pool = self.win._load_trading_runtime(
                 self.win.broker, self.win._collect_config())
 

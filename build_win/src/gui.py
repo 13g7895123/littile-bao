@@ -5,7 +5,6 @@ gui.py — 打板策略系統 主視窗
 from __future__ import annotations
 import html
 import json
-import math
 import os
 import queue
 import threading
@@ -16,12 +15,10 @@ from datetime import datetime, time as dtime
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QFrame, QLabel, QPushButton,
-    QLineEdit, QCheckBox, QScrollArea, QTextEdit,
-    QTableWidget, QTableWidgetItem,
-    QMessageBox, QHBoxLayout, QVBoxLayout, QComboBox, QHeaderView,
+    QLineEdit, QCheckBox, QMessageBox, QHBoxLayout, QVBoxLayout, QComboBox,
 )
-from PyQt6.QtCore import Qt, QTimer, QPoint, pyqtSignal
-from PyQt6.QtGui import QPainter, QColor, QFont, QBrush
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import QFont
 
 from app_logging import compose_log_message, configure_runtime_logging, runtime_base_dir, write_log_event
 from broker import SymbolMeta
@@ -35,61 +32,59 @@ from config import (
     TradingConfig,
 )
 from engine import TradingEngine
+from gui_pages import (
+    build_broker_page,
+    build_decision_detail_page,
+    build_bot_row,
+    build_dashboard,
+    build_events_page,
+    build_limitup_test_page,
+    build_mid_row,
+    build_orders_page,
+    build_placeholder,
+    build_positions_page,
+    build_settings_page,
+    build_stats_row,
+    create_strategy_settings_panel,
+)
+from gui_renderers import (
+    append_log_html_to_views,
+    append_decision_detail,
+    append_order,
+    append_strategy_event,
+    append_trade,
+    autosize_monitor_columns,
+    is_volume_spike_highlighted,
+    mark_order_filled,
+    refresh_broker_status,
+    refresh_limitup_test_page,
+    render_account,
+    render_limitup_test_detail,
+    render_limitup_test_snapshot,
+    render_log_views,
+    render_monitor,
+    set_broker_status,
+    sync_decision_tab_toggle_text,
+    sync_orders_full_table,
+    sync_positions_full_table,
+    sync_trades_full_table,
+)
+from gui_theme import (
+    C,
+    FONT_MONO,
+    LIMIT_UP_SIGNAL_LABELS,
+    ToggleButton,
+    _entry,
+    _font,
+    _label,
+    _scroll_style,
+    _sep_bar,
+)
 from limitup_detection import LIMIT_UP_DETECTION_MODES, resolve_limit_up_mode
 import official_special_flags
 from windows_time_sync import verify_and_repair_cached
 
-# ──────────────────────────────────────────────
-#  配色（暗色交易終端風格）
-# ──────────────────────────────────────────────
-C = {
-    "bg":       "#0d1117",
-    "panel":    "#161b22",
-    "header":   "#161b22",
-    "sidebar":  "#0d1117",
-    "surface":  "#21262d",
-    "border":   "#30363d",
-    "text":     "#e6edf3",
-    "subtext":  "#8b949e",
-    "green":    "#3fb950",
-    "green_l":  "#56d364",
-    "red":      "#f85149",
-    "red_l":    "#ff7b72",
-    "blue":     "#58a6ff",
-    "blue_l":   "#79c0ff",
-    "yellow":   "#d29922",
-    "yellow_l": "#e3b341",
-    "orange":   "#f0883e",
-    "purple":   "#bc8cff",
-    # status badge backgrounds
-    "badge_ready":  "#4d3800",
-    "badge_in":     "#033a16",
-    "badge_out":    "#3d1a78",
-    "badge_cancel": "#4a0900",
-    "badge_dim":    "#1c2128",
-    "badge_order":  "#1a3a5c",
-}
-
 LOG_Q: queue.Queue = queue.Queue()
-FONT_MAIN = "微軟正黑體"
-FONT_MONO = "Consolas"
-
-LIMIT_UP_SIGNAL_LABELS = {
-    "ask_at_limit": "賣一價=漲停",
-    "bid_at_limit": "買一價=漲停",
-    "last_at_limit": "最新成交=漲停",
-    "trade_bid_at_limit": "成交 bid=漲停",
-    "trade_ask_at_limit": "成交 ask=漲停",
-    "trade_flag_price": "API 漲停價旗標",
-    "trade_flag_bid": "API 漲停買價旗標",
-    "trade_flag_ask": "API 漲停賣價旗標",
-    "trade_at_ask": "成交貼近賣方",
-    "trade_at_bid": "成交貼近買方",
-    "ask_empty": "無委賣檔",
-    "bid_empty": "無委買檔",
-    "ask_qty_zero": "賣一量=0/無委賣",
-    "bid_qty_positive": "買一量>0",
-}
 
 
 def push_log(level: str, msg: object, *, include_traceback: Optional[bool] = None) -> None:
@@ -114,219 +109,6 @@ def _append_jsonl_record(path: Path, record: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(_jsonl_value(record), ensure_ascii=False) + "\n")
-
-
-# ──────────────────────────────────────────────
-#  基礎工具
-# ──────────────────────────────────────────────
-
-def _font(size: int = 10, bold: bool = False) -> QFont:
-    f = QFont(FONT_MAIN, size)
-    if bold:
-        f.setBold(True)
-    return f
-
-
-def _label(text: str, color: str = None, size: int = 10, bold: bool = False) -> QLabel:
-    lbl = QLabel(text)
-    lbl.setFont(_font(size, bold))
-    lbl.setStyleSheet(f"color: {color or C['text']}; background: transparent;")
-    return lbl
-
-
-def _entry(width: int = 90, password: bool = False) -> QLineEdit:
-    e = QLineEdit()
-    e.setFixedWidth(width)
-    e.setFixedHeight(26)
-    e.setFont(_font(9))
-    if password:
-        e.setEchoMode(QLineEdit.EchoMode.Password)
-    e.setStyleSheet(f"""
-        QLineEdit {{
-            background-color: {C['surface']};
-            color: {C['text']};
-            border: 1px solid {C['border']};
-            border-radius: 4px;
-            padding: 2px 6px;
-        }}
-        QLineEdit:focus {{ border: 1px solid {C['blue']}; }}
-    """)
-    return e
-
-
-def _combo(items: list, width: int = 90) -> QComboBox:
-    cb = QComboBox()
-    cb.setFixedWidth(width)
-    cb.setFixedHeight(26)
-    cb.setFont(_font(9))
-    cb.addItems(items)
-    cb.setStyleSheet(f"""
-        QComboBox {{
-            background-color: {C['surface']};
-            color: {C['text']};
-            border: 1px solid {C['border']};
-            border-radius: 4px;
-            padding: 2px 6px;
-        }}
-        QComboBox::drop-down {{ border: none; width: 18px; }}
-        QComboBox QAbstractItemView {{
-            background-color: {C['surface']};
-            color: {C['text']};
-            selection-background-color: {C['blue']};
-            border: 1px solid {C['border']};
-        }}
-    """)
-    return cb
-
-
-def _checkbox(text: str, size: int = 9) -> QCheckBox:
-    cb = QCheckBox(text)
-    cb.setFont(_font(size))
-    cb.setStyleSheet(f"""
-        QCheckBox {{
-            color: {C['text']};
-            background: transparent;
-            spacing: 5px;
-        }}
-        QCheckBox::indicator {{
-            width: 13px; height: 13px;
-            border: 1px solid {C['border']};
-            border-radius: 2px;
-            background-color: {C['surface']};
-        }}
-        QCheckBox::indicator:checked {{
-            background-color: {C['blue']};
-            border-color: {C['blue']};
-        }}
-    """)
-    return cb
-
-
-def _divider() -> QFrame:
-    f = QFrame()
-    f.setFixedHeight(1)
-    f.setStyleSheet(f"background-color: {C['border']};")
-    return f
-
-
-def _section_title(text: str) -> QLabel:
-    lbl = QLabel(text)
-    lbl.setFont(_font(9, bold=True))
-    lbl.setStyleSheet(
-        f"color: {C['subtext']}; background: transparent; padding: 8px 0 3px 0;"
-    )
-    return lbl
-
-
-def _sep_bar() -> QLabel:
-    lbl = QLabel("|")
-    lbl.setStyleSheet(f"color: {C['border']}; background: transparent;")
-    lbl.setFont(_font(9))
-    return lbl
-
-
-def _scroll_style() -> str:
-    return f"""
-        QScrollBar:vertical {{
-            background: {C['bg']};
-            width: 6px; margin: 0;
-        }}
-        QScrollBar::handle:vertical {{
-            background: {C['surface']};
-            border-radius: 3px;
-            min-height: 20px;
-        }}
-        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
-        QScrollBar:horizontal {{
-            background: {C['bg']};
-            height: 6px;
-        }}
-        QScrollBar::handle:horizontal {{
-            background: {C['surface']};
-            border-radius: 3px;
-            min-width: 20px;
-        }}
-        QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; }}
-    """
-
-
-def _table_style() -> str:
-    return f"""
-        QTableWidget {{
-            background-color: {C['panel']};
-            color: {C['text']};
-            gridline-color: {C['border']};
-            border: none;
-            font-family: {FONT_MAIN};
-            font-size: 9pt;
-        }}
-        QTableWidget::item {{ padding: 2px 4px; }}
-        QTableWidget::item:selected {{
-            background-color: {C['surface']};
-            color: {C['text']};
-        }}
-        QHeaderView::section {{
-            background-color: {C['bg']};
-            color: {C['subtext']};
-            font-family: {FONT_MAIN};
-            font-size: 9pt;
-            border: none;
-            border-right: 1px solid {C['border']};
-            border-bottom: 1px solid {C['border']};
-            padding: 4px 6px;
-        }}
-        {_scroll_style()}
-    """
-
-
-def _panel_frame() -> QFrame:
-    f = QFrame()
-    f.setStyleSheet(f"""
-        QFrame {{
-            background-color: {C['panel']};
-            border: 1px solid {C['border']};
-            border-radius: 6px;
-        }}
-    """)
-    return f
-
-
-# ──────────────────────────────────────────────
-#  ToggleButton — iOS 風格
-# ──────────────────────────────────────────────
-
-class ToggleButton(QWidget):
-    toggled = pyqtSignal(bool)
-
-    def __init__(self, parent=None, initial: bool = True):
-        super().__init__(parent)
-        self._on = initial
-        self.setFixedSize(46, 24)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-
-    def mousePressEvent(self, _event):
-        self._on = not self._on
-        self.update()
-        self.toggled.emit(self._on)
-
-    def paintEvent(self, _event):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        fill = QColor(C["green"] if self._on else C["surface"])
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QBrush(fill))
-        p.drawRoundedRect(0, 0, 46, 24, 12, 12)
-        p.setBrush(QBrush(QColor("#ffffff")))
-        p.drawEllipse(QPoint(30 if self._on else 16, 12), 9, 9)
-
-    @property
-    def value(self) -> bool:
-        return self._on
-
-    def set(self, val: bool):
-        if self._on != val:
-            self._on = val
-            self.update()
 
 
 # ──────────────────────────────────────────────
@@ -749,394 +531,7 @@ class App(QMainWindow):
     # ══════════════════════════════════════════
 
     def _create_strategy_settings_panel(self) -> QFrame:
-        panel = QFrame()
-        self._strategy_settings_panel = panel
-        panel.setStyleSheet(f"background-color: {C['sidebar']}; border: none;")
-        outer = QVBoxLayout(panel)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(0)
-
-        # 邊欄標題
-        hdr = QFrame()
-        hdr.setFixedHeight(40)
-        hdr.setStyleSheet(
-            f"background-color: {C['header']};"
-            f"border-bottom: 1px solid {C['border']};"
-        )
-        self._strategy_settings_header = hdr
-        hl = QHBoxLayout(hdr)
-        hl.setContentsMargins(14, 0, 14, 0)
-        icon = QLabel("⚙")
-        icon.setFont(QFont("Segoe UI Emoji", 11))
-        icon.setStyleSheet(f"color: {C['subtext']}; background: transparent;")
-        hl.addWidget(icon)
-        hl.addSpacing(6)
-        hl.addWidget(_label("策略設定", C["text"], 10, bold=True))
-        hl.addStretch()
-        outer.addWidget(hdr)
-
-        # 可捲動設定區
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll.setStyleSheet(
-            f"QScrollArea {{ border: none; background-color: {C['sidebar']}; }}"
-            + _scroll_style()
-        )
-        self._strategy_settings_scroll = scroll
-        content = QWidget()
-        content.setStyleSheet(f"background-color: {C['sidebar']};")
-        self._strategy_settings_content = content
-        form = QVBoxLayout(content)
-        form.setContentsMargins(14, 10, 14, 10)
-        form.setSpacing(0)
-
-        # ── 啟用策略
-        row = QHBoxLayout()
-        row.addWidget(_label("啟用策略", C["text"], 10))
-        row.addStretch()
-        tog = ToggleButton(initial=False)
-        tog.toggled.connect(self._on_strategy_toggle)
-        self._toggles["strategy_enabled"] = tog
-        row.addWidget(tog)
-        form.addLayout(row)
-        form.addSpacing(10)
-        form.addWidget(_divider())
-
-        # ── 市場選擇
-        form.addWidget(_section_title("市場選擇"))
-        mkt_row = QHBoxLayout()
-        self._checks["market_twse"] = _checkbox("上市")
-        self._checks["market_tpex"] = _checkbox("上櫃")
-        mkt_row.addWidget(self._checks["market_twse"])
-        mkt_row.addSpacing(14)
-        mkt_row.addWidget(self._checks["market_tpex"])
-        mkt_row.addStretch()
-        form.addLayout(mkt_row)
-        form.addSpacing(8)
-        form.addWidget(_divider())
-
-        # ── 交易設定
-        form.addWidget(_section_title("交易設定"))
-        self._sf(form, "每檔金額", "per_stock_amount", suffix="元", w=90)
-        self._sf(form, "每日最大交易檔數", "daily_max_trades", suffix="檔", w=45)
-        self._checks["dry_run_mode"] = _checkbox("模擬下單（不送出真實委託）")
-        self._checks["dry_run_mode"].toggled.connect(self._on_order_mode_toggled)
-        form.addWidget(self._checks["dry_run_mode"])
-        form.addSpacing(6)
-        self._checks["file_logging_enabled"] = _checkbox("寫入實體 log 檔（含完整錯誤訊息）")
-        form.addWidget(self._checks["file_logging_enabled"])
-        form.addSpacing(6)
-        # ── Phase 1：盤中行情錄製 ──
-        self._checks["recording_enabled"] = _checkbox("盤中錄製即時行情（供事後分析 / 復盤）")
-        form.addWidget(self._checks["recording_enabled"])
-        self._checks["recording_record_raw"] = _checkbox("　└ 同時錄製原始 SDK 訊息（檔案較大）")
-        form.addWidget(self._checks["recording_record_raw"])
-        rec_row = QHBoxLayout()
-        rec_row.addWidget(_label("保留天數", C["subtext"], 9))
-        from PyQt6.QtWidgets import QLineEdit
-        self._fields["recording_keep_days"] = QLineEdit()
-        self._fields["recording_keep_days"].setFixedWidth(50)
-        rec_row.addWidget(self._fields["recording_keep_days"])
-        rec_row.addWidget(_label("天", C["subtext"], 9))
-        rec_row.addStretch()
-        form.addLayout(rec_row)
-        rec_dir_row = QHBoxLayout()
-        rec_dir_row.addWidget(_label("存放路徑", C["subtext"], 9))
-        self._fields["recording_dir"] = QLineEdit()
-        self._fields["recording_dir"].setPlaceholderText("留空 = 預設 log/recordings")
-        rec_dir_row.addWidget(self._fields["recording_dir"], 1)
-        form.addLayout(rec_dir_row)
-        form.addSpacing(6)
-        form.addWidget(_divider())
-
-        # ── Mock 模式開關（行情 / 下單全部模擬，不連富邦）
-        mock_row = QHBoxLayout()
-        mock_row.addWidget(_label("使用模擬行情", C["subtext"], 9))
-        mock_row.addStretch()
-        mock_tog = ToggleButton(initial=True)
-        mock_tog.toggled.connect(self._on_mock_mode_toggled)
-        self._toggles["mock_mode"] = mock_tog
-        mock_row.addWidget(mock_tog)
-        form.addLayout(mock_row)
-        self._mock_mode_lbl = _label("目前：Mock 模式（不連富邦）", C["yellow_l"], 8)
-        form.addWidget(self._mock_mode_lbl)
-        form.addSpacing(4)
-        form.addWidget(_divider())
-
-        # ── 買入策略
-        form.addWidget(_section_title("買入策略"))
-        form.addWidget(_section_title("時間設定"))
-        self._sf(form, "開始時間", "start_time", w=72)
-        self._sf(form, "結束時間", "entry_before_time", w=72)
-        form.addSpacing(4)
-        form.addWidget(_divider())
-
-        # ── 進場條件
-        form.addWidget(_section_title("進場條件"))
-
-        ask_row = QHBoxLayout()
-        ask_row.addWidget(_label("漲停委賣張數 <", C["subtext"], 9))
-        ask_row.addStretch()
-        self._fields["ask_queue_threshold"] = _entry(55)
-        ask_row.addWidget(self._fields["ask_queue_threshold"])
-        ask_row.addSpacing(4)
-        ask_row.addWidget(_label("張", C["subtext"], 9))
-        form.addLayout(ask_row)
-        form.addSpacing(6)
-
-        self._checks["prelock_ask_entry_enabled"] = _checkbox("鎖板前委賣低於門檻先買")
-        form.addWidget(self._checks["prelock_ask_entry_enabled"])
-        form.addSpacing(6)
-
-        form.addWidget(_label("只做起漲K", C["subtext"], 9))
-        k_row = QHBoxLayout()
-        k_row.addSpacing(4)
-        self._checks["candle_k1"] = _checkbox("第一根")
-        self._checks["candle_k2"] = _checkbox("第二根")
-        k_row.addWidget(self._checks["candle_k1"])
-        k_row.addSpacing(10)
-        k_row.addWidget(self._checks["candle_k2"])
-        k_row.addStretch()
-        form.addLayout(k_row)
-        form.addSpacing(6)
-
-        vol_row = QHBoxLayout()
-        vol_row.addWidget(_label("昨日成交量 >", C["subtext"], 9))
-        vol_row.addStretch()
-        self._fields["daily_volume_min"] = _entry(65)
-        vol_row.addWidget(self._fields["daily_volume_min"])
-        vol_row.addSpacing(4)
-        vol_row.addWidget(_label("張", C["subtext"], 9))
-        form.addLayout(vol_row)
-        form.addSpacing(6)
-
-        form.addWidget(_label("股價區間", C["subtext"], 9))
-        pr_row = QHBoxLayout()
-        pr_row.addSpacing(4)
-        self._fields["price_min"] = _entry(50)
-        pr_row.addWidget(self._fields["price_min"])
-        pr_row.addSpacing(4)
-        pr_row.addWidget(_label("~", C["subtext"], 9))
-        pr_row.addSpacing(4)
-        self._fields["price_max"] = _entry(50)
-        pr_row.addWidget(self._fields["price_max"])
-        pr_row.addSpacing(4)
-        pr_row.addWidget(_label("元", C["subtext"], 9))
-        pr_row.addStretch()
-        form.addLayout(pr_row)
-        form.addSpacing(6)
-
-        self._checks["consume_enabled"] = _checkbox("消化量進場")
-        form.addWidget(self._checks["consume_enabled"])
-        form.addSpacing(4)
-        consume_row = QHBoxLayout()
-        consume_row.addWidget(_label("漲停成交量 >=", C["subtext"], 9))
-        consume_row.addStretch()
-        self._fields["consume_qty_threshold"] = _entry(55)
-        consume_row.addWidget(self._fields["consume_qty_threshold"])
-        consume_row.addSpacing(4)
-        consume_row.addWidget(_label("張", C["subtext"], 9))
-        form.addLayout(consume_row)
-        form.addSpacing(4)
-        self._checks["consume_mutex_with_f1"] = _checkbox("啟用消化量時略過時間/委賣策略")
-        form.addWidget(self._checks["consume_mutex_with_f1"])
-        form.addSpacing(6)
-        mode_row = QHBoxLayout()
-        mode_row.addWidget(_label("鎖漲停判斷", C["subtext"], 9))
-        mode_row.addStretch()
-        self._combos["limit_up_detection_mode"] = _combo([], 160)
-        self._populate_limit_up_mode_combo(self._combos["limit_up_detection_mode"])
-        mode_row.addWidget(self._combos["limit_up_detection_mode"])
-        form.addLayout(mode_row)
-        form.addSpacing(6)
-        form.addWidget(_divider())
-
-        # ── 排除條件
-        form.addWidget(_section_title("排除條件"))
-        ex1 = QHBoxLayout()
-        self._checks["excl_disposal"]  = _checkbox("處置股")
-        self._checks["excl_attention"] = _checkbox("注意股")
-        self._checks["excl_daytrade"]  = _checkbox("限當沖股")
-        ex1.addWidget(self._checks["excl_disposal"])
-        ex1.addSpacing(6)
-        ex1.addWidget(self._checks["excl_attention"])
-        ex1.addSpacing(6)
-        ex1.addWidget(self._checks["excl_daytrade"])
-        ex1.addStretch()
-        form.addLayout(ex1)
-        form.addSpacing(4)
-        self._checks["excl_open_limit"] = _checkbox("開盤漲停股票不追")
-        form.addWidget(self._checks["excl_open_limit"])
-        form.addSpacing(4)
-        self._checks["excl_sealed"] = _checkbox("開盤漲停且已賣過不再進場")
-        form.addWidget(self._checks["excl_sealed"])
-        form.addSpacing(6)
-        form.addWidget(_divider())
-
-        # ── 賣出策略
-        form.addWidget(_section_title("賣出策略"))
-
-        ex_row1 = QHBoxLayout()
-        ex_row1.addWidget(_label("漲停打開時", C["subtext"], 9))
-        ex_row1.addStretch()
-        self._combos["exit_method1"] = _combo(["市價賣出", "限價賣出"], 88)
-        ex_row1.addWidget(self._combos["exit_method1"])
-        form.addLayout(ex_row1)
-        form.addSpacing(6)
-
-        open_tick_row = QHBoxLayout()
-        open_tick_row.addWidget(_label("打開檔位 >=", C["subtext"], 9))
-        open_tick_row.addStretch()
-        self._fields["f4_open_ticks_to_sell"] = _entry(45)
-        open_tick_row.addWidget(self._fields["f4_open_ticks_to_sell"])
-        open_tick_row.addSpacing(4)
-        open_tick_row.addWidget(_label("檔", C["subtext"], 9))
-        form.addLayout(open_tick_row)
-        form.addSpacing(4)
-        self._checks["f4_require_today_limitup"] = _checkbox("僅當日曾觸及漲停才賣")
-        form.addWidget(self._checks["f4_require_today_limitup"])
-        form.addSpacing(6)
-
-        self._checks["prelock_stop_enabled"] = _checkbox("鎖板前委賣進場跌破買價自動賣")
-        form.addWidget(self._checks["prelock_stop_enabled"])
-        form.addSpacing(4)
-        prelock_stop_row = QHBoxLayout()
-        prelock_stop_row.addWidget(_label("跌破買價 >=", C["subtext"], 9))
-        prelock_stop_row.addStretch()
-        self._fields["prelock_stop_ticks"] = _entry(45)
-        prelock_stop_row.addWidget(self._fields["prelock_stop_ticks"])
-        prelock_stop_row.addSpacing(4)
-        prelock_stop_row.addWidget(_label("檔", C["subtext"], 9))
-        form.addLayout(prelock_stop_row)
-        form.addSpacing(6)
-
-        sp_mode_row = QHBoxLayout()
-        sp_mode_row.addWidget(_label("1秒爆量方式", C["subtext"], 9))
-        sp_mode_row.addStretch()
-        self._combos["volume_spike_sell_mode"] = _combo(["固定張數", "比例"], 88)
-        self._combos["volume_spike_sell_mode"].currentIndexChanged.connect(
-            self._sync_volume_spike_mode_fields
-        )
-        sp_mode_row.addWidget(self._combos["volume_spike_sell_mode"])
-        form.addLayout(sp_mode_row)
-        form.addSpacing(4)
-
-        sp_row = QHBoxLayout()
-        sp_row.addWidget(_label("1秒成交量 >=", C["subtext"], 9))
-        sp_row.addStretch()
-        self._fields["volume_spike_sell_threshold"] = _entry(55)
-        sp_row.addWidget(self._fields["volume_spike_sell_threshold"])
-        sp_row.addSpacing(4)
-        sp_row.addWidget(_label("張", C["subtext"], 9))
-        form.addLayout(sp_row)
-
-        sp_ratio_row = QHBoxLayout()
-        sp_ratio_row.addWidget(_label("占漲停買一 >=", C["subtext"], 9))
-        sp_ratio_row.addStretch()
-        self._fields["volume_spike_sell_ratio_percent"] = _entry(55)
-        sp_ratio_row.addWidget(self._fields["volume_spike_sell_ratio_percent"])
-        sp_ratio_row.addSpacing(4)
-        sp_ratio_row.addWidget(_label("%", C["subtext"], 9))
-        form.addLayout(sp_ratio_row)
-        form.addSpacing(6)
-
-        ex_row3 = QHBoxLayout()
-        ex_row3.addWidget(_label("委託排隊中過爆量", C["subtext"], 9))
-        ex_row3.addStretch()
-        self._combos["exit_method3"] = _combo(["取消委託", "保留委託"], 88)
-        ex_row3.addWidget(self._combos["exit_method3"])
-        form.addLayout(ex_row3)
-        form.addSpacing(8)
-
-        self.sell_all_strategy_btn = QPushButton("全部策略持股賣出")
-        self.sell_all_strategy_btn.setFont(_font(9, bold=True))
-        self.sell_all_strategy_btn.setFixedHeight(30)
-        self.sell_all_strategy_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.sell_all_strategy_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {C['red']};
-                color: #ffffff;
-                border: none;
-                border-radius: 4px;
-            }}
-            QPushButton:hover {{ background-color: {C['red_l']}; }}
-        """)
-        self.sell_all_strategy_btn.clicked.connect(self._sell_all_strategy_positions)
-        form.addWidget(self.sell_all_strategy_btn)
-
-        form.addStretch()
-        scroll.setWidget(content)
-        outer.addWidget(scroll, 1)
-
-        # 底部按鈕列
-        btn_bar = QFrame()
-        btn_bar.setFixedHeight(92)
-        btn_bar.setStyleSheet(
-            f"background-color: {C['header']};"
-            f"border-top: 1px solid {C['border']};"
-        )
-        self._strategy_settings_button_bar = btn_bar
-        bl = QVBoxLayout(btn_bar)
-        bl.setContentsMargins(12, 8, 12, 8)
-        bl.setSpacing(8)
-
-        def _secondary_button(text: str) -> QPushButton:
-            btn = QPushButton(text)
-            btn.setFont(_font(9, bold=True))
-            btn.setFixedHeight(34)
-            btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn.setStyleSheet(f"""
-                QPushButton {{
-                    background-color: {C['surface']};
-                    color: {C['text']};
-                    border: 1px solid {C['border']};
-                    border-radius: 4px;
-                }}
-                QPushButton:hover {{ background-color: #2d333b; }}
-            """)
-            return btn
-
-        row1 = QHBoxLayout()
-        row1.setSpacing(8)
-
-        import_btn = _secondary_button("匯入 JSON")
-        import_btn.clicked.connect(self._import_settings_json)
-        row1.addWidget(import_btn, 1)
-
-        export_btn = _secondary_button("匯出 JSON")
-        export_btn.clicked.connect(self._export_settings_json)
-        row1.addWidget(export_btn, 1)
-
-        bl.addLayout(row1)
-
-        row2 = QHBoxLayout()
-        row2.setSpacing(8)
-
-        reset_btn = _secondary_button("重置設定")
-        reset_btn.clicked.connect(self._reset_settings)
-        row2.addWidget(reset_btn, 1)
-
-        save_btn = QPushButton("儲存設定")
-        save_btn.setFont(_font(9, bold=True))
-        save_btn.setFixedHeight(34)
-        save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        save_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {C['blue']};
-                color: #ffffff;
-                border: none;
-                border-radius: 4px;
-            }}
-            QPushButton:hover {{ background-color: {C['blue_l']}; }}
-        """)
-        save_btn.clicked.connect(self._save_settings)
-        row2.addWidget(save_btn, 1)
-
-        bl.addLayout(row2)
-
-        outer.addWidget(btn_bar)
-        return panel
+        return create_strategy_settings_panel(self)
 
     def _set_strategy_panel_mode(self, *, full_page: bool) -> None:
         panel = self._strategy_settings_panel
@@ -1228,581 +623,51 @@ class App(QMainWindow):
     # ══════════════════════════════════════════
 
     def _build_dashboard(self, parent: QWidget):
-        outer = QHBoxLayout(parent)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(0)
-
-        self._dashboard_settings_host = QWidget()
-        self._dashboard_settings_host.setStyleSheet(f"background-color: {C['sidebar']};")
-        self._dashboard_settings_lay = QVBoxLayout(self._dashboard_settings_host)
-        self._dashboard_settings_lay.setContentsMargins(0, 0, 0, 0)
-        self._dashboard_settings_lay.setSpacing(0)
-        self._dashboard_settings_lay.addWidget(self._create_strategy_settings_panel())
-        outer.addWidget(self._dashboard_settings_host)
-
-        sep = QFrame()
-        sep.setFixedWidth(1)
-        sep.setStyleSheet(f"background-color: {C['border']};")
-        outer.addWidget(sep)
-
-        content = QWidget()
-        content.setStyleSheet(f"background-color: {C['bg']};")
-        lay = QVBoxLayout(content)
-        lay.setContentsMargins(10, 10, 10, 10)
-        lay.setSpacing(8)
-
-        self._build_stats_row(lay)
-        self._build_mid_row(lay)
-        self._build_bot_row(lay)
-        outer.addWidget(content, 1)
+        build_dashboard(self, parent)
 
     # ── 統計卡列 ─────────────────────────────
 
     def _build_stats_row(self, lay: QVBoxLayout):
-        row = QWidget()
-        row.setFixedHeight(76)
-        row.setStyleSheet("background: transparent;")
-        rl = QHBoxLayout(row)
-        rl.setContentsMargins(0, 0, 0, 0)
-        rl.setSpacing(8)
-
-        defs = [
-            ("今日損益",    "stat_pnl_today",  "+0",     C["green"]),
-            ("今日報酬率",  "stat_return",     "+0.00%", C["green"]),
-            ("已實現損益",  "stat_realized",   "+0",     C["green"]),
-            ("持倉檔數",    "stat_positions",  "0",      C["text"]),
-            ("今日交易檔數","stat_trade_cnt",  "0 / 0",  C["text"]),
-            ("可用額度",    "stat_available",  "0",      C["text"]),
-        ]
-        for label_txt, attr, init, color in defs:
-            frame = _panel_frame()
-            fl = QVBoxLayout(frame)
-            fl.setContentsMargins(14, 6, 14, 6)
-            fl.setSpacing(3)
-            fl.addWidget(_label(label_txt, C["subtext"], 9))
-            val_lbl = QLabel(init)
-            val_lbl.setFont(QFont(FONT_MAIN, 18, QFont.Weight.Bold))
-            val_lbl.setStyleSheet(f"color: {color}; background: transparent;")
-            fl.addWidget(val_lbl)
-            setattr(self, attr, val_lbl)
-            rl.addWidget(frame, 1)
-
-        lay.addWidget(row)
+        build_stats_row(self, lay)
 
     # ── 中段：即時監控 + 事件日誌 ────────────
 
     def _build_mid_row(self, lay: QVBoxLayout):
-        row = QWidget()
-        row.setStyleSheet("background: transparent;")
-        rl = QHBoxLayout(row)
-        rl.setContentsMargins(0, 0, 0, 0)
-        rl.setSpacing(8)
-
-        # 即時監控
-        mon = _panel_frame()
-        ml = QVBoxLayout(mon)
-        ml.setContentsMargins(10, 8, 10, 8)
-        ml.setSpacing(6)
-
-        mh = QHBoxLayout()
-        mh.addWidget(_label("即時監控", C["text"], 10, bold=True))
-        mh.addSpacing(8)
-        self.monitor_count_lbl = _label("共 0 檔", C["subtext"], 9)
-        mh.addWidget(self.monitor_count_lbl)
-        mh.addStretch()
-        ml.addLayout(mh)
-
-        cols = ["代碼", "名稱", "價格", "漲跌", "漲跌幅",
-                "委賣張數", "1秒成交量", "起漲K", "狀態", "動作"]
-        self.monitor_table = QTableWidget(0, len(cols))
-        self.monitor_table.setHorizontalHeaderLabels(cols)
-        self.monitor_table.setStyleSheet(_table_style())
-        self.monitor_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.monitor_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.monitor_table.verticalHeader().setVisible(False)
-        self.monitor_table.setShowGrid(True)
-        self.monitor_table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        monitor_header = self.monitor_table.horizontalHeader()
-        monitor_header.setStretchLastSection(False)
-        monitor_header.setMinimumSectionSize(44)
-        monitor_header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
-        self.monitor_table.verticalHeader().setDefaultSectionSize(28)
-        for i, w in enumerate([52, 70, 66, 62, 72, 78, 86, 70, 102, 86]):
-            self.monitor_table.setColumnWidth(i, w)
-        ml.addWidget(self.monitor_table, 1)
-        rl.addWidget(mon, 3)
-
-        # 事件日誌
-        ev = _panel_frame()
-        el = QVBoxLayout(ev)
-        el.setContentsMargins(10, 8, 10, 8)
-        el.setSpacing(6)
-
-        eh = QHBoxLayout()
-        eh.addWidget(_label("事件日誌", C["text"], 10, bold=True))
-        eh.addStretch()
-        self._add_log_filter_buttons(eh)
-        eh.addSpacing(6)
-        clr_btn = QPushButton("清除")
-        clr_btn.setFont(_font(9))
-        clr_btn.setFixedSize(46, 22)
-        clr_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        clr_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {C['red']};
-                color: #ffffff;
-                border: none;
-                border-radius: 3px;
-            }}
-            QPushButton:hover {{ background-color: {C['red_l']}; }}
-        """)
-        clr_btn.clicked.connect(self._clear_log)
-        eh.addWidget(clr_btn)
-        el.addLayout(eh)
-
-        self.event_log = QTextEdit()
-        self.event_log.setReadOnly(True)
-        self.event_log.setFont(QFont(FONT_MAIN, 9))
-        self.event_log.setStyleSheet(f"""
-            QTextEdit {{
-                background-color: {C['bg']};
-                color: {C['text']};
-                border: none;
-                border-radius: 4px;
-                padding: 4px;
-            }}
-            {_scroll_style()}
-        """)
-        el.addWidget(self.event_log, 1)
-        rl.addWidget(ev, 1)
-
-        lay.addWidget(row, 3)
+        build_mid_row(self, lay)
 
     # ── 下段：持倉 + 委託 + 成交 ─────────────
 
     def _build_bot_row(self, lay: QVBoxLayout):
-        row = QWidget()
-        row.setStyleSheet("background: transparent;")
-        rl = QHBoxLayout(row)
-        rl.setContentsMargins(0, 0, 0, 0)
-        rl.setSpacing(8)
-
-        # 持倉部位
-        pos = _panel_frame()
-        pl = QVBoxLayout(pos)
-        pl.setContentsMargins(10, 8, 10, 8)
-        pl.setSpacing(6)
-        ph = QHBoxLayout()
-        ph.addWidget(_label("持倉部位", C["text"], 10, bold=True))
-        ph.addStretch()
-        pl.addLayout(ph)
-        pos_cols = ["代碼", "名稱", "持股數", "成本價", "現價", "損益", "損益率", "狀態"]
-        self.positions_table = QTableWidget(0, len(pos_cols))
-        self.positions_table.setHorizontalHeaderLabels(pos_cols)
-        self.positions_table.setStyleSheet(_table_style())
-        self.positions_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.positions_table.verticalHeader().setVisible(False)
-        self.positions_table.setShowGrid(True)
-        self.positions_table.horizontalHeader().setStretchLastSection(True)
-        self.positions_table.verticalHeader().setDefaultSectionSize(26)
-        for i, w in enumerate([48, 55, 52, 52, 52, 58, 58, 52]):
-            self.positions_table.setColumnWidth(i, w)
-        pl.addWidget(self.positions_table, 1)
-        self.pos_summary_lbl = _label("小計 (0)", C["subtext"], 9)
-        self.pos_pnl_lbl = _label("+0  +0.00%", C["green"], 9, bold=True)
-        ps_row = QHBoxLayout()
-        ps_row.addWidget(self.pos_summary_lbl)
-        ps_row.addStretch()
-        ps_row.addWidget(self.pos_pnl_lbl)
-        pl.addLayout(ps_row)
-        rl.addWidget(pos, 2)
-
-        # 委託狀態
-        ord_f = _panel_frame()
-        ol = QVBoxLayout(ord_f)
-        ol.setContentsMargins(10, 8, 10, 8)
-        ol.setSpacing(6)
-        oh = QHBoxLayout()
-        oh.addWidget(_label("委託狀態", C["text"], 10, bold=True))
-        oh.addStretch()
-        ol.addLayout(oh)
-        ord_cols = ["代碼", "名稱", "委託類別", "價格", "數量", "掛單時間", "成交時間", "狀態", "來源"]
-        self.orders_table = QTableWidget(0, len(ord_cols))
-        self.orders_table.setHorizontalHeaderLabels(ord_cols)
-        self.orders_table.setStyleSheet(_table_style())
-        self.orders_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.orders_table.verticalHeader().setVisible(False)
-        self.orders_table.setShowGrid(True)
-        self.orders_table.horizontalHeader().setStretchLastSection(True)
-        self.orders_table.verticalHeader().setDefaultSectionSize(26)
-        for i, w in enumerate([48, 55, 62, 58, 46, 70, 70, 48, 46]):
-            self.orders_table.setColumnWidth(i, w)
-        ol.addWidget(self.orders_table, 1)
-        rl.addWidget(ord_f, 2)
-
-        # 成交記錄
-        trd_f = _panel_frame()
-        tl = QVBoxLayout(trd_f)
-        tl.setContentsMargins(10, 8, 10, 8)
-        tl.setSpacing(6)
-        th = QHBoxLayout()
-        th.addWidget(_label("成交記錄", C["text"], 10, bold=True))
-        th.addStretch()
-        tl.addLayout(th)
-        trd_cols = ["時間", "代碼", "名稱", "類別", "價格", "數量", "明細", "損益"]
-        self.trades_table = QTableWidget(0, len(trd_cols))
-        self.trades_table.setHorizontalHeaderLabels(trd_cols)
-        self.trades_table.setStyleSheet(_table_style())
-        self.trades_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.trades_table.verticalHeader().setVisible(False)
-        self.trades_table.setShowGrid(True)
-        self.trades_table.horizontalHeader().setStretchLastSection(True)
-        self.trades_table.verticalHeader().setDefaultSectionSize(26)
-        for i, w in enumerate([60, 48, 55, 44, 55, 44, 180, 55]):
-            self.trades_table.setColumnWidth(i, w)
-        tl.addWidget(self.trades_table, 1)
-        self.trd_summary_lbl = _label("小計", C["subtext"], 9)
-        self.trd_pnl_lbl = _label("+0", C["green"], 9, bold=True)
-        ts_row = QHBoxLayout()
-        ts_row.addWidget(self.trd_summary_lbl)
-        ts_row.addStretch()
-        ts_row.addWidget(self.trd_pnl_lbl)
-        tl.addLayout(ts_row)
-        rl.addWidget(trd_f, 2)
-
-        lay.addWidget(row, 2)
+        build_bot_row(self, lay)
 
     # ── 其他分頁（佔位）───────────────────────
 
     def _build_settings_page(self, parent: QWidget):
-        lay = QVBoxLayout(parent)
-        lay.setContentsMargins(20, 16, 20, 16)
-        lay.setSpacing(0)
-        self._settings_page_settings_host = QWidget()
-        self._settings_page_settings_host.setStyleSheet(f"background-color: {C['bg']};")
-        self._settings_page_settings_lay = QVBoxLayout(self._settings_page_settings_host)
-        self._settings_page_settings_lay.setContentsMargins(0, 0, 0, 0)
-        self._settings_page_settings_lay.setSpacing(0)
-        lay.addWidget(self._settings_page_settings_host, 1)
+        build_settings_page(self, parent)
 
     def _build_placeholder(self, parent: QWidget, title: str):
-        lay = QVBoxLayout(parent)
-        lay.setContentsMargins(24, 24, 24, 24)
-        lbl = _label(title, C["subtext"], 12)
-        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        lay.addStretch()
-        lay.addWidget(lbl)
-        lay.addStretch()
+        build_placeholder(self, parent, title)
 
     # ── 委託/成交 全頁面 ──────────────────────
 
     def _build_orders_page(self, parent: QWidget):
-        lay = QVBoxLayout(parent)
-        lay.setContentsMargins(10, 10, 10, 10)
-        lay.setSpacing(8)
-
-        # 委託狀態
-        ord_f = _panel_frame()
-        ol = QVBoxLayout(ord_f)
-        ol.setContentsMargins(10, 8, 10, 8)
-        ol.setSpacing(6)
-        oh = QHBoxLayout()
-        oh.addWidget(_label("委託狀態", C["text"], 10, bold=True))
-        oh.addStretch()
-        ol.addLayout(oh)
-        ord_cols = ["代碼", "名稱", "委託類別", "價格", "數量", "掛單時間", "成交時間", "狀態", "來源"]
-        self.orders_full_table = QTableWidget(0, len(ord_cols))
-        self.orders_full_table.setHorizontalHeaderLabels(ord_cols)
-        self.orders_full_table.setStyleSheet(_table_style())
-        self.orders_full_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.orders_full_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.orders_full_table.verticalHeader().setVisible(False)
-        self.orders_full_table.setShowGrid(True)
-        self.orders_full_table.horizontalHeader().setStretchLastSection(True)
-        self.orders_full_table.verticalHeader().setDefaultSectionSize(28)
-        for i, w in enumerate([60, 80, 80, 72, 55, 90, 90, 65, 65]):
-            self.orders_full_table.setColumnWidth(i, w)
-        ol.addWidget(self.orders_full_table, 1)
-        self.orders_full_summary_lbl = _label("委託總計 (0)", C["subtext"], 9)
-        ol.addWidget(self.orders_full_summary_lbl)
-        lay.addWidget(ord_f, 1)
-
-        # 成交記錄
-        trd_f = _panel_frame()
-        tl = QVBoxLayout(trd_f)
-        tl.setContentsMargins(10, 8, 10, 8)
-        tl.setSpacing(6)
-        th = QHBoxLayout()
-        th.addWidget(_label("成交記錄", C["text"], 10, bold=True))
-        th.addStretch()
-        tl.addLayout(th)
-        trd_cols = ["時間", "代碼", "名稱", "類別", "價格", "數量", "明細", "損益"]
-        self.trades_full_table = QTableWidget(0, len(trd_cols))
-        self.trades_full_table.setHorizontalHeaderLabels(trd_cols)
-        self.trades_full_table.setStyleSheet(_table_style())
-        self.trades_full_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.trades_full_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.trades_full_table.verticalHeader().setVisible(False)
-        self.trades_full_table.setShowGrid(True)
-        self.trades_full_table.horizontalHeader().setStretchLastSection(True)
-        self.trades_full_table.verticalHeader().setDefaultSectionSize(28)
-        for i, w in enumerate([72, 60, 80, 55, 72, 55, 220, 72]):
-            self.trades_full_table.setColumnWidth(i, w)
-        tl.addWidget(self.trades_full_table, 1)
-        self.trades_full_pnl_lbl = _label("+0", C["green"], 9, bold=True)
-        self.trades_full_summary_lbl = _label("成交總計 (0)", C["subtext"], 9)
-        ts_row = QHBoxLayout()
-        ts_row.addWidget(self.trades_full_summary_lbl)
-        ts_row.addStretch()
-        ts_row.addWidget(self.trades_full_pnl_lbl)
-        tl.addLayout(ts_row)
-        lay.addWidget(trd_f, 1)
+        build_orders_page(self, parent)
 
     # ── 持倉部位 全頁面 ──────────────────────
 
     def _build_positions_page(self, parent: QWidget):
-        lay = QVBoxLayout(parent)
-        lay.setContentsMargins(10, 10, 10, 10)
-        lay.setSpacing(8)
-
-        pos_f = _panel_frame()
-        pl = QVBoxLayout(pos_f)
-        pl.setContentsMargins(10, 8, 10, 8)
-        pl.setSpacing(6)
-        ph = QHBoxLayout()
-        ph.addWidget(_label("持倉部位", C["text"], 10, bold=True))
-        ph.addStretch()
-        pl.addLayout(ph)
-        pos_cols = ["代碼", "名稱", "持股數", "成本價", "現價", "損益", "損益率", "狀態"]
-        self.positions_full_table = QTableWidget(0, len(pos_cols))
-        self.positions_full_table.setHorizontalHeaderLabels(pos_cols)
-        self.positions_full_table.setStyleSheet(_table_style())
-        self.positions_full_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.positions_full_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.positions_full_table.verticalHeader().setVisible(False)
-        self.positions_full_table.setShowGrid(True)
-        self.positions_full_table.horizontalHeader().setStretchLastSection(True)
-        self.positions_full_table.verticalHeader().setDefaultSectionSize(28)
-        for i, w in enumerate([60, 80, 60, 70, 70, 72, 72, 60]):
-            self.positions_full_table.setColumnWidth(i, w)
-        pl.addWidget(self.positions_full_table, 1)
-        self.pos_full_summary_lbl = _label("小計 (0)", C["subtext"], 9)
-        self.pos_full_pnl_lbl = _label("+0  +0.00%", C["green"], 9, bold=True)
-        ps_row = QHBoxLayout()
-        ps_row.addWidget(self.pos_full_summary_lbl)
-        ps_row.addStretch()
-        ps_row.addWidget(self.pos_full_pnl_lbl)
-        pl.addLayout(ps_row)
-        lay.addWidget(pos_f, 1)
+        build_positions_page(self, parent)
 
     # ── 事件日誌 全頁面 ──────────────────────
 
     def _build_events_page(self, parent: QWidget):
-        lay = QVBoxLayout(parent)
-        lay.setContentsMargins(10, 10, 10, 10)
-        lay.setSpacing(8)
-
-        trigger_f = _panel_frame()
-        tl = QVBoxLayout(trigger_f)
-        tl.setContentsMargins(10, 8, 10, 8)
-        tl.setSpacing(6)
-        th = QHBoxLayout()
-        th.addWidget(_label("策略觸發紀錄", C["text"], 10, bold=True))
-        th.addStretch()
-        self.decision_tab_toggle_btn = QPushButton("顯示決策明細")
-        self.decision_tab_toggle_btn.setFont(_font(9))
-        self.decision_tab_toggle_btn.setFixedHeight(24)
-        self.decision_tab_toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.decision_tab_toggle_btn.clicked.connect(self._toggle_decision_detail_tab)
-        th.addWidget(self.decision_tab_toggle_btn)
-        th.addSpacing(8)
-        self.strategy_trigger_summary_lbl = _label("共 0 筆", C["subtext"], 9)
-        th.addWidget(self.strategy_trigger_summary_lbl)
-        tl.addLayout(th)
-        trigger_cols = ["時間", "代碼", "名稱", "買/賣", "策略", "明細"]
-        self.strategy_trigger_table = QTableWidget(0, len(trigger_cols))
-        self.strategy_trigger_table.setHorizontalHeaderLabels(trigger_cols)
-        self.strategy_trigger_table.setStyleSheet(_table_style())
-        self.strategy_trigger_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.strategy_trigger_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.strategy_trigger_table.verticalHeader().setVisible(False)
-        self.strategy_trigger_table.setShowGrid(True)
-        self.strategy_trigger_table.horizontalHeader().setStretchLastSection(True)
-        self.strategy_trigger_table.verticalHeader().setDefaultSectionSize(28)
-        for i, w in enumerate([72, 60, 80, 58, 110, 360]):
-            self.strategy_trigger_table.setColumnWidth(i, w)
-        tl.addWidget(self.strategy_trigger_table, 1)
-        lay.addWidget(trigger_f, 1)
-
-        ev_f = _panel_frame()
-        el = QVBoxLayout(ev_f)
-        el.setContentsMargins(10, 8, 10, 8)
-        el.setSpacing(6)
-        eh = QHBoxLayout()
-        eh.addWidget(_label("事件日誌", C["text"], 10, bold=True))
-        eh.addStretch()
-        self._add_log_filter_buttons(eh)
-        eh.addSpacing(6)
-        clr_btn = QPushButton("清除")
-        clr_btn.setFont(_font(9))
-        clr_btn.setFixedSize(46, 22)
-        clr_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        clr_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {C['red']};
-                color: #ffffff;
-                border: none;
-                border-radius: 3px;
-            }}
-            QPushButton:hover {{ background-color: {C['red_l']}; }}
-        """)
-        clr_btn.clicked.connect(self._clear_log)
-        eh.addWidget(clr_btn)
-        el.addLayout(eh)
-        self.events_full_log = QTextEdit()
-        self.events_full_log.setReadOnly(True)
-        self.events_full_log.setFont(QFont(FONT_MAIN, 9))
-        self.events_full_log.setStyleSheet(f"""
-            QTextEdit {{
-                background-color: {C['bg']};
-                color: {C['text']};
-                border: none;
-                border-radius: 4px;
-                padding: 4px;
-            }}
-            {_scroll_style()}
-        """)
-        el.addWidget(self.events_full_log, 1)
-        lay.addWidget(ev_f, 1)
-        self._sync_decision_tab_toggle_text()
+        build_events_page(self, parent)
 
     def _build_limitup_test_page(self, parent: QWidget):
-        lay = QVBoxLayout(parent)
-        lay.setContentsMargins(10, 10, 10, 10)
-        lay.setSpacing(8)
-
-        top_f = _panel_frame()
-        tl = QVBoxLayout(top_f)
-        tl.setContentsMargins(10, 8, 10, 8)
-        tl.setSpacing(6)
-        head = QHBoxLayout()
-        head.addWidget(_label("鎖板測試 / 判斷分析", C["text"], 10, bold=True))
-        head.addStretch()
-        self.limitup_test_selected_lbl = _label("尚未選擇股票", C["subtext"], 9)
-        head.addWidget(self.limitup_test_selected_lbl)
-        head.addSpacing(8)
-        self.limitup_test_apply_btn = QPushButton("套用選取模式")
-        self.limitup_test_apply_btn.setFont(_font(9))
-        self.limitup_test_apply_btn.setFixedHeight(24)
-        self.limitup_test_apply_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.limitup_test_apply_btn.clicked.connect(self._apply_selected_limitup_test_mode)
-        head.addWidget(self.limitup_test_apply_btn)
-        tl.addLayout(head)
-
-        self.limitup_test_hint_lbl = _label(
-            "上表選股票，下表看各模式在當前節點的成立結果，選一列後可直接套用。",
-            C["subtext"],
-            9,
-        )
-        tl.addWidget(self.limitup_test_hint_lbl)
-
-        stock_cols = ["代碼", "名稱", "成交", "漲停", "啟用模式", "目前結果", "成立模式", "委賣", "買一", "賣一"]
-        self.limitup_test_stock_table = QTableWidget(0, len(stock_cols))
-        self.limitup_test_stock_table.setHorizontalHeaderLabels(stock_cols)
-        self.limitup_test_stock_table.setStyleSheet(_table_style())
-        self.limitup_test_stock_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.limitup_test_stock_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.limitup_test_stock_table.verticalHeader().setVisible(False)
-        self.limitup_test_stock_table.setShowGrid(True)
-        self.limitup_test_stock_table.horizontalHeader().setStretchLastSection(True)
-        self.limitup_test_stock_table.verticalHeader().setDefaultSectionSize(28)
-        for i, w in enumerate([66, 86, 66, 66, 130, 70, 260, 60, 70, 70]):
-            self.limitup_test_stock_table.setColumnWidth(i, w)
-        self.limitup_test_stock_table.currentCellChanged.connect(self._on_limitup_test_stock_changed)
-        tl.addWidget(self.limitup_test_stock_table, 1)
-        lay.addWidget(top_f, 1)
-
-        bottom_f = _panel_frame()
-        bl = QVBoxLayout(bottom_f)
-        bl.setContentsMargins(10, 8, 10, 8)
-        bl.setSpacing(6)
-        bl.addWidget(_label("模式明細", C["text"], 10, bold=True))
-        detail_cols = ["模式", "條件說明", "結果", "符合項目"]
-        self.limitup_test_mode_table = QTableWidget(0, len(detail_cols))
-        self.limitup_test_mode_table.setHorizontalHeaderLabels(detail_cols)
-        self.limitup_test_mode_table.setStyleSheet(_table_style())
-        self.limitup_test_mode_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.limitup_test_mode_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.limitup_test_mode_table.verticalHeader().setVisible(False)
-        self.limitup_test_mode_table.setShowGrid(True)
-        self.limitup_test_mode_table.horizontalHeader().setStretchLastSection(True)
-        self.limitup_test_mode_table.verticalHeader().setDefaultSectionSize(28)
-        for i, w in enumerate([150, 250, 72, 500]):
-            self.limitup_test_mode_table.setColumnWidth(i, w)
-        self.limitup_test_mode_table.currentCellChanged.connect(self._on_limitup_test_mode_changed)
-        bl.addWidget(self.limitup_test_mode_table, 1)
-
-        bl.addWidget(_label("當前資料快照", C["text"], 10, bold=True))
-        self.limitup_test_snapshot = QTextEdit()
-        self.limitup_test_snapshot.setReadOnly(True)
-        self.limitup_test_snapshot.setFont(QFont(FONT_MONO, 9))
-        self.limitup_test_snapshot.setFixedHeight(130)
-        self.limitup_test_snapshot.setStyleSheet(f"""
-            QTextEdit {{
-                background-color: {C['bg']};
-                color: {C['text']};
-                border: none;
-                border-radius: 4px;
-                padding: 4px;
-            }}
-            {_scroll_style()}
-        """)
-        bl.addWidget(self.limitup_test_snapshot)
-        lay.addWidget(bottom_f, 1)
+        build_limitup_test_page(self, parent)
 
     def _build_decision_detail_page(self, parent: QWidget):
-        lay = QVBoxLayout(parent)
-        lay.setContentsMargins(10, 10, 10, 10)
-        lay.setSpacing(8)
-
-        detail_f = _panel_frame()
-        dl = QVBoxLayout(detail_f)
-        dl.setContentsMargins(10, 8, 10, 8)
-        dl.setSpacing(6)
-        dh = QHBoxLayout()
-        dh.addWidget(_label("決策明細", C["text"], 10, bold=True))
-        dh.addSpacing(8)
-        self.decision_detail_summary_lbl = _label("共 0 筆", C["subtext"], 9)
-        dh.addWidget(self.decision_detail_summary_lbl)
-        dh.addStretch()
-        hide_btn = QPushButton("隱藏頁籤")
-        hide_btn.setFont(_font(9))
-        hide_btn.setFixedHeight(24)
-        hide_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        hide_btn.clicked.connect(self._hide_decision_detail_tab)
-        dh.addWidget(hide_btn)
-        clear_btn = QPushButton("清除")
-        clear_btn.setFont(_font(9))
-        clear_btn.setFixedHeight(24)
-        clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        clear_btn.clicked.connect(self._clear_decision_detail)
-        dh.addWidget(clear_btn)
-        dl.addLayout(dh)
-
-        detail_cols = ["時間", "代碼", "名稱", "類型", "結果", "原因/策略", "條件快照"]
-        self.decision_detail_table = QTableWidget(0, len(detail_cols))
-        self.decision_detail_table.setHorizontalHeaderLabels(detail_cols)
-        self.decision_detail_table.setStyleSheet(_table_style())
-        self.decision_detail_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.decision_detail_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.decision_detail_table.verticalHeader().setVisible(False)
-        self.decision_detail_table.setShowGrid(True)
-        self.decision_detail_table.horizontalHeader().setStretchLastSection(True)
-        self.decision_detail_table.verticalHeader().setDefaultSectionSize(28)
-        for i, w in enumerate([72, 60, 80, 88, 88, 150, 520]):
-            self.decision_detail_table.setColumnWidth(i, w)
-        dl.addWidget(self.decision_detail_table, 1)
-        lay.addWidget(detail_f, 1)
+        build_decision_detail_page(self, parent)
 
     @staticmethod
     def _fmt_limitup_price(value) -> str:
@@ -1828,74 +693,10 @@ class App(QMainWindow):
         return ", ".join(hits) if hits else "無"
 
     def _render_limitup_test_snapshot(self, item: Optional[dict]) -> None:
-        if not hasattr(self, "limitup_test_snapshot"):
-            return
-        if not item:
-            self.limitup_test_snapshot.setPlainText("尚無即時資料")
-            return
-        lines = [
-            f"code={item.get('code') or ''}",
-            f"name={item.get('name') or ''}",
-            f"price={self._fmt_limitup_price(item.get('price'))}",
-            f"limit_up={self._fmt_limitup_price(item.get('limit_up'))}",
-            f"ask0={self._fmt_limitup_price(item.get('ask0_price'))} / vol={item.get('ask0_volume', 0)}",
-            f"bid0={self._fmt_limitup_price(item.get('bid0_price'))} / vol={item.get('bid0_volume', 0)}",
-            f"trade_bid={self._fmt_limitup_price(item.get('trade_bid'))}",
-            f"trade_ask={self._fmt_limitup_price(item.get('trade_ask'))}",
-            f"has_ask_levels={bool(item.get('has_ask_levels'))}",
-            f"has_bid_levels={bool(item.get('has_bid_levels'))}",
-            f"ask_qty={int(item.get('ask_qty') or 0)}",
-            f"signals={item.get('limit_up_signals') or {}}",
-            f"candidates={item.get('limit_up_candidates') or {}}",
-        ]
-        self.limitup_test_snapshot.setPlainText("\n".join(lines))
+        render_limitup_test_snapshot(self, item)
 
     def _render_limitup_test_detail(self, item: Optional[dict]) -> None:
-        if not hasattr(self, "limitup_test_mode_table"):
-            return
-        table = self.limitup_test_mode_table
-        table.setRowCount(0)
-        if not item:
-            if hasattr(self, "limitup_test_selected_lbl"):
-                self.limitup_test_selected_lbl.setText("尚未選擇股票")
-            self._render_limitup_test_snapshot(None)
-            return
-        if hasattr(self, "limitup_test_selected_lbl"):
-            self.limitup_test_selected_lbl.setText(
-                f"目前選擇：{item.get('code')} {item.get('name')} / 啟用={item.get('limit_up_mode')}"
-            )
-        candidates = dict(item.get("limit_up_candidates") or {})
-        signals = dict(item.get("limit_up_signals") or {})
-        selected_mode = self._limitup_test_selected_mode or item.get("limit_up_mode") or self._get_selected_limit_up_mode()
-        selected_row = -1
-        for row, (mode, desc) in enumerate(LIMIT_UP_DETECTION_MODES.items()):
-            table.insertRow(row)
-            result_text = "成立" if candidates.get(mode) else "未成立"
-            color = QColor(C["green_l"] if candidates.get(mode) else C["subtext"])
-            vals = [
-                mode,
-                desc,
-                result_text,
-                self._fmt_limitup_signal_hits(signals),
-            ]
-            for col, val in enumerate(vals):
-                item_widget = QTableWidgetItem(val)
-                if col == 2:
-                    item_widget.setForeground(color)
-                else:
-                    item_widget.setForeground(QColor(C["text"]))
-                if mode == item.get("limit_up_mode"):
-                    item_widget.setBackground(QColor(C["badge_order"]))
-                item_widget.setTextAlignment(Qt.AlignmentFlag.AlignCenter if col != 3 else Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-                table.setItem(row, col, item_widget)
-            if mode == selected_mode:
-                selected_row = row
-        if selected_row < 0:
-            selected_row = 0 if table.rowCount() else -1
-        if selected_row >= 0:
-            table.setCurrentCell(selected_row, 0)
-            self._limitup_test_selected_mode = str(table.item(selected_row, 0).text())
-        self._render_limitup_test_snapshot(item)
+        render_limitup_test_detail(self, item)
 
     def _current_limitup_test_item(self) -> Optional[dict]:
         for item in self._latest_monitor_summary:
@@ -1904,53 +705,7 @@ class App(QMainWindow):
         return None
 
     def _refresh_limitup_test_page(self, summary=None) -> None:
-        if not hasattr(self, "limitup_test_stock_table"):
-            return
-        if summary is None:
-            summary = self._latest_monitor_summary
-        self._latest_monitor_summary = list(summary or [])
-        table = self.limitup_test_stock_table
-        table.blockSignals(True)
-        table.setRowCount(0)
-        rows = sorted(self._latest_monitor_summary, key=lambda s: str(s.get("code") or ""))
-        for row, item in enumerate(rows):
-            table.insertRow(row)
-            candidates = dict(item.get("limit_up_candidates") or {})
-            buy1_txt = f"{self._fmt_limitup_price(item.get('bid0_price'))}/{int(item.get('bid0_volume') or 0)}"
-            sell1_txt = f"{self._fmt_limitup_price(item.get('ask0_price'))}/{int(item.get('ask0_volume') or 0)}"
-            vals = [
-                str(item.get("code") or ""),
-                str(item.get("name") or ""),
-                self._fmt_limitup_price(item.get("price")),
-                self._fmt_limitup_price(item.get("limit_up")),
-                str(item.get("limit_up_mode") or ""),
-                "鎖板中" if item.get("is_at_limit_up") else "未鎖板",
-                self._fmt_limitup_mode_hits(candidates),
-                str(item.get("ask_qty") or 0),
-                buy1_txt,
-                sell1_txt,
-            ]
-            for col, val in enumerate(vals):
-                cell = QTableWidgetItem(val)
-                cell.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                if col == 5:
-                    cell.setForeground(QColor(C["green_l"] if item.get("is_at_limit_up") else C["subtext"]))
-                else:
-                    cell.setForeground(QColor(C["text"]))
-                table.setItem(row, col, cell)
-        if rows:
-            codes = {str(item.get("code") or "") for item in rows}
-            if self._limitup_test_selected_code not in codes:
-                self._limitup_test_selected_code = str(rows[0].get("code") or "")
-            for row in range(table.rowCount()):
-                code_item = table.item(row, 0)
-                if code_item and code_item.text() == self._limitup_test_selected_code:
-                    table.setCurrentCell(row, 0)
-                    break
-        else:
-            self._limitup_test_selected_code = ""
-        table.blockSignals(False)
-        self._render_limitup_test_detail(self._current_limitup_test_item())
+        refresh_limitup_test_page(self, summary)
 
     def _on_limitup_test_stock_changed(self, current_row: int, _current_col: int, _prev_row: int, _prev_col: int) -> None:
         if current_row < 0 or not hasattr(self, "limitup_test_stock_table"):
@@ -1987,11 +742,7 @@ class App(QMainWindow):
     # ── 頁面資料同步輔助 ──────────────────────
 
     def _sync_decision_tab_toggle_text(self) -> None:
-        btn = getattr(self, "decision_tab_toggle_btn", None)
-        if btn is None:
-            return
-        visible = "decision_detail" not in self._hidden_tabs
-        btn.setText("隱藏決策明細" if visible else "顯示決策明細")
+        sync_decision_tab_toggle_text(self)
 
     def _set_tab_visible(self, key: str, visible: bool) -> None:
         if visible:
@@ -2021,250 +772,16 @@ class App(QMainWindow):
             self.decision_detail_summary_lbl.setText("共 0 筆")
 
     def _sync_orders_full_table(self) -> None:
-        """從儀表板 orders_table 同步至全頁面 orders_full_table。"""
-        src = self.orders_table
-        dst = self.orders_full_table
-        if src is dst:
-            return
-        dst.setRowCount(0)
-        for r in range(src.rowCount()):
-            dst.insertRow(r)
-            for c in range(src.columnCount()):
-                it = src.item(r, c)
-                if it:
-                    new_it = QTableWidgetItem(it.text())
-                    new_it.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                    new_it.setForeground(it.foreground())
-                    if c == 0:
-                        new_it.setData(Qt.ItemDataRole.UserRole,
-                                       it.data(Qt.ItemDataRole.UserRole))
-                    dst.setItem(r, c, new_it)
-        self.orders_full_summary_lbl.setText(f"委託總計 ({src.rowCount()})")
+        sync_orders_full_table(self)
 
     def _sync_trades_full_table(self) -> None:
-        """從儀表板 trades_table 同步至全頁面 trades_full_table。"""
-        src = self.trades_table
-        dst = self.trades_full_table
-        if src is dst:
-            return
-        dst.setRowCount(0)
-        for r in range(src.rowCount()):
-            dst.insertRow(r)
-            for c in range(src.columnCount()):
-                it = src.item(r, c)
-                if it:
-                    new_it = QTableWidgetItem(it.text())
-                    new_it.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                    new_it.setForeground(it.foreground())
-                    dst.setItem(r, c, new_it)
-        self.trades_full_summary_lbl.setText(self.trd_summary_lbl.text())
-        self.trades_full_pnl_lbl.setText(self.trd_pnl_lbl.text())
-        self.trades_full_pnl_lbl.setStyleSheet(self.trd_pnl_lbl.styleSheet())
+        sync_trades_full_table(self)
 
     def _sync_positions_full_table(self) -> None:
-        """從儀表板 positions_table 同步至全頁面 positions_full_table。"""
-        src = self.positions_table
-        dst = self.positions_full_table
-        if src is dst:
-            return
-        dst.setRowCount(0)
-        for r in range(src.rowCount()):
-            dst.insertRow(r)
-            for c in range(src.columnCount()):
-                it = src.item(r, c)
-                if it:
-                    new_it = QTableWidgetItem(it.text())
-                    new_it.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                    new_it.setForeground(it.foreground())
-                    dst.setItem(r, c, new_it)
-        self.pos_full_summary_lbl.setText(self.pos_summary_lbl.text())
-        self.pos_full_pnl_lbl.setText(self.pos_pnl_lbl.text())
-        self.pos_full_pnl_lbl.setStyleSheet(self.pos_pnl_lbl.styleSheet())
+        sync_positions_full_table(self)
 
     def _build_broker_page(self, parent: QWidget):
-        from PyQt6.QtWidgets import QFileDialog, QGroupBox, QGridLayout
-
-        outer = QVBoxLayout(parent)
-        outer.setContentsMargins(20, 16, 20, 16)
-        outer.setSpacing(12)
-
-        # ── 標題列 ──────────────────────────────────
-        hdr = QHBoxLayout()
-        hdr.addWidget(_label("券商設定", C["text"], 13, bold=True))
-        hdr.addSpacing(12)
-        self._broker_conn_dot = QLabel("●")
-        self._broker_conn_dot.setFont(_font(10))
-        self._broker_conn_dot.setStyleSheet(f"color:{C['subtext']}; background:transparent;")
-        hdr.addWidget(self._broker_conn_dot)
-        self._broker_conn_lbl = _label("未連線", C["subtext"], 10)
-        hdr.addWidget(self._broker_conn_lbl)
-        hdr.addStretch()
-        outer.addLayout(hdr)
-
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll.setStyleSheet(
-            f"QScrollArea {{ border: none; background-color: {C['bg']}; }}"
-            + _scroll_style()
-        )
-        content = QWidget()
-        content.setStyleSheet(f"background-color: {C['bg']};")
-        cl = QVBoxLayout(content)
-        cl.setContentsMargins(0, 0, 12, 0)
-        cl.setSpacing(14)
-
-        def _group(title: str) -> tuple:
-            """回傳 (QFrame, QGridLayout)"""
-            grp = _panel_frame()
-            gl = QGridLayout(grp)
-            gl.setContentsMargins(16, 10, 16, 14)
-            gl.setHorizontalSpacing(12)
-            gl.setVerticalSpacing(8)
-            gl.setColumnStretch(1, 1)
-            title_lbl = _label(title, C["subtext"], 9, bold=True)
-            title_lbl.setContentsMargins(0, 0, 0, 4)
-            gl.addWidget(title_lbl, 0, 0, 1, 3)
-            return grp, gl
-
-        def _row(gl, row: int, label: str, key: str,
-                 pw: bool = False, width: int = 260, placeholder: str = ""):
-            gl.addWidget(_label(label, C["subtext"], 9), row, 0)
-            e = _entry(width, password=pw)
-            if placeholder:
-                e.setPlaceholderText(placeholder)
-            self._bfields[key] = e
-            gl.addWidget(e, row, 1)
-
-        # ── 帳號資訊群組 ─────────────────────────────
-        grp1, gl1 = _group("帳號資訊")
-        _row(gl1, 1, "身分證字號", "personal_id",  placeholder="A123456789")
-        _row(gl1, 2, "網路下單密碼", "password",   pw=True, placeholder="登入密碼")
-        _row(gl1, 3, "分行代號",   "branch_no",   placeholder="例：6460")
-        _row(gl1, 4, "帳號（7碼）","account_no",  placeholder="1234567")
-        cl.addWidget(grp1)
-
-        # ── 憑證群組 ─────────────────────────────────
-        grp2, gl2 = _group("憑證設定")
-
-        gl2.addWidget(_label("憑證檔案", C["subtext"], 9), 1, 0)
-        cert_row = QHBoxLayout()
-        self._bfields["cert_path"] = _entry(190)
-        self._bfields["cert_path"].setPlaceholderText("憑證路徑 (.pfx / .p12)")
-        self._bfields["cert_path"].setReadOnly(False)
-        cert_row.addWidget(self._bfields["cert_path"])
-        cert_row.addSpacing(6)
-        browse_btn = QPushButton("瀏覽…")
-        browse_btn.setFont(_font(9))
-        browse_btn.setFixedSize(64, 26)
-        browse_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {C['surface']};
-                color: {C['text']};
-                border: 1px solid {C['border']};
-                border-radius: 4px;
-            }}
-            QPushButton:hover {{ background-color: #2d333b; }}
-        """)
-        browse_btn.clicked.connect(self._browse_cert)
-        cert_row.addWidget(browse_btn)
-        cert_w = QWidget()
-        cert_w.setLayout(cert_row)
-        cert_w.setStyleSheet("background:transparent;")
-        gl2.addWidget(cert_w, 1, 1)
-
-        _row(gl2, 2, "憑證密碼", "cert_password", pw=True, placeholder="留空則同身分證字號")
-        cl.addWidget(grp2)
-
-        # ── API Key 群組 ─────────────────────────────
-        grp3, gl3 = _group("API Key（選填）")
-        _row(gl3, 1, "API Key",    "api_key",    placeholder="選填，申請後填入")
-        _row(gl3, 2, "API Secret", "api_secret", pw=True, placeholder="選填")
-        cl.addWidget(grp3)
-
-        # ── 連線選項 ─────────────────────────────────
-        grp4, gl4 = _group("連線選項")
-        gl4.addWidget(_label("模擬下單", C["subtext"], 9), 1, 0)
-        dry_tog = ToggleButton(initial=True)
-        self._toggles["broker_dry_run"] = dry_tog
-        gl4.addWidget(dry_tog, 1, 1, Qt.AlignmentFlag.AlignLeft)
-        gl4.addWidget(_label("（開啟：不送出真實委託）", C["subtext"], 8), 1, 2)
-        cl.addWidget(grp4)
-
-        cl.addStretch()
-        scroll.setWidget(content)
-        outer.addWidget(scroll, 1)
-
-        # ── 底部按鈕列 ───────────────────────────────
-        btn_row = QHBoxLayout()
-        btn_row.setSpacing(10)
-
-        load_btn = QPushButton("匯入 JSON")
-        load_btn.setFont(_font(9, bold=True))
-        load_btn.setFixedHeight(34)
-        load_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {C['surface']};
-                color: {C['text']};
-                border: 1px solid {C['border']};
-                border-radius: 4px; padding: 0 14px;
-            }}
-            QPushButton:hover {{ background-color: #2d333b; }}
-        """)
-        load_btn.clicked.connect(self._broker_import_json)
-        btn_row.addWidget(load_btn)
-
-        save_env_btn = QPushButton("匯出 JSON")
-        save_env_btn.setFont(_font(9, bold=True))
-        save_env_btn.setFixedHeight(34)
-        save_env_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {C['surface']};
-                color: {C['text']};
-                border: 1px solid {C['border']};
-                border-radius: 4px; padding: 0 14px;
-            }}
-            QPushButton:hover {{ background-color: #2d333b; }}
-        """)
-        save_env_btn.clicked.connect(self._broker_export_json)
-        btn_row.addWidget(save_env_btn)
-
-        btn_row.addStretch()
-
-        test_btn = QPushButton("測試連線")
-        test_btn.setFont(_font(9, bold=True))
-        test_btn.setFixedHeight(34)
-        test_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {C['yellow']};
-                color: #000000;
-                border: none;
-                border-radius: 4px; padding: 0 16px;
-            }}
-            QPushButton:hover {{ background-color: {C['yellow_l']}; }}
-        """)
-        test_btn.clicked.connect(self._broker_test_connection)
-        btn_row.addWidget(test_btn)
-
-        connect_btn = QPushButton("連線並套用")
-        connect_btn.setFont(_font(9, bold=True))
-        connect_btn.setFixedHeight(34)
-        connect_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {C['blue']};
-                color: #ffffff;
-                border: none;
-                border-radius: 4px; padding: 0 16px;
-            }}
-            QPushButton:hover {{ background-color: {C['blue_l']}; }}
-        """)
-        connect_btn.clicked.connect(self._broker_connect)
-        btn_row.addWidget(connect_btn)
-
-        outer.addLayout(btn_row)
-
-        # 初始載入預設 broker_settings.json
-        self._broker_load_default_json()
+        build_broker_page(self, parent)
 
     # ── 券商設定輔助方法 ────────────────────────
 
@@ -4594,67 +3111,7 @@ class App(QMainWindow):
         self._dispatch_ui(lambda: self._render_account(snap))
 
     def _render_account(self, snap) -> None:
-        # 持倉表
-        mirror_positions = (
-            hasattr(self, "positions_full_table")
-            and self.positions_full_table is not self.positions_table
-        )
-        self.positions_table.setRowCount(0)
-        if mirror_positions:
-            self.positions_full_table.setRowCount(0)
-        total_unr = 0.0
-        total_cost = 0.0
-        for p in snap.positions:
-            row = self.positions_table.rowCount()
-            self.positions_table.insertRow(row)
-            unr = float(p.unrealized_pnl)
-            unr_pct = float(p.unrealized_pnl_pct)
-            total_unr += unr
-            total_cost += float(p.avg_cost) * p.qty * 1000
-            color = C["red"] if unr >= 0 else C["green"]
-            cells = [
-                (p.code, C["text"]),
-                (p.name, C["text"]),
-                (str(p.qty * 1000), C["text"]),
-                (f"{float(p.avg_cost):,.2f}", C["text"]),
-                (f"{float(p.last_price):,.2f}", C["text"]),
-                (f"{'+' if unr >= 0 else ''}{unr:,.0f}", color),
-                (f"{'+' if unr_pct >= 0 else ''}{unr_pct:.2f}%", color),
-                ("持有", C["green"]),
-            ]
-            for col, (val, c) in enumerate(cells):
-                item = QTableWidgetItem(val)
-                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                item.setForeground(QColor(c))
-                self.positions_table.setItem(row, col, item)
-            # 即時同步至全頁面持倉表
-            if mirror_positions:
-                self.positions_full_table.insertRow(row)
-                for col, (val, c) in enumerate(cells):
-                    item2 = QTableWidgetItem(val)
-                    item2.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                    item2.setForeground(QColor(c))
-                    self.positions_full_table.setItem(row, col, item2)
-        # 統計卡：持倉檔數、可用額度、未實現損益小計
-        self.stat_positions.setText(str(len(snap.positions)))
-        bp = float(snap.buying_power)
-        self.stat_available.setText(f"{bp:,.0f}")
-        rate = (total_unr / total_cost * 100) if total_cost > 0 else 0.0
-        summary_txt = f"小計 ({len(snap.positions)})"
-        sign = "+" if total_unr >= 0 else ""
-        rate_sign = "+" if rate >= 0 else ""
-        pnl_txt = f"{sign}{total_unr:,.0f}  {rate_sign}{rate:.2f}%"
-        pnl_color = C["red"] if total_unr >= 0 else C["green"]
-        self.pos_summary_lbl.setText(summary_txt)
-        self.pos_pnl_lbl.setText(pnl_txt)
-        self.pos_pnl_lbl.setStyleSheet(f"color:{pnl_color};")
-        if hasattr(self, "pos_full_summary_lbl"):
-            self.pos_full_summary_lbl.setText(summary_txt)
-            self.pos_full_pnl_lbl.setText(pnl_txt)
-            self.pos_full_pnl_lbl.setStyleSheet(f"color:{pnl_color};")
-        self._unrealized_pnl = total_unr
-        self._positions_cost = total_cost
-        self._update_pnl_stats()
+        render_account(self, snap)
 
     def _update_pnl_stats(self) -> None:
         realized = float(self._realized_pnl)
@@ -4707,235 +3164,22 @@ class App(QMainWindow):
         self._dispatch_ui(lambda ev=ev: self._append_decision_detail(ev))
 
     def _append_strategy_event(self, ev: dict) -> None:
-        if not hasattr(self, "strategy_trigger_table"):
-            return
-        self._strategy_trigger_count += 1
-        side = str(ev.get("side") or "")
-        side_text = {
-            "BUY": "買入",
-            "SELL": "賣出",
-            "CANCEL": "取消",
-        }.get(side, side or "—")
-        color = {
-            "BUY": C["green"],
-            "SELL": C["red"],
-            "CANCEL": C["yellow_l"],
-        }.get(side, C["text"])
-        details = ev.get("details") or {}
-        if isinstance(details, dict):
-            detail_txt = "；".join(f"{k}={v}" for k, v in details.items())
-        else:
-            detail_txt = str(details)
-        cells = [
-            (str(ev.get("time") or ""), color),
-            (str(ev.get("code") or ""), color),
-            (str(ev.get("name") or ""), color),
-            (side_text, color),
-            (str(ev.get("strategy") or ""), color),
-            (detail_txt, C["subtext"]),
-        ]
-        self.strategy_trigger_table.insertRow(0)
-        for col, (val, fg) in enumerate(cells):
-            item = QTableWidgetItem(val)
-            item.setTextAlignment(
-                Qt.AlignmentFlag.AlignCenter
-                if col < 5 else Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft
-            )
-            item.setForeground(QColor(fg))
-            self.strategy_trigger_table.setItem(0, col, item)
-        if self.strategy_trigger_table.rowCount() > 300:
-            self.strategy_trigger_table.removeRow(self.strategy_trigger_table.rowCount() - 1)
-        self.strategy_trigger_summary_lbl.setText(f"共 {self._strategy_trigger_count} 筆")
+        append_strategy_event(self, ev)
 
     def _append_decision_detail(self, ev: dict) -> None:
-        if not hasattr(self, "decision_detail_table"):
-            return
-        self._decision_detail_count += 1
-        details = ev.get("details") or {}
-        if isinstance(details, dict):
-            detail_txt = "；".join(f"{k}={v}" for k, v in details.items())
-        else:
-            detail_txt = str(details)
-        result = str(ev.get("result") or "")
-        fg = {
-            "未進場": C["yellow_l"],
-            "封鎖進場": C["red"],
-            "進場觸發": C["green"],
-            "出場觸發": C["red"],
-            "取消觸發": C["yellow_l"],
-            "買進成交": C["green"],
-            "賣出成交": C["red"],
-            "鎖板中": C["red_l"],
-            "未鎖板": C["subtext"],
-        }.get(result, C["text"])
-        row = 0
-        self.decision_detail_table.insertRow(row)
-        cells = [
-            (str(ev.get("time") or ""), fg),
-            (str(ev.get("code") or ""), fg),
-            (str(ev.get("name") or ""), fg),
-            (str(ev.get("category") or ""), fg),
-            (result, fg),
-            (str(ev.get("reason") or ""), C["text"]),
-            (detail_txt, C["subtext"]),
-        ]
-        for col, (val, color) in enumerate(cells):
-            item = QTableWidgetItem(val)
-            item.setTextAlignment(
-                Qt.AlignmentFlag.AlignCenter
-                if col < 6 else Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft
-            )
-            item.setForeground(QColor(color))
-            self.decision_detail_table.setItem(row, col, item)
-        if self.decision_detail_table.rowCount() > 3000:
-            self.decision_detail_table.removeRow(self.decision_detail_table.rowCount() - 1)
-        self.decision_detail_summary_lbl.setText(f"共 {self._decision_detail_count} 筆")
+        append_decision_detail(self, ev)
 
     def _append_order(self, ev) -> None:
-        # 依 order_id 找既有列；若有則更新狀態欄，否則插入新列
-        oid = getattr(ev, "order_id", "")
-        mirror_orders = (
-            hasattr(self, "orders_full_table")
-            and self.orders_full_table is not self.orders_table
-        )
-        row_idx = -1
-        for r in range(self.orders_table.rowCount()):
-            it = self.orders_table.item(r, 0)
-            if it and it.data(Qt.ItemDataRole.UserRole) == oid:
-                row_idx = r
-                break
-
-        side_txt = "買進" if ev.side.value == "BUY" else "賣出"
-        status_map = {
-            "PENDING":   ("委託中", C["yellow_l"]),
-            "PARTIAL":   ("部分成交", C["orange"]),
-            "FILLED":    ("已成交",  C["green"]),
-            "CANCELLED": ("已取消",  C["subtext"]),
-            "REJECTED":  ("已拒絕",  C["red"]),
-        }
-        st_txt, st_color = status_map.get(ev.status.value, (ev.status.value, C["text"]))
-        side_color = C["green"] if ev.side.value == "BUY" else C["red"]
-        order_time_txt = getattr(getattr(ev, "time", None), "strftime", lambda _fmt: "")("%H:%M:%S")
-        fill_time_txt = order_time_txt if ev.status.value == "FILLED" else ""
-
-        if row_idx < 0:
-            row_idx = 0
-            self.orders_table.insertRow(row_idx)
-            source = getattr(ev, "source", "") or ("DRY" if str(oid).startswith("DRY") else "REAL")
-            cells = [
-                (ev.code, side_color),
-                (getattr(ev, "name", "") or "", side_color),
-                (side_txt, side_color),
-                (f"{float(ev.price):,.2f}", side_color),
-                (str(ev.qty), side_color),
-                (order_time_txt, C["subtext"]),
-                (fill_time_txt, C["subtext"]),
-                (st_txt, st_color),
-                (source, C["yellow_l"] if source == "DRY" else C["red_l"]),
-            ]
-            for col, (val, color) in enumerate(cells):
-                item = QTableWidgetItem(val)
-                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                item.setForeground(QColor(color))
-                if col == 0:
-                    item.setData(Qt.ItemDataRole.UserRole, oid)
-                self.orders_table.setItem(row_idx, col, item)
-            # 即時同步至全頁面委託表
-            if mirror_orders:
-                self.orders_full_table.insertRow(0)
-                for col, (val, color) in enumerate(cells):
-                    item2 = QTableWidgetItem(val)
-                    item2.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                    item2.setForeground(QColor(color))
-                    if col == 0:
-                        item2.setData(Qt.ItemDataRole.UserRole, oid)
-                    self.orders_full_table.setItem(0, col, item2)
-            if hasattr(self, "orders_full_summary_lbl"):
-                self.orders_full_summary_lbl.setText(
-                    f"委託總計 ({self.orders_table.rowCount()})")
-        else:
-            cell = self.orders_table.item(row_idx, 7)
-            if cell:
-                cell.setText(st_txt)
-                cell.setForeground(QColor(st_color))
-            if order_time_txt:
-                order_time_cell = self.orders_table.item(row_idx, 5)
-                if order_time_cell and not order_time_cell.text():
-                    order_time_cell.setText(order_time_txt)
-            if fill_time_txt:
-                fill_time_cell = self.orders_table.item(row_idx, 6)
-                if fill_time_cell:
-                    fill_time_cell.setText(fill_time_txt)
-                    fill_time_cell.setForeground(QColor(C["subtext"]))
-            # 同步更新全頁面狀態欄
-            if mirror_orders:
-                for r in range(self.orders_full_table.rowCount()):
-                    it = self.orders_full_table.item(r, 0)
-                    if it and it.data(Qt.ItemDataRole.UserRole) == oid:
-                        cell2 = self.orders_full_table.item(r, 7)
-                        if cell2:
-                            cell2.setText(st_txt)
-                            cell2.setForeground(QColor(st_color))
-                        if order_time_txt:
-                            order_time_cell2 = self.orders_full_table.item(r, 5)
-                            if order_time_cell2 and not order_time_cell2.text():
-                                order_time_cell2.setText(order_time_txt)
-                        if fill_time_txt:
-                            fill_time_cell2 = self.orders_full_table.item(r, 6)
-                            if fill_time_cell2:
-                                fill_time_cell2.setText(fill_time_txt)
-                                fill_time_cell2.setForeground(QColor(C["subtext"]))
-                        break
+        append_order(self, ev)
 
     def _mark_order_filled(self, ev) -> None:
-        oid = getattr(ev, "order_id", "")
-        if not oid:
-            return
-        fill_time_txt = getattr(getattr(ev, "time", None), "strftime", lambda _fmt: "")("%H:%M:%S")
-        if not fill_time_txt:
-            return
-        for table in (self.orders_table, getattr(self, "orders_full_table", None)):
-            if table is None:
-                continue
-            for r in range(table.rowCount()):
-                it = table.item(r, 0)
-                if it and it.data(Qt.ItemDataRole.UserRole) == oid:
-                    fill_item = table.item(r, 6)
-                    if fill_item is not None:
-                        fill_item.setText(fill_time_txt)
-                        fill_item.setForeground(QColor(C["subtext"]))
-                    break
+        mark_order_filled(self, ev)
 
     def _refresh_broker_status(self) -> None:
-        if self.broker is None:
-            self._set_broker_status("未連線", C["subtext"], C["subtext"])
-            return
-        try:
-            from broker import ConnectionState
-        except ImportError:
-            return
-        st = getattr(self.broker, "state", None)
-        acc = getattr(self.broker, "account", None)
-        if st == ConnectionState.CONNECTED:
-            dry_run = bool(getattr(self.broker, "dry_run", True))
-            mode = "模擬下單" if dry_run else "實單模式"
-            label = f"券商狀態：已登入 {acc.display}（{mode}）" if acc else f"券商狀態：已連線（{mode}）"
-            self._set_broker_status(label, C["green"], C["text"], raw=True)
-        elif st == ConnectionState.CONNECTING:
-            self._set_broker_status("連線中…", C["yellow_l"], C["subtext"])
-        elif st == ConnectionState.LOGIN_FAILED:
-            self._set_broker_status("登入失敗", C["red"], C["red"])
-        elif st == ConnectionState.ERROR:
-            self._set_broker_status("連線錯誤", C["red"], C["red"])
-        else:
-            self._set_broker_status("未連線", C["subtext"], C["subtext"])
+        refresh_broker_status(self)
 
     def _set_broker_status(self, text: str, dot_color: str, text_color: str, *, raw: bool = False) -> None:
-        if hasattr(self, "broker_dot"):
-            self.broker_dot.setStyleSheet(f"color: {dot_color}; background: transparent;")
-        if hasattr(self, "broker_status_lbl"):
-            self.broker_status_lbl.setText(text if raw else f"券商狀態：{text}")
-            self.broker_status_lbl.setStyleSheet(f"color: {text_color}; background: transparent;")
+        set_broker_status(self, text, dot_color, text_color, raw=raw)
 
 
     # ══════════════════════════════════════════
@@ -4995,23 +3239,10 @@ class App(QMainWindow):
         return self._log_filter == "all" or bool(entry.get("strategy"))
 
     def _append_log_html_to_views(self, html_text: str) -> None:
-        self.event_log.append(html_text)
-        sb = self.event_log.verticalScrollBar()
-        sb.setValue(sb.maximum())
-        if (hasattr(self, "events_full_log")
-            and self.events_full_log is not self.event_log):
-            self.events_full_log.append(html_text)
-            sb2 = self.events_full_log.verticalScrollBar()
-            sb2.setValue(sb2.maximum())
+        append_log_html_to_views(self, html_text)
 
     def _render_log_views(self) -> None:
-        self.event_log.clear()
-        if (hasattr(self, "events_full_log")
-                and self.events_full_log is not self.event_log):
-            self.events_full_log.clear()
-        for entry in self._log_entries:
-            if self._log_entry_visible(entry):
-                self._append_log_html_to_views(entry["html"])
+        render_log_views(self)
 
     def _start_polling(self):
         self._log_timer = QTimer()
@@ -5075,75 +3306,7 @@ class App(QMainWindow):
             self._append_log_html_to_views(html_text)
 
     def _append_trade(self, d: dict):
-        self._trade_count += 1
-        code = str(d.get("code") or "").strip()
-        if code:
-            self._daily_trade_codes.add(code)
-        mirror_trades = (
-            hasattr(self, "trades_full_table")
-            and self.trades_full_table is not self.trades_table
-        )
-        if d["action"] == "BUY":
-            self._buy_count += 1
-        else:
-            self._sell_count += 1
-            self._realized_pnl += float(d.get("pnl", 0.0))
-            self._realized_cost_basis += float(d.get("cost_basis", 0.0))
-
-        action_color = C["green"] if d["action"] == "BUY" else C["red"]
-        label_txt = "買進" if d["action"] == "BUY" else "賣出"
-
-        # 損益欄：買進顯示 —，賣出顯示 +/- 幣別金額
-        pnl_val = float(d.get("pnl", 0.0))
-        if d["action"] == "SELL":
-            pnl_text = f"{'+' if pnl_val >= 0 else ''}{pnl_val:,.0f}"
-            pnl_color = C["red"] if pnl_val >= 0 else C["green"]
-        else:
-            pnl_text = "—"
-            pnl_color = C["subtext"]
-
-        detail_time = str(d.get("detail_time") or d.get("time") or "")
-        detail_txt = f"時間={detail_time}；數量={d['qty']}"
-
-        row = 0
-        self.trades_table.insertRow(row)
-        cells = [
-            (d["time"], action_color),
-            (d["code"], action_color),
-            (d["name"], action_color),
-            (label_txt, action_color),
-            (f"{d['price']:,.2f}", action_color),
-            (str(d["qty"]), action_color),
-            (detail_txt, C["subtext"]),
-            (pnl_text, pnl_color),
-        ]
-        for col, (val, color) in enumerate(cells):
-            item = QTableWidgetItem(val)
-            item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            item.setForeground(QColor(color))
-            self.trades_table.setItem(row, col, item)
-        # 即時同步至全頁面
-        if mirror_trades:
-            self.trades_full_table.insertRow(0)
-            for col, (val, color) in enumerate(cells):
-                item2 = QTableWidgetItem(val)
-                item2.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                item2.setForeground(QColor(color))
-                self.trades_full_table.setItem(0, col, item2)
-
-        self.trd_summary_lbl.setText(f"小計 ({self._trade_count})")
-        # 已實現損益 / 今日損益 卡片同步更新
-        sign = "+" if self._realized_pnl >= 0 else ""
-        rp_text = f"{sign}{self._realized_pnl:,.0f}"
-        rp_color = C["red"] if self._realized_pnl >= 0 else C["green"]
-        self.trd_pnl_lbl.setText(rp_text)
-        self.trd_pnl_lbl.setStyleSheet(f"color:{rp_color};")
-        if hasattr(self, "trades_full_summary_lbl"):
-            self.trades_full_summary_lbl.setText(f"成交總計 ({self._trade_count})")
-            self.trades_full_pnl_lbl.setText(rp_text)
-            self.trades_full_pnl_lbl.setStyleSheet(f"color:{rp_color};")
-        self._update_pnl_stats()
-        self._update_trade_count_stat()
+        append_trade(self, d)
 
     def _update_trade_count_stat(self) -> None:
         self.stat_trade_cnt.setText(
@@ -5151,205 +3314,10 @@ class App(QMainWindow):
         )
 
     def _render_monitor(self, summary: list):
-        self._latest_monitor_summary = list(summary or [])
-        self._refresh_limitup_test_page(self._latest_monitor_summary)
-        STATUS_COLOR = {
-            "準備進場": C["yellow_l"],
-            "已進場":   C["green"],
-            "委賣過多": C["orange"],
-            "條件不符": C["subtext"],
-            "出場中":   C["purple"],
-            "已完成":   C["subtext"],
-            "已封鎖":   C["subtext"],
-            "資金不足": C["red_l"],
-            "特殊排除": C["red_l"],
-            "確認失敗": C["red_l"],
-            "下單失敗": C["red_l"],
-            "委託中":   C["yellow_l"],
-            "等待":     C["subtext"],
-            "收盤漲停": C["red_l"],
-            "收盤觀察": C["blue_l"],
-            "明日候選": C["blue_l"],
-            "明日排除": C["red_l"],
-        }
-        STATUS_BG = {
-            "準備進場": C["badge_ready"],
-            "已進場":   C["badge_in"],
-            "委賣過多": "#3d1a00",
-            "條件不符": C["badge_dim"],
-            "出場中":   C["badge_out"],
-            "已完成":   C["badge_dim"],
-            "已封鎖":   C["badge_dim"],
-            "資金不足": C["badge_cancel"],
-            "特殊排除": C["badge_cancel"],
-            "確認失敗": C["badge_cancel"],
-            "下單失敗": C["badge_cancel"],
-            "委託中":   C["badge_order"],
-            "等待":     C["badge_dim"],
-            "收盤漲停": C["badge_cancel"],
-            "收盤觀察": C["badge_ready"],
-            "明日候選": C["badge_ready"],
-            "明日排除": C["badge_cancel"],
-        }
-
-        # ── F9 即時價過濾：將不在 price_min ~ price_max 區間的標的剔除顯示 ──
-        # （訂閱階段已用昨收 ±10% 放寬，這裡用即時價收斂回真正區間）
-        # 注意：保留「次日排除 / 收盤檢視」這類資訊性項目，避免使用者誤以為遺失。
-        if summary:
-            summary = [
-                s for s in summary
-                if (not s.get("out_of_range"))
-                or s.get("next_day_excluded")
-                or self._is_after_close_monitor_item(s)
-            ]
-
-        # ── 排序：準備進場優先（依代號），其他依代號 ──
-        def _is_ready_to_enter(s: dict) -> bool:
-            # 與下方 status 判斷邏輯一致：未完成 / 未進場 / 未掛單，但 candle>0
-            if s.get("next_day_excluded"):
-                return False
-            if self._is_after_close_monitor_item(s):
-                return False
-            if s.get("blocked"):
-                return False
-            if (s.get("qty") or 0) > 0:
-                return False
-            if s.get("pending"):
-                return False
-            return (s.get("candle") or 0) > 0
-
-        def _sort_key(s: dict):
-            code = str(s.get("code") or "")
-            # 數字代號用 int 排序，其餘退回字串
-            try:
-                code_key = (0, int(code))
-            except ValueError:
-                code_key = (1, code)
-            # 群組順序：0=準備進場優先；1=其他
-            group = 0 if _is_ready_to_enter(s) else 1
-            return (group, code_key)
-
-        summary = sorted(summary, key=_sort_key)
-
-        pos_cnt = 0
-        next_excluded_cnt = sum(1 for s in summary if s.get("next_day_excluded"))
-        after_close_cnt = sum(
-            1 for s in summary
-            if self._is_after_close_monitor_item(s) and not s.get("next_day_excluded")
-        )
-        if hasattr(self, "monitor_count_lbl"):
-            if next_excluded_cnt:
-                self.monitor_count_lbl.setText(
-                    f"收盤檢視 {len(summary) - next_excluded_cnt} / 明日排除 {next_excluded_cnt} 檔")
-            elif after_close_cnt:
-                self.monitor_count_lbl.setText(f"收盤檢視 {after_close_cnt} 檔")
-            else:
-                self.monitor_count_lbl.setText(f"共 {len(summary)} 檔")
-        _ORDER = {
-            "準備進場": 0, "委託中": 1, "已進場": 2, "出場中": 3,
-            "委賣過多": 4, "條件不符": 5,
-            "資金不足": 6, "特殊排除": 7, "確認失敗": 8, "下單失敗": 9,
-            "已封鎖": 10, "已完成": 11,
-            "收盤漲停": 12, "收盤觀察": 13, "明日候選": 14, "明日排除": 15,
-            "等待": 99,
-        }
-        self.monitor_table.setRowCount(0)
-        self._monitor_rows.clear()
-        summary = sorted(summary, key=lambda s: _ORDER.get(self._compute_monitor_status(s), 50))
-
-        for s in summary:
-            status = self._compute_monitor_status(s)
-            if status == "已進場":
-                pos_cnt += 1
-
-            if s.get("next_day_excluded"):
-                candle_txt = f"連{s.get('prior_limit_up_streak') or 0}根"
-            elif self._is_after_close_monitor_item(s):
-                candle_txt = "收盤"
-            else:
-                candle_txt = f"第{s['candle']}根" if s["candle"] > 0 else "—"
-            fg = QColor(STATUS_COLOR.get(status, C["text"]))
-            vol_fg = QColor(C["red"]) if self._is_volume_spike_highlighted(s) else fg
-
-            # ── 價格欄位 ──────────────────────────────────
-            price = s.get("price")
-            change = s.get("change")
-            change_pct = s.get("change_pct")
-            ask_qty = s.get("ask_qty", 0)
-
-            price_txt = f"{price:,.2f}" if price is not None else "—"
-
-            if change is not None:
-                change_txt = f"{'+' if change >= 0 else ''}{change:,.2f}"
-                change_pct_txt = f"{'+' if change_pct >= 0 else ''}{change_pct:.2f}%"
-                if change > 0:
-                    price_color = QColor(C["red"])
-                elif change < 0:
-                    price_color = QColor(C["green"])
-                else:
-                    price_color = QColor(C["text"])
-            else:
-                change_txt = "—"
-                change_pct_txt = "—"
-                price_color = QColor(C["subtext"])
-
-            ask_qty_txt = str(ask_qty) if s.get("is_at_limit_up") else "—"
-            ask_qty_color = QColor(C["orange"]) if ask_qty > 0 else QColor(C["subtext"])
-            action_txt, action_color = self._monitor_action_text(s, status)
-
-            vals = [
-                s["code"], s["name"],
-                price_txt, change_txt, change_pct_txt,
-                ask_qty_txt, str(s["vol_1s"]), candle_txt, status, action_txt,
-            ]
-            col_colors = [
-                fg, fg,
-                price_color, price_color, price_color,
-                ask_qty_color, vol_fg, fg, fg, QColor(action_color),
-            ]
-
-            if s["code"] in self._monitor_rows:
-                row = self._monitor_rows[s["code"]]
-            else:
-                row = self.monitor_table.rowCount()
-                self.monitor_table.insertRow(row)
-                self._monitor_rows[s["code"]] = row
-
-            for col, (val, color) in enumerate(zip(vals, col_colors)):
-                item = QTableWidgetItem(val)
-                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                if col == 8:  # 狀態徽章
-                    item.setForeground(QColor(STATUS_COLOR.get(status, C["text"])))
-                    item.setBackground(QColor(STATUS_BG.get(status, C["bg"])))
-                else:
-                    item.setForeground(color)
-                self.monitor_table.setItem(row, col, item)
-
-        self.stat_positions.setText(str(pos_cnt))
-        self._update_trade_count_stat()
-        self._autosize_monitor_columns()
+        render_monitor(self, summary)
 
     def _is_volume_spike_highlighted(self, item: dict) -> bool:
-        vol_1s = int(item.get("vol_1s") or 0)
-        mode = str(getattr(self.cfg, "volume_spike_sell_mode", "qty") or "qty").lower()
-        if mode == "ratio":
-            limit_up = item.get("limit_up")
-            bid0_price = item.get("bid0_price")
-            bid0_volume = int(item.get("bid0_volume") or 0)
-            if limit_up is None or bid0_price is None or bid0_volume <= 0:
-                return False
-            try:
-                if Decimal(str(bid0_price)) != Decimal(str(limit_up)):
-                    return False
-            except Exception:
-                return False
-            ratio_percent = max(0.0, float(getattr(self.cfg, "volume_spike_sell_ratio_percent", 0.0) or 0.0))
-            if ratio_percent <= 0:
-                return False
-            threshold = max(1, int(math.ceil(bid0_volume * ratio_percent / 100.0)))
-            return vol_1s >= threshold
-        threshold = int(getattr(self.cfg, "volume_spike_sell_threshold", 0) or 0)
-        return vol_1s >= threshold
+        return is_volume_spike_highlighted(self, item)
 
     def _monitor_action_text(self, summary_item: dict, status: str) -> tuple[str, str]:
         if status == "啟用後已漲停":
@@ -5436,13 +3404,7 @@ class App(QMainWindow):
         return bool(summary_item.get("after_close_preview"))
 
     def _autosize_monitor_columns(self) -> None:
-        if not hasattr(self, "monitor_table"):
-            return
-        min_widths = [52, 70, 66, 62, 72, 78, 86, 70, 102, 86]
-        self.monitor_table.resizeColumnsToContents()
-        for col, min_width in enumerate(min_widths):
-            width = max(self.monitor_table.columnWidth(col) + 10, min_width)
-            self.monitor_table.setColumnWidth(col, width)
+        autosize_monitor_columns(self)
 
 
 # ──────────────────────────────────────────────
