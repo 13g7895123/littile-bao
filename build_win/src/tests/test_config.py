@@ -33,6 +33,7 @@ class TestTradingConfigJsonIO(unittest.TestCase):
                         "exit_before_time": "13:20",
                         "volume_spike_sell_mode": "ratio",
                         "volume_spike_sell_ratio_percent": 12.5,
+                        "f6_cancel_order_when_spike": False,
                         "f_open_limitup_entry_enabled": False,
                         "f_consume_enabled": True,
                         "consume_qty_threshold": 300,
@@ -61,6 +62,7 @@ class TestTradingConfigJsonIO(unittest.TestCase):
             self.assertEqual(cfg.exit_before_time, "13:20")
             self.assertEqual(cfg.volume_spike_sell_mode, "ratio")
             self.assertEqual(cfg.volume_spike_sell_ratio_percent, 12.5)
+            self.assertFalse(cfg.f6_cancel_order_when_spike)
             self.assertFalse(cfg.f_open_limitup_entry_enabled)
             self.assertTrue(cfg.f_consume_enabled)
             self.assertEqual(cfg.consume_qty_threshold, 300)

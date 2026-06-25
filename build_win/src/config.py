@@ -76,6 +76,7 @@ class TradingConfig:
     # ── 功能 6：委託排隊中，1秒成交量超過N張就取消委託 ─────────────────────
     f6_enabled: bool = True
     volume_spike_cancel_threshold: int = 499
+    f6_cancel_order_when_spike: bool = True
 
     # ── 功能 7：只買起漲第幾根K棒 ──────────────────────────────────────────
     f7_enabled: bool = True

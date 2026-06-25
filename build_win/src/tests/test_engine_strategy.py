@@ -1852,6 +1852,39 @@ class TestTradingEngineStrategyRules(unittest.TestCase):
         self.assertFalse(state.pending)
         self.assertEqual(state.entry_blocked_reason, "爆量取消")
         self.assertEqual(strategy_events[-1]["strategy"], "F6")
+        self.assertEqual(strategy_events[-1]["details"]["cancel_order"], "True")
+
+    def test_f6_can_keep_pending_buy_order_when_configured(self):
+        class FakeBroker:
+            def __init__(self):
+                self.cancelled = []
+
+            def cancel_order(self, order_id):
+                self.cancelled.append(order_id)
+                return True
+
+        cfg = TradingConfig(
+            f9_enabled=False,
+            f6_enabled=True,
+            f6_cancel_order_when_spike=False,
+        )
+        engine, logs, _trades, strategy_events = self._make_engine(cfg)
+        engine.broker = FakeBroker()
+        state = engine._states["2330"]
+        state.pending = True
+        state.pending_side = "BUY"
+        state.pending_order_id = "B1"
+        now = time.time()
+        state.tick_vols.append((now, 600))
+
+        engine._tick(state, now)
+
+        self.assertEqual(engine.broker.cancelled, [])
+        self.assertTrue(state.pending)
+        self.assertEqual(state.entry_blocked_reason, "")
+        self.assertEqual(strategy_events[-1]["strategy"], "F6")
+        self.assertEqual(strategy_events[-1]["details"]["cancel_order"], "False")
+        self.assertTrue(any("保留委託" in msg for _level, msg in logs))
 
     def test_buy_fill_after_f6_cancel_keeps_prelock_entry_flag(self):
         class FakeBroker:

@@ -1365,13 +1365,12 @@ class App(QMainWindow):
     # ══════════════════════════════════════════
 
     def _sync_volume_spike_mode_fields(self):
-        if "volume_spike_sell_mode" not in self._combos:
-            return
-        ratio_mode = self._combos["volume_spike_sell_mode"].currentIndex() == 1
-        if "volume_spike_sell_threshold" in self._fields:
-            self._fields["volume_spike_sell_threshold"].setEnabled(not ratio_mode)
-        if "volume_spike_sell_ratio_percent" in self._fields:
-            self._fields["volume_spike_sell_ratio_percent"].setEnabled(ratio_mode)
+        if "volume_spike_sell_mode" in self._combos:
+            ratio_mode = self._combos["volume_spike_sell_mode"].currentIndex() == 1
+            if "volume_spike_sell_threshold" in self._fields:
+                self._fields["volume_spike_sell_threshold"].setEnabled(not ratio_mode)
+            if "volume_spike_sell_ratio_percent" in self._fields:
+                self._fields["volume_spike_sell_ratio_percent"].setEnabled(ratio_mode)
 
     def _apply_config(self, cfg: TradingConfig):
         f = self._fields
@@ -1393,6 +1392,10 @@ class App(QMainWindow):
         self._combos["volume_spike_sell_mode"].setCurrentIndex(
             1 if getattr(cfg, "volume_spike_sell_mode", "qty") == "ratio" else 0
         )
+        if "exit_method3" in self._combos:
+            self._combos["exit_method3"].setCurrentIndex(
+                0 if getattr(cfg, "f6_cancel_order_when_spike", True) else 1
+            )
         self._sync_volume_spike_mode_fields()
 
         c = self._checks
@@ -1485,6 +1488,7 @@ class App(QMainWindow):
             volume_spike_sell_ratio_percent = max(0.0, nf("volume_spike_sell_ratio_percent")),
             f6_enabled                    = True,
             volume_spike_cancel_threshold = ni("volume_spike_sell_threshold"),
+            f6_cancel_order_when_spike    = self._combos["exit_method3"].currentIndex() == 0,
             f7_enabled                    = candle_limit > 0,
             candle_limit                  = candle_limit,
             f8_enabled                    = True,

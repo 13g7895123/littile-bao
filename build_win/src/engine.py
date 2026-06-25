@@ -979,26 +979,33 @@ class TradingEngine:
         # ── 取消委託邏輯（功能 6）────────────────────────────────
         if state.pending and state.pending_side == "BUY" and cfg.f6_enabled:
             if state.last_1s_vol > cfg.volume_spike_cancel_threshold:
+                should_cancel_order = bool(getattr(cfg, "f6_cancel_order_when_spike", True))
                 self._log_strategy_trigger(
                     "CANCEL", state, "F6",
                     {
                         "last_1s_vol": state.last_1s_vol,
                         "threshold": cfg.volume_spike_cancel_threshold,
+                        "cancel_order": should_cancel_order,
                     },
                 )
-                self.on_log("WARN",
-                    f"[{info.code}] 委託中！1秒量 {state.last_1s_vol} 張"
-                    f" > {cfg.volume_spike_cancel_threshold} 張，取消委託")
-                cancel_ok = False
-                if self.broker is not None and state.pending_order_id:
-                    try:
-                        cancel_ok = bool(self.broker.cancel_order(state.pending_order_id))
-                    except Exception as e:  # noqa: BLE001
-                        self.on_log("WARN", f"[{info.code}] 取消委託失敗：{e}")
-                state.last_cleared_buy_entry_strategy = state.pending_entry_strategy
-                self._clear_pending_order_state(state)
-                state.entry_blocked = True
-                state.entry_blocked_reason = "爆量取消"
+                if should_cancel_order:
+                    self.on_log("WARN",
+                        f"[{info.code}] 委託中！1秒量 {state.last_1s_vol} 張"
+                        f" > {cfg.volume_spike_cancel_threshold} 張，取消委託")
+                    cancel_ok = False
+                    if self.broker is not None and state.pending_order_id:
+                        try:
+                            cancel_ok = bool(self.broker.cancel_order(state.pending_order_id))
+                        except Exception as e:  # noqa: BLE001
+                            self.on_log("WARN", f"[{info.code}] 取消委託失敗：{e}")
+                    state.last_cleared_buy_entry_strategy = state.pending_entry_strategy
+                    self._clear_pending_order_state(state)
+                    state.entry_blocked = True
+                    state.entry_blocked_reason = "爆量取消"
+                else:
+                    self.on_log("WARN",
+                        f"[{info.code}] 委託中！1秒量 {state.last_1s_vol} 張"
+                        f" > {cfg.volume_spike_cancel_threshold} 張，但設定為保留委託")
                 return
 
         if self._is_after_auto_trade_cutoff():
