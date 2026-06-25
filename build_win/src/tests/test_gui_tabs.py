@@ -133,7 +133,15 @@ class TestGuiTabLayout(unittest.TestCase):
         self.assertTrue(
             self._is_descendant(self.win.decision_detail_table, self.win._pages["decision_detail"])
         )
+        self.assertTrue(self.win._tab_btns["limitup_test"].isHidden())
         self.assertFalse(self.win._tab_btns["decision_detail"].isHidden())
+
+    def test_hidden_tabs_are_not_switchable_from_header(self):
+        self.win._switch_tab("limitup_test")
+
+        self.assertEqual(self.win._current_tab, "dashboard")
+        self.assertFalse(self.win._pages["dashboard"].isHidden())
+        self.assertTrue(self.win._pages["limitup_test"].isHidden())
         self.assertIsNot(self.win.orders_table, self.win.orders_full_table)
         self.assertIsNot(self.win.trades_table, self.win.trades_full_table)
         self.assertIsNot(self.win.positions_table, self.win.positions_full_table)

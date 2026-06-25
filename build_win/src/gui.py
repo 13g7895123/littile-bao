@@ -166,7 +166,7 @@ class App(QMainWindow):
         self._last_socket_restart_token = 0
         self._broker_event_source = None
         self._current_tab = "dashboard"
-        self._hidden_tabs = {"risk"}
+        self._hidden_tabs = {"risk", "limitup_test"}
         self._latest_monitor_summary = []
         self._official_special_flags_meta: Optional[dict] = None
         self._limitup_test_selected_code = ""
