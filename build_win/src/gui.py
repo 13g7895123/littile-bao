@@ -7,6 +7,8 @@ import html
 import json
 import os
 import queue
+import subprocess
+import sys
 import threading
 from pathlib import Path
 from decimal import Decimal
@@ -44,6 +46,7 @@ from gui_pages import (
     build_placeholder,
     build_positions_page,
     build_settings_page,
+    build_system_settings_page,
     build_stats_row,
     create_strategy_settings_panel,
 )
@@ -73,12 +76,14 @@ from gui_theme import (
     C,
     FONT_MONO,
     LIMIT_UP_SIGNAL_LABELS,
+    _scaled,
     ToggleButton,
     _entry,
     _font,
     _label,
     _scroll_style,
     _sep_bar,
+    set_ui_scale_percent,
 )
 from limitup_detection import LIMIT_UP_DETECTION_MODES, resolve_limit_up_mode
 import official_special_flags
@@ -121,12 +126,12 @@ class App(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("打板策略系統")
-        self.resize(1440, 860)
-        self.setMinimumSize(1200, 680)
-        self.setStyleSheet(f"background-color: {C['bg']};")
-
         self._app_state = AppState.load()
         self.cfg = self._load_startup_trading_config()
+        set_ui_scale_percent(getattr(self.cfg, "ui_scale_percent", 100))
+        self.resize(_scaled(1440), _scaled(860))
+        self.setMinimumSize(_scaled(1200), _scaled(680))
+        self.setStyleSheet(f"background-color: {C['bg']};")
         configure_runtime_logging(self.cfg.file_logging_enabled)
         self.engine: Optional[TradingEngine] = None
         self.broker = None  # type: ignore[assignment]  # broker.BrokerAdapter，由 main.py 注入
@@ -334,30 +339,31 @@ class App(QMainWindow):
 
     def _build_header(self, root: QVBoxLayout):
         bar = QFrame()
-        bar.setFixedHeight(48)
+        bar.setFixedHeight(_scaled(48))
         bar.setStyleSheet(
             f"background-color: {C['header']};"
             f"border-bottom: 1px solid {C['border']};"
         )
         lay = QHBoxLayout(bar)
-        lay.setContentsMargins(16, 0, 16, 0)
+        lay.setContentsMargins(_scaled(16), 0, _scaled(16), 0)
         lay.setSpacing(0)
 
         title = _label("打板策略系統", C["text"], 13, bold=True)
         lay.addWidget(title)
-        lay.addSpacing(10)
+        lay.addSpacing(_scaled(10))
         self.order_mode_badge = QLabel("模擬下單")
         self.order_mode_badge.setFont(_font(9, bold=True))
-        self.order_mode_badge.setFixedHeight(24)
-        self.order_mode_badge.setContentsMargins(10, 0, 10, 0)
+        self.order_mode_badge.setFixedHeight(_scaled(24))
+        self.order_mode_badge.setContentsMargins(_scaled(10), 0, _scaled(10), 0)
         lay.addWidget(self.order_mode_badge)
-        lay.addSpacing(28)
+        lay.addSpacing(_scaled(28))
 
         # 分頁按鈕
         self._tab_btns: Dict[str, QLabel] = {}
         tabs = [
             ("dashboard", "儀表板"),
             ("settings",  "策略設定"),
+            ("system_settings", "系統設定"),
             ("broker",    "券商設定"),
             ("orders",    "委託/成交"),
             ("positions", "持倉部位"),
@@ -370,8 +376,8 @@ class App(QMainWindow):
             btn = QLabel(text)
             btn.setFont(_font(10))
             btn.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            btn.setFixedHeight(48)
-            btn.setContentsMargins(14, 0, 14, 0)
+            btn.setFixedHeight(_scaled(48))
+            btn.setContentsMargins(_scaled(14), 0, _scaled(14), 0)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.mousePressEvent = lambda _e, k=key: self._switch_tab(k)
             lay.addWidget(btn)
@@ -383,15 +389,15 @@ class App(QMainWindow):
         # 策略狀態徽章
         self.strategy_badge = QPushButton("● 策略已啟用")
         self.strategy_badge.setFont(_font(9, bold=True))
-        self.strategy_badge.setFixedHeight(28)
+        self.strategy_badge.setFixedHeight(_scaled(28))
         self.strategy_badge.setCursor(Qt.CursorShape.PointingHandCursor)
         self._set_badge_active(True)
         lay.addWidget(self.strategy_badge)
-        lay.addSpacing(16)
+        lay.addSpacing(_scaled(16))
 
         # 時鐘
         self.clock_lbl = QLabel("00:00:00")
-        self.clock_lbl.setFont(QFont(FONT_MONO, 12, QFont.Weight.Bold))
+        self.clock_lbl.setFont(QFont(FONT_MONO, _scaled(12), QFont.Weight.Bold))
         self.clock_lbl.setStyleSheet(f"color: {C['text']}; background: transparent;")
         lay.addWidget(self.clock_lbl)
 
@@ -506,7 +512,18 @@ class App(QMainWindow):
         pages_lay.setSpacing(0)
 
         self._pages: Dict[str, QWidget] = {}
-        for key in ("dashboard", "settings", "broker", "orders", "positions", "events", "limitup_test", "decision_detail", "risk"):
+        for key in (
+            "dashboard",
+            "settings",
+            "system_settings",
+            "broker",
+            "orders",
+            "positions",
+            "events",
+            "limitup_test",
+            "decision_detail",
+            "risk",
+        ):
             page = QWidget()
             page.setStyleSheet(f"background-color: {C['bg']};")
             pages_lay.addWidget(page)
@@ -514,6 +531,7 @@ class App(QMainWindow):
 
         self._build_dashboard(self._pages["dashboard"])
         self._build_settings_page(self._pages["settings"])
+        self._build_system_settings_page(self._pages["system_settings"])
         self._build_broker_page(self._pages["broker"])
         self._build_orders_page(self._pages["orders"])
         self._build_positions_page(self._pages["positions"])
@@ -545,8 +563,8 @@ class App(QMainWindow):
             )
             self._strategy_settings_content.setStyleSheet(f"background-color: {C['bg']};")
         else:
-            panel.setMinimumWidth(300)
-            panel.setMaximumWidth(300)
+            panel.setMinimumWidth(_scaled(300))
+            panel.setMaximumWidth(_scaled(300))
             panel.setStyleSheet(f"background-color: {C['sidebar']}; border: none;")
             self._strategy_settings_scroll.setStyleSheet(
                 f"QScrollArea {{ border: none; background-color: {C['sidebar']}; }}"
@@ -613,10 +631,10 @@ class App(QMainWindow):
         self._fields[key] = _entry(w)
         row.addWidget(self._fields[key])
         if suffix:
-            row.addSpacing(4)
+            row.addSpacing(_scaled(4))
             row.addWidget(_label(suffix, C["subtext"], 9))
         form.addLayout(row)
-        form.addSpacing(4)
+        form.addSpacing(_scaled(4))
 
     # ══════════════════════════════════════════
     #  儀表板頁
@@ -644,6 +662,9 @@ class App(QMainWindow):
 
     def _build_settings_page(self, parent: QWidget):
         build_settings_page(self, parent)
+
+    def _build_system_settings_page(self, parent: QWidget):
+        build_system_settings_page(self, parent)
 
     def _build_placeholder(self, parent: QWidget, title: str):
         build_placeholder(self, parent, title)
@@ -1298,40 +1319,40 @@ class App(QMainWindow):
 
     def _build_statusbar(self, root: QVBoxLayout):
         bar = QFrame()
-        bar.setFixedHeight(28)
+        bar.setFixedHeight(_scaled(28))
         bar.setStyleSheet(
             f"background-color: {C['header']};"
             f"border-top: 1px solid {C['border']};"
         )
         lay = QHBoxLayout(bar)
-        lay.setContentsMargins(16, 0, 16, 0)
+        lay.setContentsMargins(_scaled(16), 0, _scaled(16), 0)
         lay.setSpacing(0)
 
         self.broker_dot = QLabel("●")
         self.broker_dot.setFont(_font(8))
         self.broker_dot.setStyleSheet(f"color: {C['subtext']}; background: transparent;")
         lay.addWidget(self.broker_dot)
-        lay.addSpacing(4)
+        lay.addSpacing(_scaled(4))
         self.broker_status_lbl = _label("券商狀態：未連線", C["subtext"], 9)
         lay.addWidget(self.broker_status_lbl)
-        lay.addSpacing(20)
+        lay.addSpacing(_scaled(20))
         lay.addWidget(_sep_bar())
-        lay.addSpacing(20)
+        lay.addSpacing(_scaled(20))
         self.latency_lbl = _label("行情延遲：—", C["subtext"], 9)
         lay.addWidget(self.latency_lbl)
-        lay.addSpacing(8)
+        lay.addSpacing(_scaled(8))
         self.latency_warn_lbl = _label("", C["red"], 9, bold=True)
         self.latency_warn_lbl.setVisible(False)
         lay.addWidget(self.latency_warn_lbl)
-        lay.addSpacing(20)
+        lay.addSpacing(_scaled(20))
         lay.addWidget(_sep_bar())
-        lay.addSpacing(20)
+        lay.addSpacing(_scaled(20))
 
         self.strategy_dot = QLabel("●")
         self.strategy_dot.setFont(_font(8))
         self.strategy_dot.setStyleSheet(f"color: {C['red']}; background: transparent;")
         lay.addWidget(self.strategy_dot)
-        lay.addSpacing(4)
+        lay.addSpacing(_scaled(4))
         self.strategy_status_lbl = _label("策略狀態：已停止", C["subtext"], 9)
         lay.addWidget(self.strategy_status_lbl)
 
@@ -1364,6 +1385,8 @@ class App(QMainWindow):
         f["price_max"].setText(str(int(cfg.price_max)))
         f["consume_qty_threshold"].setText(str(cfg.consume_qty_threshold))
         f["f4_open_ticks_to_sell"].setText(str(cfg.f4_open_ticks_to_sell))
+        f["exit_start_time"].setText(getattr(cfg, "exit_start_time", "09:00"))
+        f["exit_before_time"].setText(getattr(cfg, "exit_before_time", "13:25"))
         f["prelock_stop_ticks"].setText(str(cfg.prelock_stop_ticks))
         f["volume_spike_sell_threshold"].setText(str(cfg.volume_spike_sell_threshold))
         f["volume_spike_sell_ratio_percent"].setText(str(cfg.volume_spike_sell_ratio_percent))
@@ -1386,6 +1409,7 @@ class App(QMainWindow):
         c["excl_open_limit"].setChecked(not cfg.f_open_limitup_entry_enabled)
         c["excl_sealed"].setChecked(cfg.f12_enabled)
         c["f4_require_today_limitup"].setChecked(cfg.f4_require_today_limitup)
+        c["f5_enabled"].setChecked(cfg.f5_enabled)
         c["prelock_stop_enabled"].setChecked(cfg.f_prelock_stop_enabled)
         if "dry_run_mode" in c:
             self._syncing_order_mode_control = True
@@ -1403,6 +1427,11 @@ class App(QMainWindow):
             f["recording_dir"].setText(cfg.recording_dir or "")
         self._set_limit_up_mode_selection(cfg.limit_up_detection_mode)
         self._limitup_test_selected_mode = resolve_limit_up_mode(cfg.limit_up_detection_mode)
+        if "ui_scale_percent" in self._combos:
+            combo = self._combos["ui_scale_percent"]
+            idx = combo.findData(int(getattr(cfg, "ui_scale_percent", 100) or 100))
+            if idx >= 0:
+                combo.setCurrentIndex(idx)
         self._update_order_mode_badge()
 
     def _collect_config(self) -> TradingConfig:
@@ -1448,7 +1477,9 @@ class App(QMainWindow):
             f4_enabled                    = True,
             f4_open_ticks_to_sell         = max(1, ni("f4_open_ticks_to_sell")),
             f4_require_today_limitup      = c["f4_require_today_limitup"].isChecked(),
-            f5_enabled                    = True,
+            exit_start_time               = f["exit_start_time"].text(),
+            exit_before_time              = f["exit_before_time"].text(),
+            f5_enabled                    = c["f5_enabled"].isChecked(),
             volume_spike_sell_mode        = volume_spike_sell_mode,
             volume_spike_sell_threshold   = ni("volume_spike_sell_threshold"),
             volume_spike_sell_ratio_percent = max(0.0, nf("volume_spike_sell_ratio_percent")),
@@ -1480,6 +1511,12 @@ class App(QMainWindow):
             prelock_stop_ticks            = max(1, ni("prelock_stop_ticks")),
             order_dry_run                 = c["dry_run_mode"].isChecked(),
             file_logging_enabled          = c["file_logging_enabled"].isChecked(),
+            ui_scale_percent              = int(
+                self._combos["ui_scale_percent"].currentData()
+                if "ui_scale_percent" in self._combos
+                and self._combos["ui_scale_percent"].currentData() is not None
+                else getattr(self.cfg, "ui_scale_percent", 100)
+            ),
             recording_enabled             = (c["recording_enabled"].isChecked()
                                               if "recording_enabled" in c
                                               else self.cfg.recording_enabled),
@@ -1510,7 +1547,7 @@ class App(QMainWindow):
                     or float(getattr(self.cfg, "price_max", 0) or 0) != float(getattr(new_cfg, "price_max", 0) or 0)
                 )
             )
-            new_cfg.save()
+            self._persist_trading_config(new_cfg)
             self.cfg = new_cfg
             if self.cfg.file_logging_enabled:
                 log_path = configure_runtime_logging(True)
@@ -1560,6 +1597,51 @@ class App(QMainWindow):
         except Exception as e:
             push_log("ERROR", f"儲存設定失敗：{e}")
             QMessageBox.critical(self, "儲存失敗", str(e))
+
+    def _trading_config_save_path(self) -> str:
+        path = (self._app_state.last_trading_config_path or "").strip()
+        return path or CONFIG_FILE
+
+    def _persist_trading_config(self, cfg: TradingConfig) -> str:
+        path = self._trading_config_save_path()
+        cfg.save(path)
+        if path != CONFIG_FILE:
+            cfg.save(CONFIG_FILE)
+        return path
+
+    def _show_update_feature_pending(self) -> None:
+        QMessageBox.information(self, "版本更新", "版本更新功能開發中。")
+
+    def _save_system_settings_and_restart(self) -> None:
+        try:
+            new_cfg = self._collect_config()
+            save_path = self._persist_trading_config(new_cfg)
+            self.cfg = new_cfg
+            reply = QMessageBox.question(
+                self,
+                "重新啟動確認",
+                f"介面縮放已儲存至：\n{save_path}\n\n需要重新啟動程式後套用，是否立即重新啟動？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+            if self._running:
+                self._stop_trading()
+            self._restart_application()
+        except Exception as e:
+            push_log("ERROR", f"儲存系統設定失敗：{e}")
+            QMessageBox.critical(self, "儲存失敗", str(e))
+
+    def _restart_application(self) -> None:
+        if getattr(sys, "frozen", False):
+            cmd = [sys.executable, *sys.argv[1:]]
+        else:
+            cmd = [sys.executable, os.path.abspath(sys.argv[0]), *sys.argv[1:]]
+        kwargs = {"cwd": os.getcwd()}
+        if os.name == "nt":
+            kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        subprocess.Popen(cmd, **kwargs)
+        QApplication.instance().quit()
 
     # ────────────────────────────────────────────────────────
     #  盤中熱換訂閱（價格區間變動時呼叫）

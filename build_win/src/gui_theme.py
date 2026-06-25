@@ -36,6 +36,10 @@ C = {
 
 FONT_MAIN = "微軟正黑體"
 FONT_MONO = "Consolas"
+MIN_UI_SCALE_PERCENT = 100
+MAX_UI_SCALE_PERCENT = 140
+DEFAULT_UI_SCALE_PERCENT = 100
+_UI_SCALE = 1.0
 
 LIMIT_UP_SIGNAL_LABELS = {
     "ask_at_limit": "賣一價=漲停",
@@ -55,8 +59,27 @@ LIMIT_UP_SIGNAL_LABELS = {
 }
 
 
+def set_ui_scale_percent(percent: int) -> int:
+    global _UI_SCALE
+    try:
+        value = int(percent)
+    except Exception:
+        value = DEFAULT_UI_SCALE_PERCENT
+    value = max(MIN_UI_SCALE_PERCENT, min(MAX_UI_SCALE_PERCENT, value))
+    _UI_SCALE = value / 100.0
+    return value
+
+
+def ui_scale_percent() -> int:
+    return int(round(_UI_SCALE * 100))
+
+
+def _scaled(value: int) -> int:
+    return max(1, int(round(value * _UI_SCALE)))
+
+
 def _font(size: int = 10, bold: bool = False) -> QFont:
-    font = QFont(FONT_MAIN, size)
+    font = QFont(FONT_MAIN, _scaled(size))
     if bold:
         font.setBold(True)
     return font
@@ -71,8 +94,8 @@ def _label(text: str, color: str = None, size: int = 10, bold: bool = False) -> 
 
 def _entry(width: int = 90, password: bool = False) -> QLineEdit:
     entry = QLineEdit()
-    entry.setFixedWidth(width)
-    entry.setFixedHeight(26)
+    entry.setFixedWidth(_scaled(width))
+    entry.setFixedHeight(_scaled(26))
     entry.setFont(_font(9))
     if password:
         entry.setEchoMode(QLineEdit.EchoMode.Password)
@@ -83,7 +106,7 @@ def _entry(width: int = 90, password: bool = False) -> QLineEdit:
             color: {C['text']};
             border: 1px solid {C['border']};
             border-radius: 4px;
-            padding: 2px 6px;
+            padding: {_scaled(2)}px {_scaled(6)}px;
         }}
         QLineEdit:focus {{ border: 1px solid {C['blue']}; }}
     """
@@ -93,8 +116,8 @@ def _entry(width: int = 90, password: bool = False) -> QLineEdit:
 
 def _combo(items: list, width: int = 90) -> QComboBox:
     combo = QComboBox()
-    combo.setFixedWidth(width)
-    combo.setFixedHeight(26)
+    combo.setFixedWidth(_scaled(width))
+    combo.setFixedHeight(_scaled(26))
     combo.setFont(_font(9))
     combo.addItems(items)
     combo.setStyleSheet(
@@ -104,9 +127,9 @@ def _combo(items: list, width: int = 90) -> QComboBox:
             color: {C['text']};
             border: 1px solid {C['border']};
             border-radius: 4px;
-            padding: 2px 6px;
+            padding: {_scaled(2)}px {_scaled(6)}px;
         }}
-        QComboBox::drop-down {{ border: none; width: 18px; }}
+        QComboBox::drop-down {{ border: none; width: {_scaled(18)}px; }}
         QComboBox QAbstractItemView {{
             background-color: {C['surface']};
             color: {C['text']};
@@ -145,7 +168,7 @@ def _checkbox(text: str, size: int = 9) -> QCheckBox:
 
 def _divider() -> QFrame:
     frame = QFrame()
-    frame.setFixedHeight(1)
+    frame.setFixedHeight(_scaled(1))
     frame.setStyleSheet(f"background-color: {C['border']};")
     return frame
 
@@ -199,9 +222,9 @@ def _table_style() -> str:
             gridline-color: {C['border']};
             border: none;
             font-family: {FONT_MAIN};
-            font-size: 9pt;
+            font-size: {_scaled(9)}pt;
         }}
-        QTableWidget::item {{ padding: 2px 4px; }}
+        QTableWidget::item {{ padding: {_scaled(2)}px {_scaled(4)}px; }}
         QTableWidget::item:selected {{
             background-color: {C['surface']};
             color: {C['text']};
@@ -210,11 +233,11 @@ def _table_style() -> str:
             background-color: {C['bg']};
             color: {C['subtext']};
             font-family: {FONT_MAIN};
-            font-size: 9pt;
+            font-size: {_scaled(9)}pt;
             border: none;
             border-right: 1px solid {C['border']};
             border-bottom: 1px solid {C['border']};
-            padding: 4px 6px;
+            padding: {_scaled(4)}px {_scaled(6)}px;
         }}
         {_scroll_style()}
     """
@@ -240,7 +263,7 @@ class ToggleButton(QWidget):
     def __init__(self, parent=None, initial: bool = True):
         super().__init__(parent)
         self._on = initial
-        self.setFixedSize(46, 24)
+        self.setFixedSize(_scaled(46), _scaled(24))
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
     def mousePressEvent(self, _event):
@@ -254,9 +277,16 @@ class ToggleButton(QWidget):
         fill = QColor(C["green"] if self._on else C["surface"])
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QBrush(fill))
-        painter.drawRoundedRect(0, 0, 46, 24, 12, 12)
+        w = self.width()
+        h = self.height()
+        radius = h / 2
+        painter.drawRoundedRect(0, 0, w, h, radius, radius)
         painter.setBrush(QBrush(QColor("#ffffff")))
-        painter.drawEllipse(QPoint(30 if self._on else 16, 12), 9, 9)
+        knob_radius = max(1, int(round(h * 0.375)))
+        margin = max(1, int(round(h * 0.125)))
+        center_x = w - knob_radius - margin if self._on else knob_radius + margin
+        center_y = h // 2
+        painter.drawEllipse(QPoint(center_x, center_y), knob_radius, knob_radius)
 
     @property
     def value(self) -> bool:

@@ -29,6 +29,8 @@ class TestTradingConfigJsonIO(unittest.TestCase):
                         "per_stock_amount": 250000,
                         "f4_open_ticks_to_sell": 3,
                         "f4_require_today_limitup": False,
+                        "exit_start_time": "09:10",
+                        "exit_before_time": "13:20",
                         "volume_spike_sell_mode": "ratio",
                         "volume_spike_sell_ratio_percent": 12.5,
                         "f_open_limitup_entry_enabled": False,
@@ -40,6 +42,7 @@ class TestTradingConfigJsonIO(unittest.TestCase):
                         "f_prelock_stop_enabled": False,
                         "prelock_stop_ticks": 4,
                         "file_logging_enabled": False,
+                        "ui_scale_percent": 120,
                         "unknown_field": "ignored",
                     },
                     f,
@@ -54,6 +57,8 @@ class TestTradingConfigJsonIO(unittest.TestCase):
             self.assertEqual(cfg.per_stock_amount, 250000)
             self.assertEqual(cfg.f4_open_ticks_to_sell, 3)
             self.assertFalse(cfg.f4_require_today_limitup)
+            self.assertEqual(cfg.exit_start_time, "09:10")
+            self.assertEqual(cfg.exit_before_time, "13:20")
             self.assertEqual(cfg.volume_spike_sell_mode, "ratio")
             self.assertEqual(cfg.volume_spike_sell_ratio_percent, 12.5)
             self.assertFalse(cfg.f_open_limitup_entry_enabled)
@@ -65,6 +70,7 @@ class TestTradingConfigJsonIO(unittest.TestCase):
             self.assertFalse(cfg.f_prelock_stop_enabled)
             self.assertEqual(cfg.prelock_stop_ticks, 4)
             self.assertFalse(cfg.file_logging_enabled)
+            self.assertEqual(cfg.ui_scale_percent, 120)
             self.assertFalse(cfg.dynamic_pool_swap_enabled)
             self.assertEqual(
                 cfg.startup_limit_up_detection_mode,

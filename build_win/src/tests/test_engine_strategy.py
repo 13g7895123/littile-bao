@@ -123,6 +123,29 @@ class TestTradingEngineStrategyRules(unittest.TestCase):
         self.assertTrue(any("策略=F4" in msg for _level, msg in logs))
         self.assertEqual(strategy_events[-1]["strategy"], "F4")
 
+    def test_f4_respects_custom_exit_cutoff_time(self):
+        cfg = TradingConfig(
+            f9_enabled=False,
+            f5_enabled=False,
+            f4_open_ticks_to_sell=1,
+            exit_before_time="13:20",
+        )
+        engine, _logs, trades, _strategy_events = self._make_engine(cfg)
+        engine._running = True
+        engine._current_datetime = lambda: datetime(2026, 5, 19, 13, 20, 0)
+        state = engine._states["2330"]
+        state.position_qty = 1
+        state.entry_price = Decimal("1100")
+        state.touched_limit_up_today = True
+        state.last_price = Decimal("1095")
+        state.ask0_price = Decimal("1095")
+        state.is_at_limit_up = False
+
+        engine._tick(state, time.time())
+
+        self.assertEqual(state.position_qty, 1)
+        self.assertEqual(trades, [])
+
     def test_f4_ignores_market_event_that_triggered_buy_fill(self):
         cfg = TradingConfig(
             f9_enabled=False,
@@ -191,6 +214,28 @@ class TestTradingEngineStrategyRules(unittest.TestCase):
         self.assertIn(">= 499", trades[-1]["note"])
         self.assertTrue(any("策略=F5" in msg for _level, msg in logs))
         self.assertEqual(strategy_events[-1]["strategy"], "F5")
+
+    def test_f5_respects_exit_start_time(self):
+        cfg = TradingConfig(
+            f9_enabled=False,
+            f4_enabled=False,
+            f5_enabled=True,
+            exit_start_time="09:05",
+            volume_spike_sell_threshold=499,
+        )
+        engine, _logs, trades, strategy_events = self._make_engine(cfg)
+        engine._running = True
+        engine._current_datetime = lambda: datetime(2026, 5, 19, 9, 4, 59)
+        state = self._arm_exit_state(engine)
+        now = time.time()
+        state.tick_vols.append((now, 499))
+        state.last_1s_vol = 499
+
+        engine._tick(state, now)
+
+        self.assertEqual(state.position_qty, 1)
+        self.assertEqual(trades, [])
+        self.assertEqual(strategy_events, [])
 
     def test_f5_ratio_mode_sells_when_volume_reaches_limit_bid_queue_ratio(self):
         cfg = TradingConfig(

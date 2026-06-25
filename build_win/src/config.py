@@ -64,6 +64,8 @@ class TradingConfig:
     f4_enabled: bool = True
     f4_open_ticks_to_sell: int = 1       # 漲停板打開幾檔才賣；1=打開1檔就賣
     f4_require_today_limitup: bool = True  # F4 須當日曾觸及漲停才生效
+    exit_start_time: str = "09:00"
+    exit_before_time: str = "13:25"
 
     # ── 功能 5：持倉中，1秒成交量達固定張數或漲停買一排隊比例就賣（含等於門檻）
     f5_enabled: bool = True
@@ -121,6 +123,7 @@ class TradingConfig:
 
     # ── 系統記錄 ────────────────────────────────────────────────────────────
     file_logging_enabled: bool = True
+    ui_scale_percent: int = 100
 
     # ── 盤中行情錄製（Phase 1）─────────────────────────────────────────────
     # 啟動策略時若 recording_enabled=True，會把 SDK 推送的原始訊息與解析後的

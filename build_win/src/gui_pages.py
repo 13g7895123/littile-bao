@@ -24,6 +24,7 @@ from gui_theme import (
     C,
     FONT_MAIN,
     FONT_MONO,
+    DEFAULT_UI_SCALE_PERCENT,
     ToggleButton,
     _checkbox,
     _combo,
@@ -33,6 +34,7 @@ from gui_theme import (
     _label,
     _panel_frame,
     _scroll_style,
+    _scaled,
     _section_title,
     _table_style,
 )
@@ -47,19 +49,19 @@ def create_strategy_settings_panel(app) -> QFrame:
     outer.setSpacing(0)
 
     hdr = QFrame()
-    hdr.setFixedHeight(40)
+    hdr.setFixedHeight(_scaled(40))
     hdr.setStyleSheet(
         f"background-color: {C['header']};"
         f"border-bottom: 1px solid {C['border']};"
     )
     app._strategy_settings_header = hdr
     hl = QHBoxLayout(hdr)
-    hl.setContentsMargins(14, 0, 14, 0)
+    hl.setContentsMargins(_scaled(14), 0, _scaled(14), 0)
     icon = QLabel("⚙")
-    icon.setFont(QFont("Segoe UI Emoji", 11))
+    icon.setFont(QFont("Segoe UI Emoji", _scaled(11)))
     icon.setStyleSheet(f"color: {C['subtext']}; background: transparent;")
     hl.addWidget(icon)
-    hl.addSpacing(6)
+    hl.addSpacing(_scaled(6))
     hl.addWidget(_label("策略設定", C["text"], 10, bold=True))
     hl.addStretch()
     outer.addWidget(hdr)
@@ -76,7 +78,7 @@ def create_strategy_settings_panel(app) -> QFrame:
     content.setStyleSheet(f"background-color: {C['sidebar']};")
     app._strategy_settings_content = content
     form = QVBoxLayout(content)
-    form.setContentsMargins(14, 10, 14, 10)
+    form.setContentsMargins(_scaled(14), _scaled(10), _scaled(14), _scaled(10))
     form.setSpacing(0)
 
     row = QHBoxLayout()
@@ -87,7 +89,7 @@ def create_strategy_settings_panel(app) -> QFrame:
     app._toggles["strategy_enabled"] = tog
     row.addWidget(tog)
     form.addLayout(row)
-    form.addSpacing(10)
+    form.addSpacing(_scaled(10))
     form.addWidget(_divider())
 
     form.addWidget(_section_title("市場選擇"))
@@ -95,11 +97,11 @@ def create_strategy_settings_panel(app) -> QFrame:
     app._checks["market_twse"] = _checkbox("上市")
     app._checks["market_tpex"] = _checkbox("上櫃")
     mkt_row.addWidget(app._checks["market_twse"])
-    mkt_row.addSpacing(14)
+    mkt_row.addSpacing(_scaled(14))
     mkt_row.addWidget(app._checks["market_tpex"])
     mkt_row.addStretch()
     form.addLayout(mkt_row)
-    form.addSpacing(8)
+    form.addSpacing(_scaled(8))
     form.addWidget(_divider())
 
     form.addWidget(_section_title("交易設定"))
@@ -108,10 +110,10 @@ def create_strategy_settings_panel(app) -> QFrame:
     app._checks["dry_run_mode"] = _checkbox("模擬下單（不送出真實委託）")
     app._checks["dry_run_mode"].toggled.connect(app._on_order_mode_toggled)
     form.addWidget(app._checks["dry_run_mode"])
-    form.addSpacing(6)
+    form.addSpacing(_scaled(6))
     app._checks["file_logging_enabled"] = _checkbox("寫入實體 log 檔（含完整錯誤訊息）")
     form.addWidget(app._checks["file_logging_enabled"])
-    form.addSpacing(6)
+    form.addSpacing(_scaled(6))
     app._checks["recording_enabled"] = _checkbox("盤中錄製即時行情（供事後分析 / 復盤）")
     form.addWidget(app._checks["recording_enabled"])
     app._checks["recording_record_raw"] = _checkbox("　└ 同時錄製原始 SDK 訊息（檔案較大）")
@@ -119,7 +121,7 @@ def create_strategy_settings_panel(app) -> QFrame:
     rec_row = QHBoxLayout()
     rec_row.addWidget(_label("保留天數", C["subtext"], 9))
     app._fields["recording_keep_days"] = QLineEdit()
-    app._fields["recording_keep_days"].setFixedWidth(50)
+    app._fields["recording_keep_days"].setFixedWidth(_scaled(50))
     rec_row.addWidget(app._fields["recording_keep_days"])
     rec_row.addWidget(_label("天", C["subtext"], 9))
     rec_row.addStretch()
@@ -263,6 +265,20 @@ def create_strategy_settings_panel(app) -> QFrame:
     form.addLayout(ex_row1)
     form.addSpacing(6)
 
+    form.addWidget(_label("賣出時間", C["subtext"], 9))
+    exit_time_row = QHBoxLayout()
+    exit_time_row.addSpacing(4)
+    app._fields["exit_start_time"] = _entry(50)
+    exit_time_row.addWidget(app._fields["exit_start_time"])
+    exit_time_row.addSpacing(4)
+    exit_time_row.addWidget(_label("~", C["subtext"], 9))
+    exit_time_row.addSpacing(4)
+    app._fields["exit_before_time"] = _entry(50)
+    exit_time_row.addWidget(app._fields["exit_before_time"])
+    exit_time_row.addStretch()
+    form.addLayout(exit_time_row)
+    form.addSpacing(6)
+
     open_tick_row = QHBoxLayout()
     open_tick_row.addWidget(_label("打開檔位 >=", C["subtext"], 9))
     open_tick_row.addStretch()
@@ -290,6 +306,9 @@ def create_strategy_settings_panel(app) -> QFrame:
     form.addSpacing(6)
 
     sp_mode_row = QHBoxLayout()
+    app._checks["f5_enabled"] = _checkbox("啟用 1 秒爆量賣出")
+    form.addWidget(app._checks["f5_enabled"])
+    form.addSpacing(4)
     sp_mode_row.addWidget(_label("1秒爆量方式", C["subtext"], 9))
     sp_mode_row.addStretch()
     app._combos["volume_spike_sell_mode"] = _combo(["固定張數", "比例"], 88)
@@ -329,7 +348,7 @@ def create_strategy_settings_panel(app) -> QFrame:
 
     app.sell_all_strategy_btn = QPushButton("全部策略持股賣出")
     app.sell_all_strategy_btn.setFont(_font(9, bold=True))
-    app.sell_all_strategy_btn.setFixedHeight(30)
+    app.sell_all_strategy_btn.setFixedHeight(_scaled(30))
     app.sell_all_strategy_btn.setCursor(Qt.CursorShape.PointingHandCursor)
     app.sell_all_strategy_btn.setStyleSheet(
         f"""
@@ -350,7 +369,7 @@ def create_strategy_settings_panel(app) -> QFrame:
     outer.addWidget(scroll, 1)
 
     btn_bar = QFrame()
-    btn_bar.setFixedHeight(92)
+    btn_bar.setFixedHeight(_scaled(92))
     btn_bar.setStyleSheet(
         f"background-color: {C['header']};"
         f"border-top: 1px solid {C['border']};"
@@ -363,7 +382,7 @@ def create_strategy_settings_panel(app) -> QFrame:
     def _secondary_button(text: str) -> QPushButton:
         btn = QPushButton(text)
         btn.setFont(_font(9, bold=True))
-        btn.setFixedHeight(34)
+        btn.setFixedHeight(_scaled(34))
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.setStyleSheet(
             f"""
@@ -396,7 +415,7 @@ def create_strategy_settings_panel(app) -> QFrame:
 
     save_btn = QPushButton("儲存設定")
     save_btn.setFont(_font(9, bold=True))
-    save_btn.setFixedHeight(34)
+    save_btn.setFixedHeight(_scaled(34))
     save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
     save_btn.setStyleSheet(
         f"""
@@ -431,15 +450,15 @@ def build_dashboard(app, parent: QWidget) -> None:
     outer.addWidget(app._dashboard_settings_host)
 
     sep = QFrame()
-    sep.setFixedWidth(1)
+    sep.setFixedWidth(_scaled(1))
     sep.setStyleSheet(f"background-color: {C['border']};")
     outer.addWidget(sep)
 
     content = QWidget()
     content.setStyleSheet(f"background-color: {C['bg']};")
     lay = QVBoxLayout(content)
-    lay.setContentsMargins(10, 10, 10, 10)
-    lay.setSpacing(8)
+    lay.setContentsMargins(_scaled(10), _scaled(10), _scaled(10), _scaled(10))
+    lay.setSpacing(_scaled(8))
 
     build_stats_row(app, lay)
     build_mid_row(app, lay)
@@ -449,7 +468,7 @@ def build_dashboard(app, parent: QWidget) -> None:
 
 def build_stats_row(app, lay: QVBoxLayout) -> None:
     row = QWidget()
-    row.setFixedHeight(76)
+    row.setFixedHeight(_scaled(76))
     row.setStyleSheet("background: transparent;")
     rl = QHBoxLayout(row)
     rl.setContentsMargins(0, 0, 0, 0)
@@ -470,7 +489,7 @@ def build_stats_row(app, lay: QVBoxLayout) -> None:
         fl.setSpacing(3)
         fl.addWidget(_label(label_txt, C["subtext"], 9))
         val_lbl = QLabel(init)
-        val_lbl.setFont(QFont(FONT_MAIN, 18, QFont.Weight.Bold))
+        val_lbl.setFont(QFont(FONT_MAIN, _scaled(18), QFont.Weight.Bold))
         val_lbl.setStyleSheet(f"color: {color}; background: transparent;")
         fl.addWidget(val_lbl)
         setattr(app, attr, val_lbl)
@@ -510,11 +529,11 @@ def build_mid_row(app, lay: QVBoxLayout) -> None:
     app.monitor_table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
     monitor_header = app.monitor_table.horizontalHeader()
     monitor_header.setStretchLastSection(False)
-    monitor_header.setMinimumSectionSize(44)
+    monitor_header.setMinimumSectionSize(_scaled(44))
     monitor_header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
-    app.monitor_table.verticalHeader().setDefaultSectionSize(28)
+    app.monitor_table.verticalHeader().setDefaultSectionSize(_scaled(28))
     for i, width in enumerate([52, 70, 66, 62, 72, 78, 86, 70, 102, 86]):
-        app.monitor_table.setColumnWidth(i, width)
+        app.monitor_table.setColumnWidth(i, _scaled(width))
     ml.addWidget(app.monitor_table, 1)
     rl.addWidget(mon, 3)
 
@@ -530,7 +549,7 @@ def build_mid_row(app, lay: QVBoxLayout) -> None:
     eh.addSpacing(6)
     clr_btn = QPushButton("清除")
     clr_btn.setFont(_font(9))
-    clr_btn.setFixedSize(46, 22)
+    clr_btn.setFixedSize(_scaled(46), _scaled(22))
     clr_btn.setCursor(Qt.CursorShape.PointingHandCursor)
     clr_btn.setStyleSheet(
         f"""
@@ -549,7 +568,7 @@ def build_mid_row(app, lay: QVBoxLayout) -> None:
 
     app.event_log = QTextEdit()
     app.event_log.setReadOnly(True)
-    app.event_log.setFont(QFont(FONT_MAIN, 9))
+    app.event_log.setFont(QFont(FONT_MAIN, _scaled(9)))
     app.event_log.setStyleSheet(
         f"""
             QTextEdit {{
@@ -591,9 +610,9 @@ def build_bot_row(app, lay: QVBoxLayout) -> None:
     app.positions_table.verticalHeader().setVisible(False)
     app.positions_table.setShowGrid(True)
     app.positions_table.horizontalHeader().setStretchLastSection(True)
-    app.positions_table.verticalHeader().setDefaultSectionSize(26)
+    app.positions_table.verticalHeader().setDefaultSectionSize(_scaled(26))
     for i, width in enumerate([48, 55, 52, 52, 52, 58, 58, 52]):
-        app.positions_table.setColumnWidth(i, width)
+        app.positions_table.setColumnWidth(i, _scaled(width))
     pl.addWidget(app.positions_table, 1)
     app.pos_summary_lbl = _label("小計 (0)", C["subtext"], 9)
     app.pos_pnl_lbl = _label("+0  +0.00%", C["green"], 9, bold=True)
@@ -606,8 +625,8 @@ def build_bot_row(app, lay: QVBoxLayout) -> None:
 
     ord_f = _panel_frame()
     ol = QVBoxLayout(ord_f)
-    ol.setContentsMargins(10, 8, 10, 8)
-    ol.setSpacing(6)
+    ol.setContentsMargins(_scaled(10), _scaled(8), _scaled(10), _scaled(8))
+    ol.setSpacing(_scaled(6))
     oh = QHBoxLayout()
     oh.addWidget(_label("委託狀態", C["text"], 10, bold=True))
     oh.addStretch()
@@ -620,16 +639,16 @@ def build_bot_row(app, lay: QVBoxLayout) -> None:
     app.orders_table.verticalHeader().setVisible(False)
     app.orders_table.setShowGrid(True)
     app.orders_table.horizontalHeader().setStretchLastSection(True)
-    app.orders_table.verticalHeader().setDefaultSectionSize(26)
+    app.orders_table.verticalHeader().setDefaultSectionSize(_scaled(26))
     for i, width in enumerate([48, 55, 62, 58, 46, 70, 70, 48, 46]):
-        app.orders_table.setColumnWidth(i, width)
+        app.orders_table.setColumnWidth(i, _scaled(width))
     ol.addWidget(app.orders_table, 1)
     rl.addWidget(ord_f, 2)
 
     trd_f = _panel_frame()
     tl = QVBoxLayout(trd_f)
-    tl.setContentsMargins(10, 8, 10, 8)
-    tl.setSpacing(6)
+    tl.setContentsMargins(_scaled(10), _scaled(8), _scaled(10), _scaled(8))
+    tl.setSpacing(_scaled(6))
     th = QHBoxLayout()
     th.addWidget(_label("成交記錄", C["text"], 10, bold=True))
     th.addStretch()
@@ -642,9 +661,9 @@ def build_bot_row(app, lay: QVBoxLayout) -> None:
     app.trades_table.verticalHeader().setVisible(False)
     app.trades_table.setShowGrid(True)
     app.trades_table.horizontalHeader().setStretchLastSection(True)
-    app.trades_table.verticalHeader().setDefaultSectionSize(26)
+    app.trades_table.verticalHeader().setDefaultSectionSize(_scaled(26))
     for i, width in enumerate([60, 48, 55, 44, 55, 44, 180, 55]):
-        app.trades_table.setColumnWidth(i, width)
+        app.trades_table.setColumnWidth(i, _scaled(width))
     tl.addWidget(app.trades_table, 1)
     app.trd_summary_lbl = _label("小計", C["subtext"], 9)
     app.trd_pnl_lbl = _label("+0", C["green"], 9, bold=True)
@@ -660,7 +679,7 @@ def build_bot_row(app, lay: QVBoxLayout) -> None:
 
 def build_settings_page(app, parent: QWidget) -> None:
     lay = QVBoxLayout(parent)
-    lay.setContentsMargins(20, 16, 20, 16)
+    lay.setContentsMargins(_scaled(20), _scaled(16), _scaled(20), _scaled(16))
     lay.setSpacing(0)
     app._settings_page_settings_host = QWidget()
     app._settings_page_settings_host.setStyleSheet(f"background-color: {C['bg']};")
@@ -670,9 +689,88 @@ def build_settings_page(app, parent: QWidget) -> None:
     lay.addWidget(app._settings_page_settings_host, 1)
 
 
+def build_system_settings_page(app, parent: QWidget) -> None:
+    lay = QVBoxLayout(parent)
+    lay.setContentsMargins(_scaled(20), _scaled(16), _scaled(20), _scaled(16))
+    lay.setSpacing(_scaled(12))
+
+    title = _label("系統設定", C["text"], 13, bold=True)
+    lay.addWidget(title)
+
+    panel = _panel_frame()
+    pl = QVBoxLayout(panel)
+    pl.setContentsMargins(_scaled(18), _scaled(16), _scaled(18), _scaled(16))
+    pl.setSpacing(_scaled(12))
+
+    pl.addWidget(_section_title("介面"))
+    scale_row = QHBoxLayout()
+    scale_row.addWidget(_label("介面縮放", C["subtext"], 9))
+    scale_row.addStretch()
+    app._combos["ui_scale_percent"] = _combo([], 140)
+    for value in (100, 110, 120, 130, 140):
+        app._combos["ui_scale_percent"].addItem(
+            "100%（目前預設）" if value == DEFAULT_UI_SCALE_PERCENT else f"{value}%",
+            value,
+        )
+    scale_row.addWidget(app._combos["ui_scale_percent"])
+    pl.addLayout(scale_row)
+    pl.addWidget(_label("最小值維持目前版面；放大後會在重新啟動時套用。", C["subtext"], 9))
+
+    btn_row = QHBoxLayout()
+    btn_row.addStretch()
+    app.system_settings_apply_btn = QPushButton("儲存並重新啟動")
+    app.system_settings_apply_btn.setFont(_font(9, bold=True))
+    app.system_settings_apply_btn.setFixedHeight(_scaled(34))
+    app.system_settings_apply_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    app.system_settings_apply_btn.setStyleSheet(
+        f"""
+            QPushButton {{
+                background-color: {C['blue']};
+                color: #ffffff;
+                border: none;
+                border-radius: 4px;
+                padding: 0 {_scaled(14)}px;
+            }}
+            QPushButton:hover {{ background-color: {C['blue_l']}; }}
+        """
+    )
+    app.system_settings_apply_btn.clicked.connect(app._save_system_settings_and_restart)
+    btn_row.addWidget(app.system_settings_apply_btn)
+    pl.addLayout(btn_row)
+
+    pl.addWidget(_divider())
+    pl.addWidget(_section_title("更新"))
+    update_row = QHBoxLayout()
+    update_row.addWidget(_label("版本更新", C["subtext"], 9))
+    update_row.addStretch()
+    app.system_settings_update_btn = QPushButton("檢查更新")
+    app.system_settings_update_btn.setFont(_font(9, bold=True))
+    app.system_settings_update_btn.setFixedHeight(_scaled(34))
+    app.system_settings_update_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    app.system_settings_update_btn.setStyleSheet(
+        f"""
+            QPushButton {{
+                background-color: {C['surface']};
+                color: {C['text']};
+                border: 1px solid {C['border']};
+                border-radius: 4px;
+                padding: 0 {_scaled(14)}px;
+            }}
+            QPushButton:hover {{ background-color: #2d333b; }}
+        """
+    )
+    app.system_settings_update_btn.clicked.connect(app._show_update_feature_pending)
+    update_row.addWidget(app.system_settings_update_btn)
+    pl.addLayout(update_row)
+    pl.addWidget(_label("版本更新功能開發中。", C["subtext"], 9))
+
+    lay.addWidget(panel, 0)
+    lay.addStretch()
+
+
 def build_placeholder(_app, parent: QWidget, title: str) -> None:
     lay = QVBoxLayout(parent)
-    lay.setContentsMargins(24, 24, 24, 24)
+    lay.setContentsMargins(_scaled(24), _scaled(24), _scaled(24), _scaled(24))
     lbl = _label(title, C["subtext"], 12)
     lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
     lay.addStretch()
@@ -682,8 +780,8 @@ def build_placeholder(_app, parent: QWidget, title: str) -> None:
 
 def build_orders_page(app, parent: QWidget) -> None:
     lay = QVBoxLayout(parent)
-    lay.setContentsMargins(10, 10, 10, 10)
-    lay.setSpacing(8)
+    lay.setContentsMargins(_scaled(10), _scaled(10), _scaled(10), _scaled(10))
+    lay.setSpacing(_scaled(8))
 
     ord_f = _panel_frame()
     ol = QVBoxLayout(ord_f)
@@ -702,9 +800,9 @@ def build_orders_page(app, parent: QWidget) -> None:
     app.orders_full_table.verticalHeader().setVisible(False)
     app.orders_full_table.setShowGrid(True)
     app.orders_full_table.horizontalHeader().setStretchLastSection(True)
-    app.orders_full_table.verticalHeader().setDefaultSectionSize(28)
+    app.orders_full_table.verticalHeader().setDefaultSectionSize(_scaled(28))
     for i, width in enumerate([60, 80, 80, 72, 55, 90, 90, 65, 65]):
-        app.orders_full_table.setColumnWidth(i, width)
+        app.orders_full_table.setColumnWidth(i, _scaled(width))
     ol.addWidget(app.orders_full_table, 1)
     app.orders_full_summary_lbl = _label("委託總計 (0)", C["subtext"], 9)
     ol.addWidget(app.orders_full_summary_lbl)
@@ -727,9 +825,9 @@ def build_orders_page(app, parent: QWidget) -> None:
     app.trades_full_table.verticalHeader().setVisible(False)
     app.trades_full_table.setShowGrid(True)
     app.trades_full_table.horizontalHeader().setStretchLastSection(True)
-    app.trades_full_table.verticalHeader().setDefaultSectionSize(28)
+    app.trades_full_table.verticalHeader().setDefaultSectionSize(_scaled(28))
     for i, width in enumerate([72, 60, 80, 55, 72, 55, 220, 72]):
-        app.trades_full_table.setColumnWidth(i, width)
+        app.trades_full_table.setColumnWidth(i, _scaled(width))
     tl.addWidget(app.trades_full_table, 1)
     app.trades_full_pnl_lbl = _label("+0", C["green"], 9, bold=True)
     app.trades_full_summary_lbl = _label("成交總計 (0)", C["subtext"], 9)
@@ -743,13 +841,13 @@ def build_orders_page(app, parent: QWidget) -> None:
 
 def build_positions_page(app, parent: QWidget) -> None:
     lay = QVBoxLayout(parent)
-    lay.setContentsMargins(10, 10, 10, 10)
-    lay.setSpacing(8)
+    lay.setContentsMargins(_scaled(10), _scaled(10), _scaled(10), _scaled(10))
+    lay.setSpacing(_scaled(8))
 
     pos_f = _panel_frame()
     pl = QVBoxLayout(pos_f)
-    pl.setContentsMargins(10, 8, 10, 8)
-    pl.setSpacing(6)
+    pl.setContentsMargins(_scaled(10), _scaled(8), _scaled(10), _scaled(8))
+    pl.setSpacing(_scaled(6))
     ph = QHBoxLayout()
     ph.addWidget(_label("持倉部位", C["text"], 10, bold=True))
     ph.addStretch()
@@ -763,9 +861,9 @@ def build_positions_page(app, parent: QWidget) -> None:
     app.positions_full_table.verticalHeader().setVisible(False)
     app.positions_full_table.setShowGrid(True)
     app.positions_full_table.horizontalHeader().setStretchLastSection(True)
-    app.positions_full_table.verticalHeader().setDefaultSectionSize(28)
+    app.positions_full_table.verticalHeader().setDefaultSectionSize(_scaled(28))
     for i, width in enumerate([60, 80, 60, 70, 70, 72, 72, 60]):
-        app.positions_full_table.setColumnWidth(i, width)
+        app.positions_full_table.setColumnWidth(i, _scaled(width))
     pl.addWidget(app.positions_full_table, 1)
     app.pos_full_summary_lbl = _label("小計 (0)", C["subtext"], 9)
     app.pos_full_pnl_lbl = _label("+0  +0.00%", C["green"], 9, bold=True)
@@ -779,19 +877,19 @@ def build_positions_page(app, parent: QWidget) -> None:
 
 def build_events_page(app, parent: QWidget) -> None:
     lay = QVBoxLayout(parent)
-    lay.setContentsMargins(10, 10, 10, 10)
-    lay.setSpacing(8)
+    lay.setContentsMargins(_scaled(10), _scaled(10), _scaled(10), _scaled(10))
+    lay.setSpacing(_scaled(8))
 
     trigger_f = _panel_frame()
     tl = QVBoxLayout(trigger_f)
-    tl.setContentsMargins(10, 8, 10, 8)
-    tl.setSpacing(6)
+    tl.setContentsMargins(_scaled(10), _scaled(8), _scaled(10), _scaled(8))
+    tl.setSpacing(_scaled(6))
     th = QHBoxLayout()
     th.addWidget(_label("策略觸發紀錄", C["text"], 10, bold=True))
     th.addStretch()
     app.decision_tab_toggle_btn = QPushButton("顯示決策明細")
     app.decision_tab_toggle_btn.setFont(_font(9))
-    app.decision_tab_toggle_btn.setFixedHeight(24)
+    app.decision_tab_toggle_btn.setFixedHeight(_scaled(24))
     app.decision_tab_toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
     app.decision_tab_toggle_btn.clicked.connect(app._toggle_decision_detail_tab)
     th.addWidget(app.decision_tab_toggle_btn)
@@ -808,16 +906,16 @@ def build_events_page(app, parent: QWidget) -> None:
     app.strategy_trigger_table.verticalHeader().setVisible(False)
     app.strategy_trigger_table.setShowGrid(True)
     app.strategy_trigger_table.horizontalHeader().setStretchLastSection(True)
-    app.strategy_trigger_table.verticalHeader().setDefaultSectionSize(28)
+    app.strategy_trigger_table.verticalHeader().setDefaultSectionSize(_scaled(28))
     for i, width in enumerate([72, 60, 80, 58, 110, 360]):
-        app.strategy_trigger_table.setColumnWidth(i, width)
+        app.strategy_trigger_table.setColumnWidth(i, _scaled(width))
     tl.addWidget(app.strategy_trigger_table, 1)
     lay.addWidget(trigger_f, 1)
 
     ev_f = _panel_frame()
     el = QVBoxLayout(ev_f)
-    el.setContentsMargins(10, 8, 10, 8)
-    el.setSpacing(6)
+    el.setContentsMargins(_scaled(10), _scaled(8), _scaled(10), _scaled(8))
+    el.setSpacing(_scaled(6))
     eh = QHBoxLayout()
     eh.addWidget(_label("事件日誌", C["text"], 10, bold=True))
     eh.addStretch()
@@ -825,7 +923,7 @@ def build_events_page(app, parent: QWidget) -> None:
     eh.addSpacing(6)
     clr_btn = QPushButton("清除")
     clr_btn.setFont(_font(9))
-    clr_btn.setFixedSize(46, 22)
+    clr_btn.setFixedSize(_scaled(46), _scaled(22))
     clr_btn.setCursor(Qt.CursorShape.PointingHandCursor)
     clr_btn.setStyleSheet(
         f"""
@@ -843,7 +941,7 @@ def build_events_page(app, parent: QWidget) -> None:
     el.addLayout(eh)
     app.events_full_log = QTextEdit()
     app.events_full_log.setReadOnly(True)
-    app.events_full_log.setFont(QFont(FONT_MAIN, 9))
+    app.events_full_log.setFont(QFont(FONT_MAIN, _scaled(9)))
     app.events_full_log.setStyleSheet(
         f"""
             QTextEdit {{
@@ -863,13 +961,13 @@ def build_events_page(app, parent: QWidget) -> None:
 
 def build_limitup_test_page(app, parent: QWidget) -> None:
     lay = QVBoxLayout(parent)
-    lay.setContentsMargins(10, 10, 10, 10)
-    lay.setSpacing(8)
+    lay.setContentsMargins(_scaled(10), _scaled(10), _scaled(10), _scaled(10))
+    lay.setSpacing(_scaled(8))
 
     top_f = _panel_frame()
     tl = QVBoxLayout(top_f)
-    tl.setContentsMargins(10, 8, 10, 8)
-    tl.setSpacing(6)
+    tl.setContentsMargins(_scaled(10), _scaled(8), _scaled(10), _scaled(8))
+    tl.setSpacing(_scaled(6))
     head = QHBoxLayout()
     head.addWidget(_label("鎖板測試 / 判斷分析", C["text"], 10, bold=True))
     head.addStretch()
@@ -878,7 +976,7 @@ def build_limitup_test_page(app, parent: QWidget) -> None:
     head.addSpacing(8)
     app.limitup_test_apply_btn = QPushButton("套用選取模式")
     app.limitup_test_apply_btn.setFont(_font(9))
-    app.limitup_test_apply_btn.setFixedHeight(24)
+    app.limitup_test_apply_btn.setFixedHeight(_scaled(24))
     app.limitup_test_apply_btn.setCursor(Qt.CursorShape.PointingHandCursor)
     app.limitup_test_apply_btn.clicked.connect(app._apply_selected_limitup_test_mode)
     head.addWidget(app.limitup_test_apply_btn)
@@ -900,17 +998,17 @@ def build_limitup_test_page(app, parent: QWidget) -> None:
     app.limitup_test_stock_table.verticalHeader().setVisible(False)
     app.limitup_test_stock_table.setShowGrid(True)
     app.limitup_test_stock_table.horizontalHeader().setStretchLastSection(True)
-    app.limitup_test_stock_table.verticalHeader().setDefaultSectionSize(28)
+    app.limitup_test_stock_table.verticalHeader().setDefaultSectionSize(_scaled(28))
     for i, width in enumerate([66, 86, 66, 66, 130, 70, 260, 60, 70, 70]):
-        app.limitup_test_stock_table.setColumnWidth(i, width)
+        app.limitup_test_stock_table.setColumnWidth(i, _scaled(width))
     app.limitup_test_stock_table.currentCellChanged.connect(app._on_limitup_test_stock_changed)
     tl.addWidget(app.limitup_test_stock_table, 1)
     lay.addWidget(top_f, 1)
 
     bottom_f = _panel_frame()
     bl = QVBoxLayout(bottom_f)
-    bl.setContentsMargins(10, 8, 10, 8)
-    bl.setSpacing(6)
+    bl.setContentsMargins(_scaled(10), _scaled(8), _scaled(10), _scaled(8))
+    bl.setSpacing(_scaled(6))
     bl.addWidget(_label("模式明細", C["text"], 10, bold=True))
     detail_cols = ["模式", "條件說明", "結果", "符合項目"]
     app.limitup_test_mode_table = QTableWidget(0, len(detail_cols))
@@ -921,17 +1019,17 @@ def build_limitup_test_page(app, parent: QWidget) -> None:
     app.limitup_test_mode_table.verticalHeader().setVisible(False)
     app.limitup_test_mode_table.setShowGrid(True)
     app.limitup_test_mode_table.horizontalHeader().setStretchLastSection(True)
-    app.limitup_test_mode_table.verticalHeader().setDefaultSectionSize(28)
+    app.limitup_test_mode_table.verticalHeader().setDefaultSectionSize(_scaled(28))
     for i, width in enumerate([150, 250, 72, 500]):
-        app.limitup_test_mode_table.setColumnWidth(i, width)
+        app.limitup_test_mode_table.setColumnWidth(i, _scaled(width))
     app.limitup_test_mode_table.currentCellChanged.connect(app._on_limitup_test_mode_changed)
     bl.addWidget(app.limitup_test_mode_table, 1)
 
     bl.addWidget(_label("當前資料快照", C["text"], 10, bold=True))
     app.limitup_test_snapshot = QTextEdit()
     app.limitup_test_snapshot.setReadOnly(True)
-    app.limitup_test_snapshot.setFont(QFont(FONT_MONO, 9))
-    app.limitup_test_snapshot.setFixedHeight(130)
+    app.limitup_test_snapshot.setFont(QFont(FONT_MONO, _scaled(9)))
+    app.limitup_test_snapshot.setFixedHeight(_scaled(130))
     app.limitup_test_snapshot.setStyleSheet(
         f"""
             QTextEdit {{
@@ -955,23 +1053,23 @@ def build_decision_detail_page(app, parent: QWidget) -> None:
 
     detail_f = _panel_frame()
     dl = QVBoxLayout(detail_f)
-    dl.setContentsMargins(10, 8, 10, 8)
-    dl.setSpacing(6)
+    dl.setContentsMargins(_scaled(10), _scaled(8), _scaled(10), _scaled(8))
+    dl.setSpacing(_scaled(6))
     dh = QHBoxLayout()
     dh.addWidget(_label("決策明細", C["text"], 10, bold=True))
-    dh.addSpacing(8)
+    dh.addSpacing(_scaled(8))
     app.decision_detail_summary_lbl = _label("共 0 筆", C["subtext"], 9)
     dh.addWidget(app.decision_detail_summary_lbl)
     dh.addStretch()
     hide_btn = QPushButton("隱藏頁籤")
     hide_btn.setFont(_font(9))
-    hide_btn.setFixedHeight(24)
+    hide_btn.setFixedHeight(_scaled(24))
     hide_btn.setCursor(Qt.CursorShape.PointingHandCursor)
     hide_btn.clicked.connect(app._hide_decision_detail_tab)
     dh.addWidget(hide_btn)
     clear_btn = QPushButton("清除")
     clear_btn.setFont(_font(9))
-    clear_btn.setFixedHeight(24)
+    clear_btn.setFixedHeight(_scaled(24))
     clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
     clear_btn.clicked.connect(app._clear_decision_detail)
     dh.addWidget(clear_btn)
@@ -986,21 +1084,21 @@ def build_decision_detail_page(app, parent: QWidget) -> None:
     app.decision_detail_table.verticalHeader().setVisible(False)
     app.decision_detail_table.setShowGrid(True)
     app.decision_detail_table.horizontalHeader().setStretchLastSection(True)
-    app.decision_detail_table.verticalHeader().setDefaultSectionSize(28)
+    app.decision_detail_table.verticalHeader().setDefaultSectionSize(_scaled(28))
     for i, width in enumerate([72, 60, 80, 88, 88, 150, 520]):
-        app.decision_detail_table.setColumnWidth(i, width)
+        app.decision_detail_table.setColumnWidth(i, _scaled(width))
     dl.addWidget(app.decision_detail_table, 1)
     lay.addWidget(detail_f, 1)
 
 
 def build_broker_page(app, parent: QWidget) -> None:
     outer = QVBoxLayout(parent)
-    outer.setContentsMargins(20, 16, 20, 16)
-    outer.setSpacing(12)
+    outer.setContentsMargins(_scaled(20), _scaled(16), _scaled(20), _scaled(16))
+    outer.setSpacing(_scaled(12))
 
     hdr = QHBoxLayout()
     hdr.addWidget(_label("券商設定", C["text"], 13, bold=True))
-    hdr.addSpacing(12)
+    hdr.addSpacing(_scaled(12))
     app._broker_conn_dot = QLabel("●")
     app._broker_conn_dot.setFont(_font(10))
     app._broker_conn_dot.setStyleSheet(f"color:{C['subtext']}; background:transparent;")
@@ -1020,15 +1118,15 @@ def build_broker_page(app, parent: QWidget) -> None:
     content = QWidget()
     content.setStyleSheet(f"background-color: {C['bg']};")
     cl = QVBoxLayout(content)
-    cl.setContentsMargins(0, 0, 12, 0)
-    cl.setSpacing(14)
+    cl.setContentsMargins(0, 0, _scaled(12), 0)
+    cl.setSpacing(_scaled(14))
 
     def _group(title: str) -> tuple:
         grp = _panel_frame()
         gl = QGridLayout(grp)
-        gl.setContentsMargins(16, 10, 16, 14)
-        gl.setHorizontalSpacing(12)
-        gl.setVerticalSpacing(8)
+        gl.setContentsMargins(_scaled(16), _scaled(10), _scaled(16), _scaled(14))
+        gl.setHorizontalSpacing(_scaled(12))
+        gl.setVerticalSpacing(_scaled(8))
         gl.setColumnStretch(1, 1)
         title_lbl = _label(title, C["subtext"], 9, bold=True)
         title_lbl.setContentsMargins(0, 0, 0, 4)
@@ -1057,10 +1155,10 @@ def build_broker_page(app, parent: QWidget) -> None:
     app._bfields["cert_path"].setPlaceholderText("憑證路徑 (.pfx / .p12)")
     app._bfields["cert_path"].setReadOnly(False)
     cert_row.addWidget(app._bfields["cert_path"])
-    cert_row.addSpacing(6)
+    cert_row.addSpacing(_scaled(6))
     browse_btn = QPushButton("瀏覽…")
     browse_btn.setFont(_font(9))
-    browse_btn.setFixedSize(64, 26)
+    browse_btn.setFixedSize(_scaled(64), _scaled(26))
     browse_btn.setStyleSheet(
         f"""
             QPushButton {{
@@ -1099,11 +1197,11 @@ def build_broker_page(app, parent: QWidget) -> None:
     outer.addWidget(scroll, 1)
 
     btn_row = QHBoxLayout()
-    btn_row.setSpacing(10)
+    btn_row.setSpacing(_scaled(10))
 
     load_btn = QPushButton("匯入 JSON")
     load_btn.setFont(_font(9, bold=True))
-    load_btn.setFixedHeight(34)
+    load_btn.setFixedHeight(_scaled(34))
     load_btn.setStyleSheet(
         f"""
             QPushButton {{
@@ -1120,7 +1218,7 @@ def build_broker_page(app, parent: QWidget) -> None:
 
     save_env_btn = QPushButton("匯出 JSON")
     save_env_btn.setFont(_font(9, bold=True))
-    save_env_btn.setFixedHeight(34)
+    save_env_btn.setFixedHeight(_scaled(34))
     save_env_btn.setStyleSheet(
         f"""
             QPushButton {{
@@ -1139,7 +1237,7 @@ def build_broker_page(app, parent: QWidget) -> None:
 
     test_btn = QPushButton("測試連線")
     test_btn.setFont(_font(9, bold=True))
-    test_btn.setFixedHeight(34)
+    test_btn.setFixedHeight(_scaled(34))
     test_btn.setStyleSheet(
         f"""
             QPushButton {{
@@ -1156,7 +1254,7 @@ def build_broker_page(app, parent: QWidget) -> None:
 
     connect_btn = QPushButton("連線並套用")
     connect_btn.setFont(_font(9, bold=True))
-    connect_btn.setFixedHeight(34)
+    connect_btn.setFixedHeight(_scaled(34))
     connect_btn.setStyleSheet(
         f"""
             QPushButton {{

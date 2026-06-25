@@ -71,6 +71,21 @@ class TestGuiTabLayout(unittest.TestCase):
         )
         self.assertGreater(self.win._strategy_settings_panel.maximumWidth(), 1000)
 
+    def test_system_settings_tab_contains_ui_scale_controls(self):
+        self.win._switch_tab("system_settings")
+
+        self.assertFalse(self.win._pages["system_settings"].isHidden())
+        self.assertTrue(self.win._pages["settings"].isHidden())
+        self.assertIn("ui_scale_percent", self.win._combos)
+        self.assertTrue(hasattr(self.win, "system_settings_apply_btn"))
+        self.assertTrue(hasattr(self.win, "system_settings_update_btn"))
+        self.assertTrue(
+            self._is_descendant(
+                self.win._combos["ui_scale_percent"],
+                self.win._pages["system_settings"],
+            )
+        )
+
     def test_dashboard_preserves_original_summary_sections(self):
         self.assertTrue(
             self._is_descendant(
@@ -128,22 +143,31 @@ class TestGuiTabLayout(unittest.TestCase):
         self.assertIn("consume_qty_threshold", self.win._fields)
         self.assertIn("f4_open_ticks_to_sell", self.win._fields)
         self.assertIn("prelock_stop_ticks", self.win._fields)
+        self.assertIn("exit_start_time", self.win._fields)
+        self.assertIn("exit_before_time", self.win._fields)
         self.assertIn("consume_enabled", self.win._checks)
         self.assertIn("prelock_ask_entry_enabled", self.win._checks)
         self.assertIn("prelock_stop_enabled", self.win._checks)
         self.assertIn("f4_require_today_limitup", self.win._checks)
+        self.assertIn("f5_enabled", self.win._checks)
         self.assertTrue(hasattr(self.win, "sell_all_strategy_btn"))
 
         self.win._fields["consume_qty_threshold"].setText("321")
         self.win._fields["f4_open_ticks_to_sell"].setText("2")
+        self.win._fields["exit_start_time"].setText("09:15")
+        self.win._fields["exit_before_time"].setText("13:20")
         self.win._fields["prelock_stop_ticks"].setText("3")
         self.win._checks["consume_enabled"].setChecked(True)
         self.win._checks["consume_mutex_with_f1"].setChecked(False)
         self.win._checks["prelock_ask_entry_enabled"].setChecked(False)
         self.win._checks["prelock_stop_enabled"].setChecked(False)
         self.win._checks["f4_require_today_limitup"].setChecked(False)
+        self.win._checks["f5_enabled"].setChecked(False)
         self.win._checks["excl_open_limit"].setChecked(True)
         self.win._checks["excl_sealed"].setChecked(False)
+        self.win._combos["ui_scale_percent"].setCurrentIndex(
+            self.win._combos["ui_scale_percent"].findData(120)
+        )
 
         cfg = self.win._collect_config()
 
@@ -155,6 +179,10 @@ class TestGuiTabLayout(unittest.TestCase):
         self.assertEqual(cfg.prelock_stop_ticks, 3)
         self.assertEqual(cfg.f4_open_ticks_to_sell, 2)
         self.assertFalse(cfg.f4_require_today_limitup)
+        self.assertEqual(cfg.exit_start_time, "09:15")
+        self.assertEqual(cfg.exit_before_time, "13:20")
+        self.assertFalse(cfg.f5_enabled)
+        self.assertEqual(cfg.ui_scale_percent, 120)
         self.assertFalse(cfg.f_open_limitup_entry_enabled)
         self.assertFalse(cfg.f12_enabled)
 

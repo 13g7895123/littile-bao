@@ -1004,9 +1004,10 @@ class TradingEngine:
         if self._is_after_auto_trade_cutoff():
             self._reset_sell_trigger_state(state)
             if state.position_qty <= 0:
+                _start, cutoff = self._exit_trade_window()
                 self._skip_entry(
                     state,
-                    f"已過自動交易截止 {self.AUTO_TRADE_CUTOFF_TIME.strftime('%H:%M')}",
+                    f"已過自動交易截止 {cutoff.strftime('%H:%M')}",
                     log=False,
                 )
             return
@@ -1690,6 +1691,9 @@ class TradingEngine:
             return
         cfg = self.config
         info = state.info
+        if self._is_before_exit_trade_start():
+            self._reset_sell_trigger_state(state)
+            return
         has_been_at_limit_today = state.touched_limit_up_today or state.candle_index > 0
         require_today_limit = getattr(cfg, "f4_require_today_limitup", True)
         open_ticks = self._open_ticks_from_limit(state)
@@ -1944,11 +1948,31 @@ class TradingEngine:
         except Exception:
             return fallback
 
+    def _exit_trade_window(self) -> tuple[dtime, dtime]:
+        start = self._parse_config_time(
+            getattr(self.config, "exit_start_time", "09:00"),
+            dtime(9, 0),
+        )
+        cutoff = self._parse_config_time(
+            getattr(self.config, "exit_before_time", "13:25"),
+            self.AUTO_TRADE_CUTOFF_TIME,
+        )
+        market_close = dtime(13, 30)
+        if cutoff > market_close:
+            cutoff = market_close
+        return start, cutoff
+
+    def _is_before_exit_trade_start(self, now: Optional[datetime] = None) -> bool:
+        current = now or self._current_datetime()
+        start, _cutoff = self._exit_trade_window()
+        return current.time() < start
+
     def _is_after_auto_trade_cutoff(self, now: Optional[datetime] = None) -> bool:
         if not self._running:
             return False
         current = now or self._current_datetime()
-        return current.time() >= self.AUTO_TRADE_CUTOFF_TIME
+        _start, cutoff = self._exit_trade_window()
+        return current.time() >= cutoff
 
     @staticmethod
     def _current_datetime() -> datetime:
