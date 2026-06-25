@@ -116,7 +116,7 @@ class TradingConfig:
 
     # ── 鎖板前進場停損：僅套用於上述條件買入的部位 ───────────────────────────
     f_prelock_stop_enabled: bool = True
-    prelock_stop_ticks: int = 2
+    prelock_stop_ticks: int = 5
 
     # ── 下單模式 ────────────────────────────────────────────────────────────
     order_dry_run: bool = True   # True = 模擬下單，不送出真實委託
