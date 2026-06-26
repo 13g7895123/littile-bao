@@ -663,6 +663,9 @@ class TradingEngine:
             return
         self._tick(state, now)
 
+    def _is_premarket_startup_probe(self) -> bool:
+        return self._started_at is not None and self._started_at.time() < dtime(9, 0, 0)
+
     def _refresh_limit_up_state(self, state: StockState, *, source: str, now: float, event_time=None) -> None:
         was_at_limit_up = bool(state.is_at_limit_up)
         was_candidate = bool(state.limit_up_candidate_since is not None)
@@ -735,7 +738,14 @@ class TradingEngine:
             startup_ready = state.last_price is not None
             if startup_ready:
                 state.initial_limit_up_checked = True
-                if startup_sealed:
+                if startup_sealed and self._is_premarket_startup_probe():
+                    state.last_skip_reason = "盤前試戳"
+                    self.on_log(
+                        "INFO",
+                        f"[{state.info.code} {state.info.name}] 啟動時間早於 09:00:00，"
+                        "本段視為盤前試戳，不標記為「程式啟用後已漲停」",
+                    )
+                elif startup_sealed:
                     state.is_at_limit_up = True
                     state.startup_limitup_blocked = True
                     state.limit_up_since = None

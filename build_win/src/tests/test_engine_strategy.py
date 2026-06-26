@@ -706,6 +706,30 @@ class TestTradingEngineStrategyRules(unittest.TestCase):
         self.assertEqual(state.candle_index, 1)
         self.assertTrue(state.is_at_limit_up)
 
+    def test_premarket_startup_probe_does_not_mark_startup_locked_limitup(self):
+        cfg = TradingConfig(
+            f1_enabled=False,
+            f9_enabled=False,
+            f10_enabled=False,
+            startup_limit_up_detection_mode="ask_or_bid_or_last",
+            limit_up_detection_mode="ask_or_bid_or_last",
+        )
+        engine, logs, _trades, _strategy_events = self._make_engine(cfg)
+        engine._started_at = datetime(2026, 5, 19, 8, 59, 59)
+        state = engine._states["2330"]
+
+        engine._on_tick(TickEvent(
+            code="2330",
+            time=datetime(2026, 5, 19, 9, 1),
+            price=Decimal("1100"),
+            volume=10,
+        ))
+
+        self.assertFalse(state.startup_limitup_blocked)
+        self.assertEqual(state.last_skip_reason, "盤前試戳")
+        self.assertFalse(any("啟用時已鎖漲停" in msg for _level, msg in logs))
+        self.assertTrue(any("盤前試戳" in msg for _level, msg in logs))
+
     def test_startup_lock_mode_can_block_even_when_intraday_mode_is_strict(self):
         cfg = TradingConfig(
             f1_enabled=False,

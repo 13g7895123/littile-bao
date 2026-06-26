@@ -33,7 +33,8 @@
   - 候選解除後重置段狀態，下一段重新確認。
 - 取 `mode = state.active_limit_up_mode or self._limit_up_mode`，看 `candidates[mode]` 判斷是否 sealed。
 - **初次檢查**（`_started_at` 已設、`initial_limit_up_checked=False`）：
-  - 若已 sealed → 設 `startup_limitup_blocked=True`、`last_skip_reason="程式啟用後已漲停"`，等鎖板撬開後才允許後續進場。
+  - 若 `_started_at < 09:00:00` 且已 sealed → 視為`盤前試戳`，不設 `startup_limitup_blocked`，也不記為「程式啟用後已漲停」。
+  - 若 `_started_at >= 09:00:00` 且已 sealed → 設 `startup_limitup_blocked=True`、`last_skip_reason="程式啟用後已漲停"`，等鎖板撬開後才允許後續進場。
 - 後續：
   - sealed → `is_at_limit_up=True`；若沒有 startup block，標記 `touched_limit_up_today=True` 並呼叫 `_mark_limit_up_touched`（更新 `candle_index` / `limit_up_since`）。
   - 不 sealed 但原本 sealed → 清掉 `is_at_limit_up`、清 `startup_limitup_blocked`。

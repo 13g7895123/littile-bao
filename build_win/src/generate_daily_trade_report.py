@@ -93,7 +93,7 @@ class OrphanSell:
     trigger_detail: str
 
 
-def parse_audit(path: Path) -> list[Fill]:
+def parse_audit(path: Path, cutoff: str | None = None) -> list[Fill]:
     fills: list[Fill] = []
     for line in path.read_text(encoding="utf-8").splitlines():
         if not line.strip():
@@ -101,9 +101,12 @@ def parse_audit(path: Path) -> list[Fill]:
         row = json.loads(line)
         if row.get("type") != "FILL":
             continue
+        ts = row["ts"]
+        if cutoff and ts < cutoff:
+            continue
         fills.append(
             Fill(
-                ts=row["ts"],
+                ts=ts,
                 code=row["code"],
                 name=row["name"],
                 side=row["side"],
@@ -205,9 +208,8 @@ def extract_runtime(program_log: Path, client_log: Path) -> dict[str, object]:
     program = program_log.read_text(encoding="utf-8", errors="ignore")
     client = client_log.read_text(encoding="utf-8", errors="ignore")
 
-    modes = [m.group(1) for m in grep(r"鎖漲停判斷模式：([^\s]+)", program)]
+    modes = unique_preserve(m.group(1) for m in grep(r"鎖漲停判斷模式：([^\s]+)", program))
     first_trade_marks = [m.group(1) for m in grep(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}).*今日第 1 檔", program)]
-    boot_limitup = [f"{m.group(1)} {m.group(2)}" for m in grep(r"\[(\d+) ([^\]]+)\] 啟用時已鎖漲停", program)]
     buy_trades = grep(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}).*\[策略觸發\]\[BUY\]\[(\d+) ([^\]]+)\].*candle=(\d+)", program)
     sell_trades = grep(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}).*\[策略觸發\]\[SELL\]\[(\d+) ([^\]]+)\] 策略=(F\d+).*", program)
     ask_thresholds = sorted({m.group(1) for m in grep(r"門檻 (\d+) 張", program)})
@@ -217,10 +219,6 @@ def extract_runtime(program_log: Path, client_log: Path) -> dict[str, object]:
     login_times = unique_preserve(
         m.group(1)
         for m in grep(r'\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\.\d+ \+08:00 INFO\] \[apikey_login\] personal_id=', client)
-    )
-    logout_times = unique_preserve(
-        m.group(1)
-        for m in grep(r"\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\.\d+ \+08:00 INFO\] \[logout\]", client)
     )
     reconnect_times = unique_preserve(
         m.group(1)
@@ -234,7 +232,6 @@ def extract_runtime(program_log: Path, client_log: Path) -> dict[str, object]:
     return {
         "modes": modes,
         "first_trade_marks": first_trade_marks,
-        "boot_limitup": boot_limitup,
         "buy_trade_matches": buy_trades,
         "sell_trade_matches": sell_trades,
         "ask_thresholds": ask_thresholds,
@@ -242,7 +239,6 @@ def extract_runtime(program_log: Path, client_log: Path) -> dict[str, object]:
         "f5_thresholds": f5_thresholds,
         "f4_thresholds": f4_thresholds,
         "login_times": login_times,
-        "logout_times": logout_times,
         "reconnect_times": reconnect_times,
         "subscribe_times": subscribe_times,
     }
@@ -260,11 +256,8 @@ def render_report(
     open_positions: list[Fill],
     orphan_sells: list[OrphanSell],
     runtime: dict[str, object],
+    cutoff: str | None,
 ) -> str:
-    def is_time_sync_related(line: str) -> bool:
-        keywords = ("校時", "stripchart", "修復完成", "時間基準", "修復後")
-        return any(keyword in line for keyword in keywords)
-
     sell_fills = [fill for fill in fills if fill.side == "SELL"]
     buy_amount = sum(fill.price * fill.qty * Decimal("1000") for fill in buys)
     sell_amount = sum(fill.price * fill.qty * Decimal("1000") for fill in sell_fills)
@@ -278,11 +271,9 @@ def render_report(
     losses = sorted(realized, key=lambda item: item.net)
 
     login_times = runtime["login_times"]
-    logout_times = runtime["logout_times"]
     reconnect_times = runtime["reconnect_times"]
     subscribe_times = runtime["subscribe_times"]
     first_trade_marks = runtime["first_trade_marks"]
-    boot_limitup = runtime["boot_limitup"]
     modes = runtime["modes"]
     entry_cutoffs = runtime["entry_cutoffs"]
     ask_thresholds = runtime["ask_thresholds"]
@@ -322,41 +313,44 @@ def render_report(
         )
 
     last_buy_time = short_ts(max((fill.ts for fill in buys), default=f"{report_date}T00:00:00"))
+    last_sell_time = short_ts(max((fill.ts for fill in sell_fills), default=f"{report_date}T00:00:00"))
     mode_summary = " -> ".join(modes) if modes else "未知"
     entry_cutoff_text = " / ".join(entry_cutoffs) if entry_cutoffs else "未知"
     ask_threshold_text = " / ".join(ask_thresholds) if ask_thresholds else "未知"
     f4_threshold_text = " / ".join(f4_thresholds) if f4_thresholds else "未知"
     f5_threshold_text = " / ".join(f5_thresholds) if f5_thresholds else "未知"
+    cutoff_log_text = cutoff.replace("T", " ")[:19] if cutoff else None
+
+    def filter_time_values(values: list[str]) -> list[str]:
+        if not cutoff_log_text:
+            return values
+        return [value for value in values if value >= cutoff_log_text]
+
+    login_times = filter_time_values(login_times)
+    reconnect_times = filter_time_values(reconnect_times)
+    subscribe_times = filter_time_values(subscribe_times)
+    first_trade_marks = filter_time_values(first_trade_marks)
 
     important_lines = [
         "- 今日下單模式為 `order_dry_run = true`，以下整理的是策略模擬下單 / 模擬成交，不是真實券商成交。",
         "- 已實現損益依程式規則重算：買賣雙邊手續費 `0.1425% × 0.6`，最低 `20` 元；交易稅採當沖 `0.15%`。",
         f"- 本報告以 `{audit_path.name}` 的完整成交序列為主，`program.log` / `client.log` 用來補策略啟動、登入重連與盤中事件。",
+        f"- 本報告僅整理正式採用的成交區段：`{cutoff}` 之後。"
+        if cutoff
+        else "- 本報告僅整理正式採用的成交區段。",
     ]
-    if logout_times:
-        important_lines.append(
-            f"- `client.log` 顯示今日於 `{logout_times[0]}` 發生手動登出，並在 `{login_times[-1] if login_times else '未知時間'}` 重新登入；之後 `program.log` 的「今日第 1 檔」計數重新開始。"
-        )
 
     runtime_lines = []
     if login_times:
         runtime_lines.append(f"- 第 1 次 API Key / 憑證登入：約 `{login_times[0]}`")
     if reconnect_times:
         runtime_lines.append(f"- 第 1 次行情連線完成：`{reconnect_times[0]}`；訂閱完成：`{subscribe_times[0] if subscribe_times else '未知'}`")
-    if logout_times:
-        runtime_lines.append(f"- 手動登出：`{logout_times[0]}`")
-    if len(login_times) > 1:
-        runtime_lines.append(f"- 第 2 次 API Key / 憑證登入：約 `{login_times[1]}`")
-    if len(reconnect_times) > 1:
-        runtime_lines.append(f"- 第 2 次行情連線完成：`{reconnect_times[1]}`；訂閱完成：`{subscribe_times[1] if len(subscribe_times) > 1 else '未知'}`")
     if first_trade_marks:
-        runtime_lines.append(f"- `program.log` 中「今日第 1 檔」出現 {len(first_trade_marks)} 次：`{'`、`'.join(first_trade_marks)}`。")
-    if boot_limitup:
-        runtime_lines.append(f"- 啟用時即被標記為「程式啟用後已漲停」共 {len(boot_limitup)} 檔：`{'`、`'.join(boot_limitup)}`")
-    runtime_lines.append(f"- 最後一筆進場：`{last_buy_time}`；其後多次出現「F1:已過進場時段 {entry_cutoff_text}」略過新進場。")
-    if len(modes) >= 2 and modes[0] != modes[-1]:
-        runtime_lines.append(f"- 鎖漲停判斷模式曾在盤中變更：上午先用 `{modes[0]}`，重連後改為 `{modes[-1]}`。")
-    runtime_lines = [line for line in runtime_lines if not is_time_sync_related(line)]
+        runtime_lines.append(f"- 正式成交區段的「今日第 1 檔」起點：`{first_trade_marks[-1]}`。")
+    if buys:
+        runtime_lines.append(f"- 第一筆買進：`{short_ts(buys[0].ts)}`；最後一筆進場：`{last_buy_time}`。")
+    if sell_fills:
+        runtime_lines.append(f"- 最後一筆出場：`{last_sell_time}`。")
 
     obs_lines = [
         f"- 今日 {len(buys)} 筆買進全部屬 `鎖漲停` 情境，`program.log` 在進場前都出現「已鎖漲停，忽略 F1 委賣張數限制」與「已鎖漲停，忽略 F10 進場確認」。",
@@ -364,18 +358,22 @@ def render_report(
         f"- 最大單筆虧損為 `{losses[0].code} {losses[0].name}` 在 `{short_ts(losses[0].sell_ts)}` 的 `{fmt_int(losses[0].net)}`，觸發原因為 `{losses[0].trigger_detail}`。"
         if losses
         else "- 今日沒有已平倉交易。",
-        f"- 稽核檔另發現 {len(orphan_sells)} 筆孤兒賣出；這些 SELL 沒有可配對的 BUY，已另外列示，未納入已實現損益。"
-        if orphan_sells
-        else "- 今日稽核檔未發現孤兒賣出。",
-        f"- `client.log` 與 `program.log` 顯示 10:05 左右曾手動登出並重建行情連線；若後續要分析每日檔數限制或鎖漲停模式切換，需將重連前後分開看。"
-        if logout_times
-        else "- 今日未觀察到中途登出 / 重連事件。",
+        f"- 目前尚有 {len(open_positions)} 檔未平倉，未平倉成本總額為 `{fmt_int(open_cost)}`。"
+        if open_positions
+        else "- 今日所有納入統計的成交皆已完成平倉。",
         f"- 原始 `config.json` 與實際執行參數並不完全一致；本報告的進場截止 `{entry_cutoff_text}`、F4 門檻 `{f4_threshold_text}`、F5 門檻 `{f5_threshold_text}` 以當日 log 觀察到的執行結果為準。"
         if config_path.exists()
         else "- 本次未找到可用 `config.json`，策略摘要改以當日 log 觀察值為準。",
     ]
-    important_lines = [line for line in important_lines if not is_time_sync_related(line)]
-    obs_lines = [line for line in obs_lines if not is_time_sync_related(line)]
+    orphan_section = ""
+    if orphan_sell_lines:
+        orphan_section = f"""
+## 孤兒賣出清單
+
+| 時間 | 代碼 | 名稱 | 張數 | 賣價 | 觸發 | 觸發細節 | 說明 |
+| --- | --- | --- | ---: | ---: | --- | --- | --- |
+{chr(10).join(orphan_sell_lines)}
+"""
 
     return f"""# {report_date} 今日交易整理
 
@@ -446,12 +444,7 @@ def render_report(
 | 時間 | 代碼 | 名稱 | 張數 | 賣價 | 觸發 | 觸發細節 | 毛損益 | 買手續費 | 賣手續費 | 稅 | 淨損益 |
 | --- | --- | --- | ---: | ---: | --- | --- | ---: | ---: | ---: | ---: | ---: |
 {chr(10).join(sell_lines)}
-
-## 孤兒賣出清單
-
-| 時間 | 代碼 | 名稱 | 張數 | 賣價 | 觸發 | 觸發細節 | 說明 |
-| --- | --- | --- | ---: | ---: | --- | --- | --- |
-{chr(10).join(orphan_sell_lines)}
+{orphan_section}
 
 ## 未平倉部位
 
@@ -473,9 +466,10 @@ def main() -> None:
     parser.add_argument("--client-log", required=True, type=Path)
     parser.add_argument("--config", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--cutoff", help="Only include fills at or after this ISO timestamp.")
     args = parser.parse_args()
 
-    fills = parse_audit(args.audit)
+    fills = parse_audit(args.audit, cutoff=args.cutoff)
     buys, realized, open_positions, orphan_sells = match_trades(fills)
     runtime = extract_runtime(args.program_log, args.client_log)
     report = render_report(
@@ -490,6 +484,7 @@ def main() -> None:
         open_positions=open_positions,
         orphan_sells=orphan_sells,
         runtime=runtime,
+        cutoff=args.cutoff,
     )
     args.output.write_text(report, encoding="utf-8")
 
