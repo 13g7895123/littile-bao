@@ -1,0 +1,3088 @@
+{
+  "config_snapshot": {
+    "f1_enabled": true,
+    "entry_before_time": "13:30",
+    "ask_queue_threshold": 100,
+    "market_twse": true,
+    "market_tpex": true,
+    "per_stock_amount": 100000,
+    "f4_enabled": true,
+    "f4_open_ticks_to_sell": 1,
+    "f4_require_today_limitup": true,
+    "f5_enabled": true,
+    "volume_spike_sell_threshold": 499,
+    "f6_enabled": true,
+    "volume_spike_cancel_threshold": 499,
+    "f7_enabled": true,
+    "candle_limit": 2,
+    "f8_enabled": true,
+    "daily_volume_min": 500,
+    "f9_enabled": true,
+    "price_min": 10.0,
+    "price_max": 100.0,
+    "f10_enabled": true,
+    "ask_price_ratio": 1.0,
+    "entry_volume_confirm": 50,
+    "f11_enabled": true,
+    "f12_enabled": true,
+    "f_open_limitup_entry_enabled": false,
+    "f13_enabled": true,
+    "daily_max_trades": 5,
+    "f_consume_enabled": false,
+    "consume_qty_threshold": 499,
+    "consume_mutex_with_f1": true,
+    "order_dry_run": true,
+    "file_logging_enabled": true,
+    "recording_enabled": true,
+    "recording_dir": "",
+    "recording_keep_days": 7,
+    "recording_record_raw": true,
+    "limit_up_detection_mode": "ask_or_bid_or_last",
+    "api_id": "",
+    "api_key": "",
+    "broker_cert_path": "",
+    "blacklist": []
+  },
+  "symbol_universe": [
+    {
+      "code": "3481",
+      "name": "群創",
+      "market": "TSE",
+      "prev_close": "37.45",
+      "limit_up": "41.15"
+    },
+    {
+      "code": "2409",
+      "name": "友達",
+      "market": "TSE",
+      "prev_close": "19.15",
+      "limit_up": "21.05"
+    },
+    {
+      "code": "6770",
+      "name": "力積電",
+      "market": "TSE",
+      "prev_close": "58.5",
+      "limit_up": "64.3"
+    },
+    {
+      "code": "2887",
+      "name": "台新新光金",
+      "market": "TSE",
+      "prev_close": "23.6",
+      "limit_up": "25.95"
+    },
+    {
+      "code": "2485",
+      "name": "兆赫",
+      "market": "TSE",
+      "prev_close": "72.4",
+      "limit_up": "79.6"
+    },
+    {
+      "code": "1802",
+      "name": "台玻",
+      "market": "TSE",
+      "prev_close": "65.3",
+      "limit_up": "71.8"
+    },
+    {
+      "code": "2883",
+      "name": "凱基金",
+      "market": "TSE",
+      "prev_close": "21.65",
+      "limit_up": "23.80"
+    },
+    {
+      "code": "2367",
+      "name": "燿華",
+      "market": "TSE",
+      "prev_close": "63.3",
+      "limit_up": "69.6"
+    },
+    {
+      "code": "2324",
+      "name": "仁寶",
+      "market": "TSE",
+      "prev_close": "27.8",
+      "limit_up": "30.55"
+    },
+    {
+      "code": "2891",
+      "name": "中信金",
+      "market": "TSE",
+      "prev_close": "55.4",
+      "limit_up": "60.9"
+    },
+    {
+      "code": "1303",
+      "name": "南亞",
+      "market": "TSE",
+      "prev_close": "81.7",
+      "limit_up": "89.8"
+    },
+    {
+      "code": "2886",
+      "name": "兆豐金",
+      "market": "TSE",
+      "prev_close": "40.65",
+      "limit_up": "44.70"
+    },
+    {
+      "code": "2890",
+      "name": "永豐金",
+      "market": "TSE",
+      "prev_close": "30.1",
+      "limit_up": "33.10"
+    },
+    {
+      "code": "6443",
+      "name": "元晶",
+      "market": "TSE",
+      "prev_close": "40.9",
+      "limit_up": "44.95"
+    },
+    {
+      "code": "2882",
+      "name": "國泰金",
+      "market": "TSE",
+      "prev_close": "77.8",
+      "limit_up": "85.5"
+    },
+    {
+      "code": "6207",
+      "name": "雷科",
+      "market": "OTC",
+      "prev_close": "83.9",
+      "limit_up": "92.2"
+    },
+    {
+      "code": "2355",
+      "name": "敬鵬",
+      "market": "TSE",
+      "prev_close": "63.4",
+      "limit_up": "69.7"
+    },
+    {
+      "code": "6116",
+      "name": "彩晶",
+      "market": "TSE",
+      "prev_close": "10.15",
+      "limit_up": "11.15"
+    },
+    {
+      "code": "2881",
+      "name": "富邦金",
+      "market": "TSE",
+      "prev_close": "97.2",
+      "limit_up": "106.5"
+    },
+    {
+      "code": "6209",
+      "name": "今國光",
+      "market": "TSE",
+      "prev_close": "71.8",
+      "limit_up": "78.9"
+    },
+    {
+      "code": "5351",
+      "name": "鈺創",
+      "market": "OTC",
+      "prev_close": "76.8",
+      "limit_up": "84.4"
+    },
+    {
+      "code": "2884",
+      "name": "玉山金",
+      "market": "TSE",
+      "prev_close": "32",
+      "limit_up": "35.20"
+    },
+    {
+      "code": "3149",
+      "name": "正達",
+      "market": "TSE",
+      "prev_close": "57.8",
+      "limit_up": "63.5"
+    },
+    {
+      "code": "2489",
+      "name": "瑞軒",
+      "market": "TSE",
+      "prev_close": "41.5",
+      "limit_up": "45.65"
+    },
+    {
+      "code": "2002",
+      "name": "中鋼",
+      "market": "TSE",
+      "prev_close": "18.2",
+      "limit_up": "20.00"
+    },
+    {
+      "code": "2885",
+      "name": "元大金",
+      "market": "TSE",
+      "prev_close": "54.7",
+      "limit_up": "60.1"
+    },
+    {
+      "code": "2356",
+      "name": "英業達",
+      "market": "TSE",
+      "prev_close": "51.7",
+      "limit_up": "56.8"
+    },
+    {
+      "code": "3673",
+      "name": "TPK-KY",
+      "market": "TSE",
+      "prev_close": "75.4",
+      "limit_up": "82.9"
+    },
+    {
+      "code": "1605",
+      "name": "華新",
+      "market": "TSE",
+      "prev_close": "33.4",
+      "limit_up": "36.70"
+    },
+    {
+      "code": "2892",
+      "name": "第一金",
+      "market": "TSE",
+      "prev_close": "29",
+      "limit_up": "31.90"
+    },
+    {
+      "code": "1101",
+      "name": "台泥",
+      "market": "TSE",
+      "prev_close": "24.2",
+      "limit_up": "26.60"
+    },
+    {
+      "code": "3033",
+      "name": "威健",
+      "market": "TSE",
+      "prev_close": "48.8",
+      "limit_up": "53.6"
+    },
+    {
+      "code": "2880",
+      "name": "華南金",
+      "market": "TSE",
+      "prev_close": "32.2",
+      "limit_up": "35.40"
+    },
+    {
+      "code": "6282",
+      "name": "康舒",
+      "market": "TSE",
+      "prev_close": "50.8",
+      "limit_up": "55.8"
+    },
+    {
+      "code": "2498",
+      "name": "宏達電",
+      "market": "TSE",
+      "prev_close": "45.65",
+      "limit_up": "50.2"
+    },
+    {
+      "code": "5425",
+      "name": "台半",
+      "market": "OTC",
+      "prev_close": "85.6",
+      "limit_up": "94.1"
+    },
+    {
+      "code": "2027",
+      "name": "大成鋼",
+      "market": "TSE",
+      "prev_close": "40",
+      "limit_up": "44.00"
+    },
+    {
+      "code": "2478",
+      "name": "大毅",
+      "market": "TSE",
+      "prev_close": "96.3",
+      "limit_up": "105.5"
+    },
+    {
+      "code": "3221",
+      "name": "台嘉碩",
+      "market": "OTC",
+      "prev_close": "45.2",
+      "limit_up": "49.70"
+    },
+    {
+      "code": "1717",
+      "name": "長興",
+      "market": "TSE",
+      "prev_close": "74.5",
+      "limit_up": "81.9"
+    },
+    {
+      "code": "2353",
+      "name": "宏碁",
+      "market": "TSE",
+      "prev_close": "27.75",
+      "limit_up": "30.50"
+    },
+    {
+      "code": "2363",
+      "name": "矽統",
+      "market": "TSE",
+      "prev_close": "60.5",
+      "limit_up": "66.5"
+    },
+    {
+      "code": "1402",
+      "name": "遠東新",
+      "market": "TSE",
+      "prev_close": "26.25",
+      "limit_up": "28.85"
+    },
+    {
+      "code": "1727",
+      "name": "中華化",
+      "market": "TSE",
+      "prev_close": "87.5",
+      "limit_up": "96.2"
+    },
+    {
+      "code": "2615",
+      "name": "萬海",
+      "market": "TSE",
+      "prev_close": "80.4",
+      "limit_up": "88.4"
+    },
+    {
+      "code": "2618",
+      "name": "長榮航",
+      "market": "TSE",
+      "prev_close": "34.45",
+      "limit_up": "37.85"
+    },
+    {
+      "code": "4960",
+      "name": "誠美材",
+      "market": "TSE",
+      "prev_close": "34.55",
+      "limit_up": "38.00"
+    },
+    {
+      "code": "2801",
+      "name": "彰銀",
+      "market": "TSE",
+      "prev_close": "20.5",
+      "limit_up": "22.55"
+    },
+    {
+      "code": "5880",
+      "name": "合庫金",
+      "market": "TSE",
+      "prev_close": "22.8",
+      "limit_up": "25.05"
+    },
+    {
+      "code": "4540",
+      "name": "全球傳動",
+      "market": "TSE",
+      "prev_close": "72.5",
+      "limit_up": "79.7"
+    },
+    {
+      "code": "2834",
+      "name": "臺企銀",
+      "market": "TSE",
+      "prev_close": "16.05",
+      "limit_up": "17.65"
+    },
+    {
+      "code": "3048",
+      "name": "益登",
+      "market": "TSE",
+      "prev_close": "56.1",
+      "limit_up": "61.7"
+    },
+    {
+      "code": "2610",
+      "name": "華航",
+      "market": "TSE",
+      "prev_close": "18.4",
+      "limit_up": "20.20"
+    },
+    {
+      "code": "1815",
+      "name": "富喬",
+      "market": "OTC",
+      "prev_close": "102",
+      "limit_up": "112.0"
+    },
+    {
+      "code": "2609",
+      "name": "陽明",
+      "market": "TSE",
+      "prev_close": "49.5",
+      "limit_up": "54.4"
+    },
+    {
+      "code": "2312",
+      "name": "金寶",
+      "market": "TSE",
+      "prev_close": "27.75",
+      "limit_up": "30.50"
+    },
+    {
+      "code": "2484",
+      "name": "希華",
+      "market": "TSE",
+      "prev_close": "40.3",
+      "limit_up": "44.30"
+    },
+    {
+      "code": "8112",
+      "name": "至上",
+      "market": "TSE",
+      "prev_close": "83.6",
+      "limit_up": "91.9"
+    },
+    {
+      "code": "8150",
+      "name": "南茂",
+      "market": "TSE",
+      "prev_close": "77.6",
+      "limit_up": "85.3"
+    },
+    {
+      "code": "2812",
+      "name": "台中銀",
+      "market": "TSE",
+      "prev_close": "19.15",
+      "limit_up": "21.05"
+    },
+    {
+      "code": "2329",
+      "name": "華泰",
+      "market": "TSE",
+      "prev_close": "51.3",
+      "limit_up": "56.4"
+    },
+    {
+      "code": "5876",
+      "name": "上海商銀",
+      "market": "TSE",
+      "prev_close": "40.55",
+      "limit_up": "44.60"
+    },
+    {
+      "code": "1326",
+      "name": "台化",
+      "market": "TSE",
+      "prev_close": "44.9",
+      "limit_up": "49.35"
+    },
+    {
+      "code": "2441",
+      "name": "超豐",
+      "market": "TSE",
+      "prev_close": "102",
+      "limit_up": "112.0"
+    },
+    {
+      "code": "3707",
+      "name": "漢磊",
+      "market": "OTC",
+      "prev_close": "72.7",
+      "limit_up": "79.9"
+    },
+    {
+      "code": "9904",
+      "name": "寶成",
+      "market": "TSE",
+      "prev_close": "26.1",
+      "limit_up": "28.70"
+    },
+    {
+      "code": "3663",
+      "name": "鑫科",
+      "market": "OTC",
+      "prev_close": "83.4",
+      "limit_up": "91.7"
+    },
+    {
+      "code": "4906",
+      "name": "正文",
+      "market": "TSE",
+      "prev_close": "38",
+      "limit_up": "41.80"
+    },
+    {
+      "code": "3714",
+      "name": "富采",
+      "market": "TSE",
+      "prev_close": "66.9",
+      "limit_up": "73.5"
+    },
+    {
+      "code": "1711",
+      "name": "永光",
+      "market": "TSE",
+      "prev_close": "48.1",
+      "limit_up": "52.9"
+    },
+    {
+      "code": "2371",
+      "name": "大同",
+      "market": "TSE",
+      "prev_close": "28.4",
+      "limit_up": "31.20"
+    },
+    {
+      "code": "2374",
+      "name": "佳能",
+      "market": "TSE",
+      "prev_close": "79.9",
+      "limit_up": "87.8"
+    },
+    {
+      "code": "1301",
+      "name": "台塑",
+      "market": "TSE",
+      "prev_close": "45.95",
+      "limit_up": "50.5"
+    },
+    {
+      "code": "1216",
+      "name": "統一",
+      "market": "TSE",
+      "prev_close": "74.8",
+      "limit_up": "82.2"
+    },
+    {
+      "code": "6485",
+      "name": "點序",
+      "market": "OTC",
+      "prev_close": "107",
+      "limit_up": "117.5"
+    },
+    {
+      "code": "2845",
+      "name": "遠東銀",
+      "market": "TSE",
+      "prev_close": "12.05",
+      "limit_up": "13.25"
+    },
+    {
+      "code": "3645",
+      "name": "達邁",
+      "market": "TSE",
+      "prev_close": "108.5",
+      "limit_up": "119.0"
+    },
+    {
+      "code": "2365",
+      "name": "昆盈",
+      "market": "TSE",
+      "prev_close": "35.85",
+      "limit_up": "39.40"
+    },
+    {
+      "code": "2413",
+      "name": "環科",
+      "market": "TSE",
+      "prev_close": "49.95",
+      "limit_up": "54.9"
+    },
+    {
+      "code": "2542",
+      "name": "興富發",
+      "market": "TSE",
+      "prev_close": "43.7",
+      "limit_up": "48.05"
+    },
+    {
+      "code": "4927",
+      "name": "泰鼎-KY",
+      "market": "TSE",
+      "prev_close": "49.9",
+      "limit_up": "54.8"
+    },
+    {
+      "code": "2399",
+      "name": "映泰",
+      "market": "TSE",
+      "prev_close": "43",
+      "limit_up": "47.30"
+    },
+    {
+      "code": "6127",
+      "name": "九豪",
+      "market": "OTC",
+      "prev_close": "47.45",
+      "limit_up": "52.1"
+    },
+    {
+      "code": "2406",
+      "name": "國碩",
+      "market": "TSE",
+      "prev_close": "31.6",
+      "limit_up": "34.75"
+    },
+    {
+      "code": "3702",
+      "name": "大聯大",
+      "market": "TSE",
+      "prev_close": "108.5",
+      "limit_up": "119.0"
+    },
+    {
+      "code": "6244",
+      "name": "茂迪",
+      "market": "OTC",
+      "prev_close": "29",
+      "limit_up": "31.90"
+    },
+    {
+      "code": "6834",
+      "name": "天二科技",
+      "market": "TSE",
+      "prev_close": "55.1",
+      "limit_up": "60.6"
+    },
+    {
+      "code": "2105",
+      "name": "正新",
+      "market": "TSE",
+      "prev_close": "32.4",
+      "limit_up": "35.60"
+    },
+    {
+      "code": "1102",
+      "name": "亞泥",
+      "market": "TSE",
+      "prev_close": "34.8",
+      "limit_up": "38.25"
+    },
+    {
+      "code": "6456",
+      "name": "GIS-KY",
+      "market": "TSE",
+      "prev_close": "68.1",
+      "limit_up": "74.9"
+    },
+    {
+      "code": "3209",
+      "name": "全科",
+      "market": "TSE",
+      "prev_close": "76.2",
+      "limit_up": "83.8"
+    },
+    {
+      "code": "4562",
+      "name": "穎漢",
+      "market": "TSE",
+      "prev_close": "41.8",
+      "limit_up": "45.95"
+    },
+    {
+      "code": "9136",
+      "name": "巨騰-DR",
+      "market": "TSE",
+      "prev_close": "11.7",
+      "limit_up": "12.85"
+    },
+    {
+      "code": "3059",
+      "name": "華晶科",
+      "market": "TSE",
+      "prev_close": "42.1",
+      "limit_up": "46.30"
+    },
+    {
+      "code": "3024",
+      "name": "憶聲",
+      "market": "TSE",
+      "prev_close": "17.4",
+      "limit_up": "19.10"
+    },
+    {
+      "code": "5328",
+      "name": "華容",
+      "market": "OTC",
+      "prev_close": "28.1",
+      "limit_up": "30.90"
+    },
+    {
+      "code": "5388",
+      "name": "中磊",
+      "market": "TSE",
+      "prev_close": "79.5",
+      "limit_up": "87.4"
+    },
+    {
+      "code": "2633",
+      "name": "台灣高鐵",
+      "market": "TSE",
+      "prev_close": "25.95",
+      "limit_up": "28.50"
+    },
+    {
+      "code": "3294",
+      "name": "英濟",
+      "market": "OTC",
+      "prev_close": "39.55",
+      "limit_up": "43.50"
+    },
+    {
+      "code": "6005",
+      "name": "群益證",
+      "market": "TSE",
+      "prev_close": "30.65",
+      "limit_up": "33.70"
+    },
+    {
+      "code": "8374",
+      "name": "羅昇",
+      "market": "TSE",
+      "prev_close": "102",
+      "limit_up": "112.0"
+    },
+    {
+      "code": "7777",
+      "name": "能率亞洲",
+      "market": "OTC",
+      "prev_close": "34.65",
+      "limit_up": "38.10"
+    },
+    {
+      "code": "6265",
+      "name": "方土昶",
+      "market": "OTC",
+      "prev_close": "42.5",
+      "limit_up": "46.75"
+    },
+    {
+      "code": "3062",
+      "name": "建漢",
+      "market": "TSE",
+      "prev_close": "27.55",
+      "limit_up": "30.30"
+    },
+    {
+      "code": "3706",
+      "name": "神達",
+      "market": "TSE",
+      "prev_close": "80.7",
+      "limit_up": "88.7"
+    },
+    {
+      "code": "2375",
+      "name": "凱美",
+      "market": "TSE",
+      "prev_close": "101.5",
+      "limit_up": "111.5"
+    },
+    {
+      "code": "8926",
+      "name": "台汽電",
+      "market": "TSE",
+      "prev_close": "57",
+      "limit_up": "62.7"
+    },
+    {
+      "code": "6191",
+      "name": "精成科",
+      "market": "TSE",
+      "prev_close": "92.8",
+      "limit_up": "102.0"
+    },
+    {
+      "code": "9945",
+      "name": "潤泰新",
+      "market": "TSE",
+      "prev_close": "23.95",
+      "limit_up": "26.30"
+    },
+    {
+      "code": "4938",
+      "name": "和碩",
+      "market": "TSE",
+      "prev_close": "76.9",
+      "limit_up": "84.5"
+    },
+    {
+      "code": "6175",
+      "name": "立敦",
+      "market": "OTC",
+      "prev_close": "74.1",
+      "limit_up": "81.5"
+    },
+    {
+      "code": "3317",
+      "name": "尼克森",
+      "market": "OTC",
+      "prev_close": "76",
+      "limit_up": "83.6"
+    },
+    {
+      "code": "8110",
+      "name": "華東",
+      "market": "TSE",
+      "prev_close": "47.35",
+      "limit_up": "52.0"
+    },
+    {
+      "code": "8422",
+      "name": "可寧衛*",
+      "market": "TSE",
+      "prev_close": "25.55",
+      "limit_up": "28.10"
+    },
+    {
+      "code": "8249",
+      "name": "菱光",
+      "market": "TSE",
+      "prev_close": "53.5",
+      "limit_up": "58.8"
+    },
+    {
+      "code": "6190",
+      "name": "萬泰科",
+      "market": "OTC",
+      "prev_close": "77.9",
+      "limit_up": "85.6"
+    },
+    {
+      "code": "4526",
+      "name": "東台",
+      "market": "TSE",
+      "prev_close": "37.4",
+      "limit_up": "41.10"
+    },
+    {
+      "code": "2369",
+      "name": "菱生",
+      "market": "TSE",
+      "prev_close": "28.5",
+      "limit_up": "31.35"
+    },
+    {
+      "code": "4729",
+      "name": "熒茂",
+      "market": "OTC",
+      "prev_close": "25.05",
+      "limit_up": "27.55"
+    },
+    {
+      "code": "1504",
+      "name": "東元",
+      "market": "TSE",
+      "prev_close": "67.9",
+      "limit_up": "74.6"
+    },
+    {
+      "code": "3694",
+      "name": "海華",
+      "market": "TSE",
+      "prev_close": "64.8",
+      "limit_up": "71.2"
+    },
+    {
+      "code": "6234",
+      "name": "高僑",
+      "market": "OTC",
+      "prev_close": "47.45",
+      "limit_up": "52.1"
+    },
+    {
+      "code": "2354",
+      "name": "鴻準",
+      "market": "TSE",
+      "prev_close": "57.7",
+      "limit_up": "63.4"
+    },
+    {
+      "code": "2388",
+      "name": "威盛",
+      "market": "TSE",
+      "prev_close": "74.3",
+      "limit_up": "81.7"
+    },
+    {
+      "code": "3379",
+      "name": "彬台",
+      "market": "OTC",
+      "prev_close": "42.6",
+      "limit_up": "46.85"
+    },
+    {
+      "code": "2323",
+      "name": "中環",
+      "market": "TSE",
+      "prev_close": "9.45",
+      "limit_up": "10.35"
+    },
+    {
+      "code": "6176",
+      "name": "瑞儀",
+      "market": "TSE",
+      "prev_close": "102",
+      "limit_up": "112.0"
+    },
+    {
+      "code": "8040",
+      "name": "九暘",
+      "market": "OTC",
+      "prev_close": "89.8",
+      "limit_up": "98.7"
+    },
+    {
+      "code": "8105",
+      "name": "凌巨",
+      "market": "TSE",
+      "prev_close": "15.7",
+      "limit_up": "17.25"
+    },
+    {
+      "code": "4989",
+      "name": "榮科",
+      "market": "TSE",
+      "prev_close": "88.7",
+      "limit_up": "97.5"
+    },
+    {
+      "code": "3005",
+      "name": "神基",
+      "market": "TSE",
+      "prev_close": "98.5",
+      "limit_up": "108.0"
+    },
+    {
+      "code": "1309",
+      "name": "台達化",
+      "market": "TSE",
+      "prev_close": "15.5",
+      "limit_up": "17.05"
+    },
+    {
+      "code": "5871",
+      "name": "中租-KY",
+      "market": "TSE",
+      "prev_close": "110",
+      "limit_up": "121.0"
+    },
+    {
+      "code": "4904",
+      "name": "遠傳",
+      "market": "TSE",
+      "prev_close": "98",
+      "limit_up": "107.5"
+    },
+    {
+      "code": "5314",
+      "name": "世紀*",
+      "market": "OTC",
+      "prev_close": "61.5",
+      "limit_up": "67.6"
+    },
+    {
+      "code": "4973",
+      "name": "廣穎",
+      "market": "OTC",
+      "prev_close": "110",
+      "limit_up": "121.0"
+    },
+    {
+      "code": "3504",
+      "name": "揚明光",
+      "market": "TSE",
+      "prev_close": "78.2",
+      "limit_up": "86.0"
+    },
+    {
+      "code": "3441",
+      "name": "聯一光",
+      "market": "OTC",
+      "prev_close": "43.8",
+      "limit_up": "48.15"
+    },
+    {
+      "code": "1528",
+      "name": "恩德",
+      "market": "TSE",
+      "prev_close": "25.65",
+      "limit_up": "28.20"
+    },
+    {
+      "code": "5498",
+      "name": "凱崴",
+      "market": "OTC",
+      "prev_close": "65.4",
+      "limit_up": "71.9"
+    },
+    {
+      "code": "3162",
+      "name": "精確",
+      "market": "OTC",
+      "prev_close": "87.2",
+      "limit_up": "95.9"
+    },
+    {
+      "code": "4763",
+      "name": "材料*-KY",
+      "market": "TSE",
+      "prev_close": "41.55",
+      "limit_up": "45.70"
+    },
+    {
+      "code": "6919",
+      "name": "康霈*",
+      "market": "TSE",
+      "prev_close": "104",
+      "limit_up": "114.0"
+    },
+    {
+      "code": "6505",
+      "name": "台塑化",
+      "market": "TSE",
+      "prev_close": "51.3",
+      "limit_up": "56.4"
+    },
+    {
+      "code": "2342",
+      "name": "茂矽",
+      "market": "TSE",
+      "prev_close": "38.55",
+      "limit_up": "42.40"
+    },
+    {
+      "code": "5392",
+      "name": "能率",
+      "market": "OTC",
+      "prev_close": "42.25",
+      "limit_up": "46.45"
+    },
+    {
+      "code": "3591",
+      "name": "艾笛森",
+      "market": "TSE",
+      "prev_close": "25.75",
+      "limit_up": "28.30"
+    },
+    {
+      "code": "8054",
+      "name": "安國",
+      "market": "OTC",
+      "prev_close": "105.5",
+      "limit_up": "116.0"
+    },
+    {
+      "code": "5309",
+      "name": "系統電",
+      "market": "OTC",
+      "prev_close": "64.7",
+      "limit_up": "71.1"
+    },
+    {
+      "code": "2401",
+      "name": "凌陽",
+      "market": "TSE",
+      "prev_close": "24.95",
+      "limit_up": "27.40"
+    },
+    {
+      "code": "4720",
+      "name": "德淵",
+      "market": "TSE",
+      "prev_close": "24.95",
+      "limit_up": "27.40"
+    },
+    {
+      "code": "3028",
+      "name": "增你強",
+      "market": "TSE",
+      "prev_close": "81.8",
+      "limit_up": "89.9"
+    },
+    {
+      "code": "2855",
+      "name": "統一證",
+      "market": "TSE",
+      "prev_close": "39.35",
+      "limit_up": "43.25"
+    },
+    {
+      "code": "2515",
+      "name": "中工",
+      "market": "TSE",
+      "prev_close": "12.25",
+      "limit_up": "13.45"
+    },
+    {
+      "code": "6016",
+      "name": "康和證",
+      "market": "OTC",
+      "prev_close": "21.65",
+      "limit_up": "23.80"
+    },
+    {
+      "code": "3490",
+      "name": "單井",
+      "market": "OTC",
+      "prev_close": "37.8",
+      "limit_up": "41.55"
+    },
+    {
+      "code": "2328",
+      "name": "廣宇",
+      "market": "TSE",
+      "prev_close": "50.6",
+      "limit_up": "55.6"
+    },
+    {
+      "code": "5258",
+      "name": "虹堡",
+      "market": "TSE",
+      "prev_close": "60",
+      "limit_up": "66.0"
+    },
+    {
+      "code": "2352",
+      "name": "佳世達",
+      "market": "TSE",
+      "prev_close": "25.05",
+      "limit_up": "27.55"
+    },
+    {
+      "code": "8131",
+      "name": "福懋科",
+      "market": "TSE",
+      "prev_close": "60.2",
+      "limit_up": "66.2"
+    },
+    {
+      "code": "5371",
+      "name": "中光電",
+      "market": "OTC",
+      "prev_close": "68.4",
+      "limit_up": "75.2"
+    },
+    {
+      "code": "3094",
+      "name": "聯傑",
+      "market": "TSE",
+      "prev_close": "34.25",
+      "limit_up": "37.65"
+    },
+    {
+      "code": "2402",
+      "name": "毅嘉",
+      "market": "TSE",
+      "prev_close": "63.1",
+      "limit_up": "69.4"
+    },
+    {
+      "code": "2646",
+      "name": "星宇航空",
+      "market": "TSE",
+      "prev_close": "20.25",
+      "limit_up": "22.25"
+    },
+    {
+      "code": "1304",
+      "name": "台聚",
+      "market": "TSE",
+      "prev_close": "12.15",
+      "limit_up": "13.35"
+    },
+    {
+      "code": "6509",
+      "name": "聚和",
+      "market": "OTC",
+      "prev_close": "46.95",
+      "limit_up": "51.6"
+    },
+    {
+      "code": "1409",
+      "name": "新纖",
+      "market": "TSE",
+      "prev_close": "16.7",
+      "limit_up": "18.35"
+    },
+    {
+      "code": "6174",
+      "name": "安碁",
+      "market": "OTC",
+      "prev_close": "39.5",
+      "limit_up": "43.45"
+    },
+    {
+      "code": "2606",
+      "name": "裕民",
+      "market": "TSE",
+      "prev_close": "63.5",
+      "limit_up": "69.8"
+    },
+    {
+      "code": "2340",
+      "name": "台亞",
+      "market": "TSE",
+      "prev_close": "33.95",
+      "limit_up": "37.30"
+    },
+    {
+      "code": "6153",
+      "name": "嘉聯益",
+      "market": "TSE",
+      "prev_close": "17.7",
+      "limit_up": "19.45"
+    },
+    {
+      "code": "6425",
+      "name": "易發",
+      "market": "OTC",
+      "prev_close": "88.8",
+      "limit_up": "97.6"
+    },
+    {
+      "code": "2302",
+      "name": "麗正",
+      "market": "TSE",
+      "prev_close": "25.05",
+      "limit_up": "27.55"
+    },
+    {
+      "code": "2634",
+      "name": "漢翔",
+      "market": "TSE",
+      "prev_close": "45.8",
+      "limit_up": "50.3"
+    },
+    {
+      "code": "3704",
+      "name": "合勤控",
+      "market": "TSE",
+      "prev_close": "38.1",
+      "limit_up": "41.90"
+    },
+    {
+      "code": "8070",
+      "name": "長華*",
+      "market": "TSE",
+      "prev_close": "42.65",
+      "limit_up": "46.90"
+    },
+    {
+      "code": "2338",
+      "name": "光罩",
+      "market": "TSE",
+      "prev_close": "48.65",
+      "limit_up": "53.5"
+    },
+    {
+      "code": "9907",
+      "name": "統一實",
+      "market": "TSE",
+      "prev_close": "16",
+      "limit_up": "17.60"
+    },
+    {
+      "code": "4956",
+      "name": "光鋐",
+      "market": "TSE",
+      "prev_close": "42.6",
+      "limit_up": "46.85"
+    },
+    {
+      "code": "4916",
+      "name": "事欣科",
+      "market": "TSE",
+      "prev_close": "81.8",
+      "limit_up": "89.9"
+    },
+    {
+      "code": "2393",
+      "name": "億光",
+      "market": "TSE",
+      "prev_close": "62.4",
+      "limit_up": "68.6"
+    },
+    {
+      "code": "2347",
+      "name": "聯強",
+      "market": "TSE",
+      "prev_close": "82.5",
+      "limit_up": "90.7"
+    },
+    {
+      "code": "5864",
+      "name": "致和證",
+      "market": "OTC",
+      "prev_close": "31",
+      "limit_up": "34.10"
+    },
+    {
+      "code": "3354",
+      "name": "律勝",
+      "market": "OTC",
+      "prev_close": "33.1",
+      "limit_up": "36.40"
+    },
+    {
+      "code": "4903",
+      "name": "聯光通",
+      "market": "OTC",
+      "prev_close": "46.1",
+      "limit_up": "50.7"
+    },
+    {
+      "code": "8932",
+      "name": "智通*",
+      "market": "OTC",
+      "prev_close": "102",
+      "limit_up": "112.0"
+    },
+    {
+      "code": "8163",
+      "name": "達方",
+      "market": "TSE",
+      "prev_close": "32.85",
+      "limit_up": "36.10"
+    },
+    {
+      "code": "8044",
+      "name": "網家",
+      "market": "OTC",
+      "prev_close": "26.85",
+      "limit_up": "29.50"
+    },
+    {
+      "code": "2014",
+      "name": "中鴻",
+      "market": "TSE",
+      "prev_close": "17.05",
+      "limit_up": "18.75"
+    },
+    {
+      "code": "1609",
+      "name": "大亞",
+      "market": "TSE",
+      "prev_close": "33.75",
+      "limit_up": "37.10"
+    },
+    {
+      "code": "2851",
+      "name": "中再保",
+      "market": "TSE",
+      "prev_close": "35",
+      "limit_up": "38.50"
+    },
+    {
+      "code": "1229",
+      "name": "聯華",
+      "market": "TSE",
+      "prev_close": "38.65",
+      "limit_up": "42.50"
+    },
+    {
+      "code": "1312",
+      "name": "國喬",
+      "market": "TSE",
+      "prev_close": "10.5",
+      "limit_up": "11.55"
+    },
+    {
+      "code": "2637",
+      "name": "慧洋-KY",
+      "market": "TSE",
+      "prev_close": "70.8",
+      "limit_up": "77.8"
+    },
+    {
+      "code": "3605",
+      "name": "宏致",
+      "market": "TSE",
+      "prev_close": "76",
+      "limit_up": "83.6"
+    },
+    {
+      "code": "1714",
+      "name": "和桐",
+      "market": "TSE",
+      "prev_close": "9.67",
+      "limit_up": "10.60"
+    },
+    {
+      "code": "9933",
+      "name": "中鼎",
+      "market": "TSE",
+      "prev_close": "37.35",
+      "limit_up": "41.05"
+    },
+    {
+      "code": "1905",
+      "name": "華紙",
+      "market": "TSE",
+      "prev_close": "11.85",
+      "limit_up": "13.00"
+    },
+    {
+      "code": "2436",
+      "name": "偉詮電",
+      "market": "TSE",
+      "prev_close": "69.5",
+      "limit_up": "76.4"
+    },
+    {
+      "code": "1536",
+      "name": "和大",
+      "market": "TSE",
+      "prev_close": "50",
+      "limit_up": "55.0"
+    },
+    {
+      "code": "6188",
+      "name": "廣明",
+      "market": "OTC",
+      "prev_close": "81.9",
+      "limit_up": "90.0"
+    },
+    {
+      "code": "5009",
+      "name": "榮剛",
+      "market": "OTC",
+      "prev_close": "35.3",
+      "limit_up": "38.80"
+    },
+    {
+      "code": "4510",
+      "name": "高鋒",
+      "market": "OTC",
+      "prev_close": "47.45",
+      "limit_up": "52.1"
+    },
+    {
+      "code": "2101",
+      "name": "南港",
+      "market": "TSE",
+      "prev_close": "30",
+      "limit_up": "33.00"
+    },
+    {
+      "code": "6161",
+      "name": "捷波",
+      "market": "OTC",
+      "prev_close": "52.7",
+      "limit_up": "57.9"
+    },
+    {
+      "code": "6133",
+      "name": "金橋",
+      "market": "TSE",
+      "prev_close": "22.6",
+      "limit_up": "24.85"
+    },
+    {
+      "code": "2605",
+      "name": "新興",
+      "market": "TSE",
+      "prev_close": "30.3",
+      "limit_up": "33.30"
+    },
+    {
+      "code": "2392",
+      "name": "正崴",
+      "market": "TSE",
+      "prev_close": "34.3",
+      "limit_up": "37.70"
+    },
+    {
+      "code": "6412",
+      "name": "群電",
+      "market": "TSE",
+      "prev_close": "92.2",
+      "limit_up": "101.0"
+    },
+    {
+      "code": "2201",
+      "name": "裕隆",
+      "market": "TSE",
+      "prev_close": "26.7",
+      "limit_up": "29.35"
+    },
+    {
+      "code": "5521",
+      "name": "工信",
+      "market": "TSE",
+      "prev_close": "10.25",
+      "limit_up": "11.25"
+    },
+    {
+      "code": "4915",
+      "name": "致伸",
+      "market": "TSE",
+      "prev_close": "72",
+      "limit_up": "79.2"
+    },
+    {
+      "code": "6155",
+      "name": "鈞寶",
+      "market": "TSE",
+      "prev_close": "50.9",
+      "limit_up": "55.9"
+    },
+    {
+      "code": "2543",
+      "name": "皇昌",
+      "market": "TSE",
+      "prev_close": "38.6",
+      "limit_up": "42.45"
+    },
+    {
+      "code": "5457",
+      "name": "宣德",
+      "market": "OTC",
+      "prev_close": "28.1",
+      "limit_up": "30.90"
+    },
+    {
+      "code": "3339",
+      "name": "泰谷",
+      "market": "OTC",
+      "prev_close": "45.45",
+      "limit_up": "49.95"
+    },
+    {
+      "code": "6548",
+      "name": "長科*",
+      "market": "OTC",
+      "prev_close": "48.5",
+      "limit_up": "53.3"
+    },
+    {
+      "code": "2103",
+      "name": "台橡",
+      "market": "TSE",
+      "prev_close": "20.25",
+      "limit_up": "22.25"
+    },
+    {
+      "code": "6015",
+      "name": "宏遠證",
+      "market": "OTC",
+      "prev_close": "14.5",
+      "limit_up": "15.95"
+    },
+    {
+      "code": "3380",
+      "name": "明泰",
+      "market": "TSE",
+      "prev_close": "31.45",
+      "limit_up": "34.55"
+    },
+    {
+      "code": "9958",
+      "name": "世紀鋼",
+      "market": "TSE",
+      "prev_close": "104",
+      "limit_up": "114.0"
+    },
+    {
+      "code": "7547",
+      "name": "碩網",
+      "market": "OTC",
+      "prev_close": "64.6",
+      "limit_up": "71.0"
+    },
+    {
+      "code": "4739",
+      "name": "康普",
+      "market": "TSE",
+      "prev_close": "94.8",
+      "limit_up": "104.0"
+    },
+    {
+      "code": "1708",
+      "name": "東鹼",
+      "market": "TSE",
+      "prev_close": "39.85",
+      "limit_up": "43.80"
+    },
+    {
+      "code": "6546",
+      "name": "正基",
+      "market": "OTC",
+      "prev_close": "71",
+      "limit_up": "78.1"
+    },
+    {
+      "code": "6237",
+      "name": "驊訊",
+      "market": "OTC",
+      "prev_close": "46.9",
+      "limit_up": "51.5"
+    },
+    {
+      "code": "2495",
+      "name": "普安",
+      "market": "TSE",
+      "prev_close": "35.75",
+      "limit_up": "39.30"
+    },
+    {
+      "code": "1210",
+      "name": "大成",
+      "market": "TSE",
+      "prev_close": "53.5",
+      "limit_up": "58.8"
+    },
+    {
+      "code": "8289",
+      "name": "泰藝",
+      "market": "OTC",
+      "prev_close": "53.9",
+      "limit_up": "59.2"
+    },
+    {
+      "code": "2332",
+      "name": "友訊",
+      "market": "TSE",
+      "prev_close": "13.85",
+      "limit_up": "15.20"
+    },
+    {
+      "code": "5469",
+      "name": "瀚宇博",
+      "market": "TSE",
+      "prev_close": "79.4",
+      "limit_up": "87.3"
+    },
+    {
+      "code": "9914",
+      "name": "美利達",
+      "market": "TSE",
+      "prev_close": "68.5",
+      "limit_up": "75.3"
+    },
+    {
+      "code": "6163",
+      "name": "華電網",
+      "market": "OTC",
+      "prev_close": "51.1",
+      "limit_up": "56.2"
+    },
+    {
+      "code": "2405",
+      "name": "輔信",
+      "market": "TSE",
+      "prev_close": "15",
+      "limit_up": "16.50"
+    },
+    {
+      "code": "1316",
+      "name": "上曜",
+      "market": "TSE",
+      "prev_close": "10.4",
+      "limit_up": "11.40"
+    },
+    {
+      "code": "5340",
+      "name": "建榮",
+      "market": "OTC",
+      "prev_close": "101",
+      "limit_up": "111.0"
+    },
+    {
+      "code": "2889",
+      "name": "國票金",
+      "market": "TSE",
+      "prev_close": "14.65",
+      "limit_up": "16.10"
+    },
+    {
+      "code": "2417",
+      "name": "圓剛",
+      "market": "TSE",
+      "prev_close": "47",
+      "limit_up": "51.7"
+    },
+    {
+      "code": "1313",
+      "name": "聯成",
+      "market": "TSE",
+      "prev_close": "10.5",
+      "limit_up": "11.55"
+    },
+    {
+      "code": "6962",
+      "name": "奕力-KY",
+      "market": "TSE",
+      "prev_close": "35.95",
+      "limit_up": "39.50"
+    },
+    {
+      "code": "1909",
+      "name": "榮成",
+      "market": "TSE",
+      "prev_close": "9.04",
+      "limit_up": "9.94"
+    },
+    {
+      "code": "4306",
+      "name": "炎洲",
+      "market": "TSE",
+      "prev_close": "13.8",
+      "limit_up": "15.15"
+    },
+    {
+      "code": "6432",
+      "name": "今展科",
+      "market": "OTC",
+      "prev_close": "49.7",
+      "limit_up": "54.6"
+    },
+    {
+      "code": "2104",
+      "name": "國際中橡",
+      "market": "TSE",
+      "prev_close": "10",
+      "limit_up": "11.00"
+    },
+    {
+      "code": "1722",
+      "name": "台肥",
+      "market": "TSE",
+      "prev_close": "45.6",
+      "limit_up": "50.1"
+    },
+    {
+      "code": "6538",
+      "name": "倉和",
+      "market": "OTC",
+      "prev_close": "97.9",
+      "limit_up": "107.5"
+    },
+    {
+      "code": "3338",
+      "name": "泰碩",
+      "market": "TSE",
+      "prev_close": "73.4",
+      "limit_up": "80.7"
+    },
+    {
+      "code": "4533",
+      "name": "協易機",
+      "market": "OTC",
+      "prev_close": "31.7",
+      "limit_up": "34.85"
+    },
+    {
+      "code": "5285",
+      "name": "界霖",
+      "market": "TSE",
+      "prev_close": "76",
+      "limit_up": "83.6"
+    },
+    {
+      "code": "6026",
+      "name": "福邦證",
+      "market": "OTC",
+      "prev_close": "15",
+      "limit_up": "16.50"
+    },
+    {
+      "code": "6695",
+      "name": "芯鼎",
+      "market": "TSE",
+      "prev_close": "49.35",
+      "limit_up": "54.2"
+    },
+    {
+      "code": "3550",
+      "name": "聯穎",
+      "market": "TSE",
+      "prev_close": "20.25",
+      "limit_up": "22.25"
+    },
+    {
+      "code": "8240",
+      "name": "華宏",
+      "market": "OTC",
+      "prev_close": "64.5",
+      "limit_up": "70.9"
+    },
+    {
+      "code": "2419",
+      "name": "仲琦",
+      "market": "TSE",
+      "prev_close": "30.1",
+      "limit_up": "33.10"
+    },
+    {
+      "code": "2915",
+      "name": "潤泰全",
+      "market": "TSE",
+      "prev_close": "44.8",
+      "limit_up": "49.25"
+    },
+    {
+      "code": "1305",
+      "name": "華夏",
+      "market": "TSE",
+      "prev_close": "12.5",
+      "limit_up": "13.75"
+    },
+    {
+      "code": "3545",
+      "name": "敦泰",
+      "market": "TSE",
+      "prev_close": "56.1",
+      "limit_up": "61.7"
+    },
+    {
+      "code": "9921",
+      "name": "巨大",
+      "market": "TSE",
+      "prev_close": "72",
+      "limit_up": "79.2"
+    },
+    {
+      "code": "3712",
+      "name": "永崴投控",
+      "market": "TSE",
+      "prev_close": "15.7",
+      "limit_up": "17.25"
+    },
+    {
+      "code": "3141",
+      "name": "晶宏",
+      "market": "OTC",
+      "prev_close": "61.8",
+      "limit_up": "67.9"
+    },
+    {
+      "code": "2897",
+      "name": "王道銀行",
+      "market": "TSE",
+      "prev_close": "10.05",
+      "limit_up": "11.05"
+    },
+    {
+      "code": "3537",
+      "name": "堡達",
+      "market": "OTC",
+      "prev_close": "52.6",
+      "limit_up": "57.8"
+    },
+    {
+      "code": "2009",
+      "name": "第一銅",
+      "market": "TSE",
+      "prev_close": "37.55",
+      "limit_up": "41.30"
+    },
+    {
+      "code": "2023",
+      "name": "燁輝",
+      "market": "TSE",
+      "prev_close": "13.6",
+      "limit_up": "14.95"
+    },
+    {
+      "code": "3543",
+      "name": "州巧",
+      "market": "TSE",
+      "prev_close": "35.4",
+      "limit_up": "38.90"
+    },
+    {
+      "code": "2504",
+      "name": "國產",
+      "market": "TSE",
+      "prev_close": "34.65",
+      "limit_up": "38.10"
+    },
+    {
+      "code": "4123",
+      "name": "晟德",
+      "market": "OTC",
+      "prev_close": "37.95",
+      "limit_up": "41.70"
+    },
+    {
+      "code": "3709",
+      "name": "鑫聯大投控",
+      "market": "OTC",
+      "prev_close": "78.9",
+      "limit_up": "86.7"
+    },
+    {
+      "code": "2913",
+      "name": "農林",
+      "market": "TSE",
+      "prev_close": "10.9",
+      "limit_up": "11.95"
+    },
+    {
+      "code": "6120",
+      "name": "達運",
+      "market": "TSE",
+      "prev_close": "12.65",
+      "limit_up": "13.90"
+    },
+    {
+      "code": "3717",
+      "name": "聯嘉投控",
+      "market": "TSE",
+      "prev_close": "22.5",
+      "limit_up": "24.75"
+    },
+    {
+      "code": "3312",
+      "name": "弘憶股",
+      "market": "TSE",
+      "prev_close": "45.3",
+      "limit_up": "49.80"
+    },
+    {
+      "code": "6547",
+      "name": "高端疫苗",
+      "market": "OTC",
+      "prev_close": "48.25",
+      "limit_up": "53.0"
+    },
+    {
+      "code": "2903",
+      "name": "遠百",
+      "market": "TSE",
+      "prev_close": "22.15",
+      "limit_up": "24.35"
+    },
+    {
+      "code": "9910",
+      "name": "豐泰",
+      "market": "TSE",
+      "prev_close": "69.4",
+      "limit_up": "76.3"
+    },
+    {
+      "code": "6218",
+      "name": "豪勉",
+      "market": "OTC",
+      "prev_close": "39.35",
+      "limit_up": "43.25"
+    },
+    {
+      "code": "2439",
+      "name": "美律",
+      "market": "TSE",
+      "prev_close": "85.2",
+      "limit_up": "93.7"
+    },
+    {
+      "code": "1710",
+      "name": "東聯",
+      "market": "TSE",
+      "prev_close": "11.8",
+      "limit_up": "12.95"
+    },
+    {
+      "code": "4157",
+      "name": "太景*-KY",
+      "market": "OTC",
+      "prev_close": "9.2",
+      "limit_up": "10.10"
+    },
+    {
+      "code": "2547",
+      "name": "日勝生",
+      "market": "TSE",
+      "prev_close": "10",
+      "limit_up": "11.00"
+    },
+    {
+      "code": "2838",
+      "name": "聯邦銀",
+      "market": "TSE",
+      "prev_close": "20.4",
+      "limit_up": "22.40"
+    },
+    {
+      "code": "2457",
+      "name": "飛宏",
+      "market": "TSE",
+      "prev_close": "24.05",
+      "limit_up": "26.45"
+    },
+    {
+      "code": "3093",
+      "name": "港建*",
+      "market": "OTC",
+      "prev_close": "48.55",
+      "limit_up": "53.4"
+    },
+    {
+      "code": "8088",
+      "name": "品安",
+      "market": "OTC",
+      "prev_close": "52.2",
+      "limit_up": "57.4"
+    },
+    {
+      "code": "2501",
+      "name": "國建",
+      "market": "TSE",
+      "prev_close": "22.2",
+      "limit_up": "24.40"
+    },
+    {
+      "code": "1440",
+      "name": "南紡",
+      "market": "TSE",
+      "prev_close": "11.35",
+      "limit_up": "12.45"
+    },
+    {
+      "code": "3701",
+      "name": "大眾控",
+      "market": "TSE",
+      "prev_close": "54.7",
+      "limit_up": "60.1"
+    },
+    {
+      "code": "6735",
+      "name": "美達科技",
+      "market": "OTC",
+      "prev_close": "106",
+      "limit_up": "116.5"
+    },
+    {
+      "code": "3013",
+      "name": "晟銘電",
+      "market": "TSE",
+      "prev_close": "99.7",
+      "limit_up": "109.5"
+    },
+    {
+      "code": "6668",
+      "name": "中揚光",
+      "market": "TSE",
+      "prev_close": "38.4",
+      "limit_up": "42.20"
+    },
+    {
+      "code": "6126",
+      "name": "信音",
+      "market": "OTC",
+      "prev_close": "33.65",
+      "limit_up": "37.00"
+    },
+    {
+      "code": "4743",
+      "name": "合一",
+      "market": "OTC",
+      "prev_close": "50",
+      "limit_up": "55.0"
+    },
+    {
+      "code": "6151",
+      "name": "晉倫",
+      "market": "OTC",
+      "prev_close": "43.3",
+      "limit_up": "47.60"
+    },
+    {
+      "code": "6202",
+      "name": "盛群",
+      "market": "TSE",
+      "prev_close": "52.3",
+      "limit_up": "57.5"
+    },
+    {
+      "code": "6104",
+      "name": "創惟",
+      "market": "OTC",
+      "prev_close": "93",
+      "limit_up": "102.0"
+    },
+    {
+      "code": "1907",
+      "name": "永豐餘",
+      "market": "TSE",
+      "prev_close": "24.4",
+      "limit_up": "26.80"
+    },
+    {
+      "code": "8182",
+      "name": "加高",
+      "market": "OTC",
+      "prev_close": "35.75",
+      "limit_up": "39.30"
+    },
+    {
+      "code": "4949",
+      "name": "有成精密",
+      "market": "TSE",
+      "prev_close": "86.4",
+      "limit_up": "95.0"
+    },
+    {
+      "code": "4142",
+      "name": "國光生",
+      "market": "TSE",
+      "prev_close": "17.35",
+      "limit_up": "19.05"
+    },
+    {
+      "code": "6525",
+      "name": "捷敏-KY",
+      "market": "TSE",
+      "prev_close": "110",
+      "limit_up": "121.0"
+    },
+    {
+      "code": "2006",
+      "name": "東和鋼鐵",
+      "market": "TSE",
+      "prev_close": "65.6",
+      "limit_up": "72.1"
+    },
+    {
+      "code": "3388",
+      "name": "崇越電",
+      "market": "OTC",
+      "prev_close": "95.4",
+      "limit_up": "104.5"
+    },
+    {
+      "code": "8011",
+      "name": "台通",
+      "market": "TSE",
+      "prev_close": "17.85",
+      "limit_up": "19.60"
+    },
+    {
+      "code": "3032",
+      "name": "偉訓",
+      "market": "TSE",
+      "prev_close": "77.6",
+      "limit_up": "85.3"
+    },
+    {
+      "code": "6189",
+      "name": "豐藝",
+      "market": "TSE",
+      "prev_close": "48.55",
+      "limit_up": "53.4"
+    },
+    {
+      "code": "3438",
+      "name": "類比科",
+      "market": "OTC",
+      "prev_close": "66.4",
+      "limit_up": "73.0"
+    },
+    {
+      "code": "9938",
+      "name": "百和",
+      "market": "TSE",
+      "prev_close": "44",
+      "limit_up": "48.40"
+    },
+    {
+      "code": "6177",
+      "name": "達麗",
+      "market": "TSE",
+      "prev_close": "44.8",
+      "limit_up": "49.25"
+    },
+    {
+      "code": "2465",
+      "name": "麗臺",
+      "market": "TSE",
+      "prev_close": "75.6",
+      "limit_up": "83.1"
+    },
+    {
+      "code": "6589",
+      "name": "台康生技",
+      "market": "TSE",
+      "prev_close": "43.9",
+      "limit_up": "48.25"
+    },
+    {
+      "code": "3630",
+      "name": "新鉅科",
+      "market": "OTC",
+      "prev_close": "26.05",
+      "limit_up": "28.65"
+    },
+    {
+      "code": "2442",
+      "name": "新美齊",
+      "market": "TSE",
+      "prev_close": "18.25",
+      "limit_up": "20.05"
+    },
+    {
+      "code": "2331",
+      "name": "精英",
+      "market": "TSE",
+      "prev_close": "18.95",
+      "limit_up": "20.80"
+    },
+    {
+      "code": "5452",
+      "name": "佶優",
+      "market": "OTC",
+      "prev_close": "32.05",
+      "limit_up": "35.25"
+    },
+    {
+      "code": "3322",
+      "name": "建舜電",
+      "market": "OTC",
+      "prev_close": "12.2",
+      "limit_up": "13.40"
+    },
+    {
+      "code": "4564",
+      "name": "元翎",
+      "market": "TSE",
+      "prev_close": "16.05",
+      "limit_up": "17.65"
+    },
+    {
+      "code": "3051",
+      "name": "力特",
+      "market": "TSE",
+      "prev_close": "25.1",
+      "limit_up": "27.60"
+    },
+    {
+      "code": "2221",
+      "name": "大甲",
+      "market": "OTC",
+      "prev_close": "41.45",
+      "limit_up": "45.55"
+    },
+    {
+      "code": "2108",
+      "name": "南帝",
+      "market": "TSE",
+      "prev_close": "27.1",
+      "limit_up": "29.80"
+    },
+    {
+      "code": "8438",
+      "name": "昶昕",
+      "market": "TSE",
+      "prev_close": "84.9",
+      "limit_up": "93.3"
+    },
+    {
+      "code": "3060",
+      "name": "銘異",
+      "market": "TSE",
+      "prev_close": "26.75",
+      "limit_up": "29.40"
+    },
+    {
+      "code": "8111",
+      "name": "立碁",
+      "market": "OTC",
+      "prev_close": "61.5",
+      "limit_up": "67.6"
+    },
+    {
+      "code": "4909",
+      "name": "新復興",
+      "market": "OTC",
+      "prev_close": "51.5",
+      "limit_up": "56.6"
+    },
+    {
+      "code": "9941",
+      "name": "裕融",
+      "market": "TSE",
+      "prev_close": "73.6",
+      "limit_up": "80.9"
+    },
+    {
+      "code": "1325",
+      "name": "恆大",
+      "market": "TSE",
+      "prev_close": "27.55",
+      "limit_up": "30.30"
+    },
+    {
+      "code": "3011",
+      "name": "今皓",
+      "market": "TSE",
+      "prev_close": "12.95",
+      "limit_up": "14.20"
+    },
+    {
+      "code": "4707",
+      "name": "磐亞",
+      "market": "OTC",
+      "prev_close": "14.4",
+      "limit_up": "15.80"
+    },
+    {
+      "code": "2034",
+      "name": "允強",
+      "market": "TSE",
+      "prev_close": "19.6",
+      "limit_up": "21.55"
+    },
+    {
+      "code": "3546",
+      "name": "宇峻",
+      "market": "OTC",
+      "prev_close": "79.9",
+      "limit_up": "87.8"
+    },
+    {
+      "code": "8415",
+      "name": "大國鋼",
+      "market": "OTC",
+      "prev_close": "35.9",
+      "limit_up": "39.45"
+    },
+    {
+      "code": "6530",
+      "name": "創威",
+      "market": "OTC",
+      "prev_close": "101.5",
+      "limit_up": "111.5"
+    },
+    {
+      "code": "2836",
+      "name": "高雄銀",
+      "market": "TSE",
+      "prev_close": "11.85",
+      "limit_up": "13.00"
+    },
+    {
+      "code": "8234",
+      "name": "新漢",
+      "market": "OTC",
+      "prev_close": "67.2",
+      "limit_up": "73.9"
+    },
+    {
+      "code": "5488",
+      "name": "松普",
+      "market": "OTC",
+      "prev_close": "10.7",
+      "limit_up": "11.75"
+    },
+    {
+      "code": "6620",
+      "name": "漢達",
+      "market": "OTC",
+      "prev_close": "76.9",
+      "limit_up": "84.5"
+    },
+    {
+      "code": "5381",
+      "name": "光譜",
+      "market": "OTC",
+      "prev_close": "25.3",
+      "limit_up": "27.80"
+    },
+    {
+      "code": "8383",
+      "name": "千附",
+      "market": "OTC",
+      "prev_close": "55",
+      "limit_up": "60.5"
+    },
+    {
+      "code": "2440",
+      "name": "太空梭",
+      "market": "TSE",
+      "prev_close": "18.05",
+      "limit_up": "19.85"
+    },
+    {
+      "code": "4128",
+      "name": "中天",
+      "market": "OTC",
+      "prev_close": "14.65",
+      "limit_up": "16.10"
+    },
+    {
+      "code": "3078",
+      "name": "僑威",
+      "market": "OTC",
+      "prev_close": "52.5",
+      "limit_up": "57.7"
+    },
+    {
+      "code": "3390",
+      "name": "旭軟",
+      "market": "OTC",
+      "prev_close": "25.55",
+      "limit_up": "28.10"
+    },
+    {
+      "code": "5608",
+      "name": "四維航",
+      "market": "TSE",
+      "prev_close": "14.2",
+      "limit_up": "15.60"
+    },
+    {
+      "code": "3356",
+      "name": "奇偶",
+      "market": "TSE",
+      "prev_close": "60.3",
+      "limit_up": "66.3"
+    },
+    {
+      "code": "1434",
+      "name": "福懋",
+      "market": "TSE",
+      "prev_close": "15.2",
+      "limit_up": "16.70"
+    },
+    {
+      "code": "1732",
+      "name": "毛寶",
+      "market": "TSE",
+      "prev_close": "27.15",
+      "limit_up": "29.85"
+    },
+    {
+      "code": "2641",
+      "name": "正德",
+      "market": "OTC",
+      "prev_close": "17.45",
+      "limit_up": "19.15"
+    },
+    {
+      "code": "2539",
+      "name": "櫻花建",
+      "market": "TSE",
+      "prev_close": "38.15",
+      "limit_up": "41.95"
+    },
+    {
+      "code": "2010",
+      "name": "春源",
+      "market": "TSE",
+      "prev_close": "22.45",
+      "limit_up": "24.65"
+    },
+    {
+      "code": "3323",
+      "name": "加百裕",
+      "market": "OTC",
+      "prev_close": "33.5",
+      "limit_up": "36.85"
+    },
+    {
+      "code": "3518",
+      "name": "柏騰",
+      "market": "TSE",
+      "prev_close": "31.9",
+      "limit_up": "35.05"
+    },
+    {
+      "code": "4147",
+      "name": "中裕",
+      "market": "OTC",
+      "prev_close": "49.2",
+      "limit_up": "54.1"
+    },
+    {
+      "code": "6768",
+      "name": "志強-KY",
+      "market": "TSE",
+      "prev_close": "85.4",
+      "limit_up": "93.9"
+    },
+    {
+      "code": "4114",
+      "name": "健喬",
+      "market": "OTC",
+      "prev_close": "30.65",
+      "limit_up": "33.70"
+    },
+    {
+      "code": "2607",
+      "name": "榮運",
+      "market": "TSE",
+      "prev_close": "47.5",
+      "limit_up": "52.2"
+    },
+    {
+      "code": "3041",
+      "name": "揚智",
+      "market": "TSE",
+      "prev_close": "22.8",
+      "limit_up": "25.05"
+    },
+    {
+      "code": "4968",
+      "name": "立積",
+      "market": "TSE",
+      "prev_close": "110",
+      "limit_up": "121.0"
+    },
+    {
+      "code": "6235",
+      "name": "華孚",
+      "market": "TSE",
+      "prev_close": "39.7",
+      "limit_up": "43.65"
+    },
+    {
+      "code": "2241",
+      "name": "艾姆勒",
+      "market": "TSE",
+      "prev_close": "33.35",
+      "limit_up": "36.65"
+    },
+    {
+      "code": "4714",
+      "name": "永捷",
+      "market": "OTC",
+      "prev_close": "13.05",
+      "limit_up": "14.35"
+    },
+    {
+      "code": "6901",
+      "name": "鑽石投資",
+      "market": "TSE",
+      "prev_close": "13.65",
+      "limit_up": "15.00"
+    },
+    {
+      "code": "9802",
+      "name": "鈺齊-KY",
+      "market": "TSE",
+      "prev_close": "77",
+      "limit_up": "84.7"
+    },
+    {
+      "code": "3031",
+      "name": "佰鴻",
+      "market": "TSE",
+      "prev_close": "28.6",
+      "limit_up": "31.45"
+    },
+    {
+      "code": "1808",
+      "name": "潤隆",
+      "market": "TSE",
+      "prev_close": "28.95",
+      "limit_up": "31.80"
+    },
+    {
+      "code": "3047",
+      "name": "訊舟",
+      "market": "TSE",
+      "prev_close": "14.15",
+      "limit_up": "15.55"
+    },
+    {
+      "code": "4532",
+      "name": "瑞智",
+      "market": "TSE",
+      "prev_close": "23.25",
+      "limit_up": "25.55"
+    },
+    {
+      "code": "8076",
+      "name": "伍豐",
+      "market": "OTC",
+      "prev_close": "23.45",
+      "limit_up": "25.75"
+    },
+    {
+      "code": "5410",
+      "name": "國眾",
+      "market": "OTC",
+      "prev_close": "37.45",
+      "limit_up": "41.15"
+    },
+    {
+      "code": "2204",
+      "name": "中華",
+      "market": "TSE",
+      "prev_close": "52",
+      "limit_up": "57.2"
+    },
+    {
+      "code": "4303",
+      "name": "信立",
+      "market": "OTC",
+      "prev_close": "46.1",
+      "limit_up": "50.7"
+    },
+    {
+      "code": "6186",
+      "name": "新潤",
+      "market": "OTC",
+      "prev_close": "39.8",
+      "limit_up": "43.75"
+    },
+    {
+      "code": "4924",
+      "name": "欣厚-KY",
+      "market": "OTC",
+      "prev_close": "11.8",
+      "limit_up": "12.95"
+    },
+    {
+      "code": "1449",
+      "name": "佳和",
+      "market": "TSE",
+      "prev_close": "12.35",
+      "limit_up": "13.55"
+    },
+    {
+      "code": "2030",
+      "name": "彰源",
+      "market": "TSE",
+      "prev_close": "16.8",
+      "limit_up": "18.45"
+    },
+    {
+      "code": "6603",
+      "name": "富強鑫",
+      "market": "OTC",
+      "prev_close": "21.65",
+      "limit_up": "23.80"
+    },
+    {
+      "code": "2420",
+      "name": "新巨",
+      "market": "TSE",
+      "prev_close": "59.3",
+      "limit_up": "65.2"
+    },
+    {
+      "code": "2520",
+      "name": "冠德",
+      "market": "TSE",
+      "prev_close": "30.4",
+      "limit_up": "33.40"
+    },
+    {
+      "code": "6994",
+      "name": "富威電力",
+      "market": "TSE",
+      "prev_close": "52.3",
+      "limit_up": "57.5"
+    },
+    {
+      "code": "3029",
+      "name": "零壹",
+      "market": "TSE",
+      "prev_close": "96",
+      "limit_up": "105.5"
+    },
+    {
+      "code": "8431",
+      "name": "匯鑽科",
+      "market": "OTC",
+      "prev_close": "58.6",
+      "limit_up": "64.4"
+    },
+    {
+      "code": "6909",
+      "name": "創控",
+      "market": "TSE",
+      "prev_close": "50.5",
+      "limit_up": "55.5"
+    },
+    {
+      "code": "4721",
+      "name": "美琪瑪",
+      "market": "OTC",
+      "prev_close": "88.3",
+      "limit_up": "97.1"
+    },
+    {
+      "code": "1532",
+      "name": "勤美",
+      "market": "TSE",
+      "prev_close": "20.6",
+      "limit_up": "22.65"
+    },
+    {
+      "code": "2425",
+      "name": "承啟",
+      "market": "TSE",
+      "prev_close": "32.5",
+      "limit_up": "35.75"
+    },
+    {
+      "code": "3056",
+      "name": "富華新",
+      "market": "TSE",
+      "prev_close": "13.45",
+      "limit_up": "14.75"
+    },
+    {
+      "code": "2423",
+      "name": "固緯",
+      "market": "TSE",
+      "prev_close": "73.6",
+      "limit_up": "80.9"
+    },
+    {
+      "code": "6204",
+      "name": "艾華",
+      "market": "OTC",
+      "prev_close": "83.6",
+      "limit_up": "91.9"
+    },
+    {
+      "code": "6179",
+      "name": "亞通",
+      "market": "OTC",
+      "prev_close": "24.3",
+      "limit_up": "26.70"
+    },
+    {
+      "code": "6224",
+      "name": "聚鼎",
+      "market": "TSE",
+      "prev_close": "72.5",
+      "limit_up": "79.7"
+    },
+    {
+      "code": "3444",
+      "name": "利機",
+      "market": "OTC",
+      "prev_close": "90.8",
+      "limit_up": "99.8"
+    },
+    {
+      "code": "1786",
+      "name": "科妍",
+      "market": "TSE",
+      "prev_close": "60",
+      "limit_up": "66.0"
+    },
+    {
+      "code": "5522",
+      "name": "遠雄",
+      "market": "TSE",
+      "prev_close": "70.8",
+      "limit_up": "77.8"
+    },
+    {
+      "code": "2537",
+      "name": "聯上發",
+      "market": "TSE",
+      "prev_close": "9.67",
+      "limit_up": "10.60"
+    },
+    {
+      "code": "5534",
+      "name": "長虹",
+      "market": "TSE",
+      "prev_close": "75.5",
+      "limit_up": "83.0"
+    },
+    {
+      "code": "6517",
+      "name": "保勝光學",
+      "market": "OTC",
+      "prev_close": "60.4",
+      "limit_up": "66.4"
+    },
+    {
+      "code": "6477",
+      "name": "安集",
+      "market": "TSE",
+      "prev_close": "33.75",
+      "limit_up": "37.10"
+    },
+    {
+      "code": "6821",
+      "name": "聯寶",
+      "market": "OTC",
+      "prev_close": "50.9",
+      "limit_up": "55.9"
+    },
+    {
+      "code": "1584",
+      "name": "精剛",
+      "market": "OTC",
+      "prev_close": "19.7",
+      "limit_up": "21.65"
+    },
+    {
+      "code": "6108",
+      "name": "競國",
+      "market": "TSE",
+      "prev_close": "18.5",
+      "limit_up": "20.35"
+    },
+    {
+      "code": "4746",
+      "name": "台耀",
+      "market": "TSE",
+      "prev_close": "51.6",
+      "limit_up": "56.7"
+    },
+    {
+      "code": "2211",
+      "name": "長榮鋼",
+      "market": "TSE",
+      "prev_close": "92.8",
+      "limit_up": "102.0"
+    },
+    {
+      "code": "4167",
+      "name": "松瑞藥",
+      "market": "OTC",
+      "prev_close": "18.7",
+      "limit_up": "20.55"
+    },
+    {
+      "code": "3230",
+      "name": "錦明",
+      "market": "OTC",
+      "prev_close": "33.3",
+      "limit_up": "36.60"
+    },
+    {
+      "code": "3594",
+      "name": "磐儀",
+      "market": "OTC",
+      "prev_close": "47.5",
+      "limit_up": "52.2"
+    },
+    {
+      "code": "4741",
+      "name": "泓瀚",
+      "market": "OTC",
+      "prev_close": "55.1",
+      "limit_up": "60.6"
+    },
+    {
+      "code": "5515",
+      "name": "建國",
+      "market": "TSE",
+      "prev_close": "39.8",
+      "limit_up": "43.75"
+    },
+    {
+      "code": "3703",
+      "name": "欣陸",
+      "market": "TSE",
+      "prev_close": "20.1",
+      "limit_up": "22.10"
+    },
+    {
+      "code": "1524",
+      "name": "耿鼎",
+      "market": "TSE",
+      "prev_close": "28.1",
+      "limit_up": "30.90"
+    },
+    {
+      "code": "8440",
+      "name": "綠電",
+      "market": "OTC",
+      "prev_close": "22.8",
+      "limit_up": "25.05"
+    },
+    {
+      "code": "1522",
+      "name": "堤維西",
+      "market": "TSE",
+      "prev_close": "29.2",
+      "limit_up": "32.10"
+    },
+    {
+      "code": "2538",
+      "name": "基泰",
+      "market": "TSE",
+      "prev_close": "9.26",
+      "limit_up": "10.15"
+    },
+    {
+      "code": "6869",
+      "name": "雲豹能源",
+      "market": "TSE",
+      "prev_close": "77.2",
+      "limit_up": "84.9"
+    },
+    {
+      "code": "2390",
+      "name": "云辰",
+      "market": "TSE",
+      "prev_close": "9.92",
+      "limit_up": "10.90"
+    },
+    {
+      "code": "4543",
+      "name": "萬在",
+      "market": "OTC",
+      "prev_close": "38.9",
+      "limit_up": "42.75"
+    },
+    {
+      "code": "6118",
+      "name": "建達",
+      "market": "OTC",
+      "prev_close": "17.2",
+      "limit_up": "18.90"
+    },
+    {
+      "code": "8213",
+      "name": "志超",
+      "market": "TSE",
+      "prev_close": "36.75",
+      "limit_up": "40.40"
+    },
+    {
+      "code": "6150",
+      "name": "撼訊",
+      "market": "OTC",
+      "prev_close": "67.5",
+      "limit_up": "74.2"
+    },
+    {
+      "code": "6799",
+      "name": "來頡",
+      "market": "TSE",
+      "prev_close": "92.1",
+      "limit_up": "101.0"
+    },
+    {
+      "code": "1712",
+      "name": "興農",
+      "market": "TSE",
+      "prev_close": "40.65",
+      "limit_up": "44.70"
+    },
+    {
+      "code": "1569",
+      "name": "濱川",
+      "market": "OTC",
+      "prev_close": "50.9",
+      "limit_up": "55.9"
+    },
+    {
+      "code": "5211",
+      "name": "蒙恬",
+      "market": "OTC",
+      "prev_close": "18",
+      "limit_up": "19.80"
+    },
+    {
+      "code": "6143",
+      "name": "振曜",
+      "market": "OTC",
+      "prev_close": "94",
+      "limit_up": "103.0"
+    },
+    {
+      "code": "4952",
+      "name": "凌通",
+      "market": "TSE",
+      "prev_close": "48",
+      "limit_up": "52.8"
+    },
+    {
+      "code": "1612",
+      "name": "宏泰",
+      "market": "TSE",
+      "prev_close": "35.6",
+      "limit_up": "39.15"
+    },
+    {
+      "code": "1563",
+      "name": "巧新",
+      "market": "TSE",
+      "prev_close": "45.3",
+      "limit_up": "49.80"
+    },
+    {
+      "code": "4105",
+      "name": "東洋",
+      "market": "OTC",
+      "prev_close": "74.2",
+      "limit_up": "81.6"
+    },
+    {
+      "code": "7402",
+      "name": "邑錡",
+      "market": "OTC",
+      "prev_close": "93.7",
+      "limit_up": "103.0"
+    },
+    {
+      "code": "4566",
+      "name": "時碩工業",
+      "market": "TSE",
+      "prev_close": "60.8",
+      "limit_up": "66.8"
+    },
+    {
+      "code": "2427",
+      "name": "三商電",
+      "market": "TSE",
+      "prev_close": "20.25",
+      "limit_up": "22.25"
+    },
+    {
+      "code": "4155",
+      "name": "訊映",
+      "market": "TSE",
+      "prev_close": "14.7",
+      "limit_up": "16.15"
+    },
+    {
+      "code": "3003",
+      "name": "健和興",
+      "market": "TSE",
+      "prev_close": "58.3",
+      "limit_up": "64.1"
+    },
+    {
+      "code": "2453",
+      "name": "凌群",
+      "market": "TSE",
+      "prev_close": "54.5",
+      "limit_up": "59.9"
+    },
+    {
+      "code": "2491",
+      "name": "吉祥全",
+      "market": "TSE",
+      "prev_close": "20.05",
+      "limit_up": "22.05"
+    },
+    {
+      "code": "3276",
+      "name": "宇環",
+      "market": "OTC",
+      "prev_close": "13.65",
+      "limit_up": "15.00"
+    }
+  ],
+  "symbol_count": 433,
+  "session_id": "20260520_092916",
+  "start_ts": "2026-05-20T09:29:16.243972",
+  "stats": {
+    "raw_count": 0,
+    "tick_count": 0,
+    "book_count": 0,
+    "dropped_count": 0
+  }
+}
