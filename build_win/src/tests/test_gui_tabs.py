@@ -4,6 +4,7 @@ GUI 分頁配置測試。
 import os
 import sys
 import threading
+import tempfile
 import unittest
 from datetime import datetime
 from decimal import Decimal
@@ -146,6 +147,97 @@ class TestGuiTabLayout(unittest.TestCase):
         self.assertIsNot(self.win.trades_table, self.win.trades_full_table)
         self.assertIsNot(self.win.positions_table, self.win.positions_full_table)
         self.assertIsNot(self.win.event_log, self.win.events_full_log)
+
+    def test_persist_broker_settings_writes_default_json_and_app_state(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            save_path = os.path.join(tmpdir, "broker_settings.json")
+            settings = gui.BrokerSettings(
+                personal_id="A123456789",
+                password="pw",
+                cert_path="/tmp/demo.pfx",
+                cert_password="cp",
+                branch_no="6460",
+                account_no="1234567",
+                api_key="key",
+                api_secret="secret",
+                dry_run=False,
+            )
+
+            with mock.patch.object(gui, "BROKER_SETTINGS_FILE", save_path):
+                returned_path = self.win._persist_broker_settings(settings)
+
+            self.assertEqual(returned_path, save_path)
+            self.assertEqual(self.win._app_state.last_broker_settings_path, save_path)
+
+            loaded = gui.BrokerSettings.load_strict(save_path)
+            self.assertEqual(loaded.personal_id, "A123456789")
+            self.assertEqual(loaded.api_key, "key")
+            self.assertFalse(loaded.dry_run)
+
+    def test_broker_connect_warns_when_persist_fails_after_login(self):
+        settings = gui.BrokerSettings(
+            personal_id="A123456789",
+            password="pw",
+            cert_path="/tmp/demo.pfx",
+            cert_password="cp",
+            branch_no="6460",
+            account_no="1234567",
+            api_key="key",
+            api_secret="secret",
+            dry_run=False,
+        )
+
+        self.win._bfields["personal_id"].setText(settings.personal_id)
+        self.win._bfields["password"].setText(settings.password)
+        self.win._bfields["cert_path"].setText(settings.cert_path)
+        self.win._bfields["cert_password"].setText(settings.cert_password)
+        self.win._bfields["branch_no"].setText(settings.branch_no)
+        self.win._bfields["account_no"].setText(settings.account_no)
+        self.win._bfields["api_key"].setText(settings.api_key)
+        self.win._bfields["api_secret"].setText(settings.api_secret)
+        self.win._toggles["broker_dry_run"].set(False)
+
+        result = SimpleNamespace(
+            success=True,
+            selected=SimpleNamespace(display="6460-1234567"),
+        )
+        adapter = SimpleNamespace(
+            login=lambda: result,
+            logout=lambda: None,
+        )
+
+        with mock.patch.object(gui.threading, "Thread") as thread_cls, \
+             mock.patch.object(gui, "push_log"), \
+             mock.patch.object(gui.QMessageBox, "warning") as warning_box, \
+             mock.patch.object(gui, "FubonAdapter", create=True) as _unused, \
+             mock.patch.object(self.win, "_dispatch_ui", side_effect=lambda callback: callback()), \
+             mock.patch.object(self.win, "_load_dashboard_preview_summary", return_value=[]), \
+             mock.patch.object(self.win, "_collect_config", return_value=self.win.cfg), \
+             mock.patch.object(self.win, "_persist_broker_settings", side_effect=OSError("disk full")), \
+             mock.patch.object(self.win, "set_broker") as set_broker:
+            def _run_thread(*args, **kwargs):
+                target = kwargs.get("target")
+                if target is None and args:
+                    target = args[0]
+                class _ImmediateThread:
+                    def start(self_inner):
+                        target()
+                return _ImmediateThread()
+
+            thread_cls.side_effect = _run_thread
+
+            fake_broker_module = SimpleNamespace(
+                FubonAdapter=SimpleNamespace(from_config=lambda _settings: adapter),
+                BrokerError=Exception,
+            )
+
+            with mock.patch.dict(sys.modules, {"broker": fake_broker_module}):
+                self.win._broker_connect()
+
+            set_broker.assert_called_once_with(adapter)
+            warning_box.assert_called_once()
+            self.assertIn("連線成功，但儲存失敗", warning_box.call_args.args[1])
+            self.assertIn("disk full", warning_box.call_args.args[2])
 
     def test_strategy_settings_collect_new_buy_sell_groups(self):
         self.assertIn("consume_qty_threshold", self.win._fields)
