@@ -1271,6 +1271,20 @@ class App(QMainWindow):
                 "請填寫以下欄位：\n" + "\n".join(f"• {m}" for m in missing))
             return
 
+        try:
+            saved_path = self._persist_broker_settings(settings)
+            push_log("INFO", f"券商設定已儲存至：{saved_path}", include_traceback=False)
+        except Exception as e:
+            error_text = str(e)
+            self._set_broker_page_status(f"設定儲存失敗：{error_text}", C["red"])
+            push_log("ERROR", f"券商設定儲存失敗：{error_text}")
+            QMessageBox.critical(
+                self,
+                "設定儲存失敗",
+                f"券商設定未能寫入 broker_settings.json：\n{error_text}",
+            )
+            return
+
         self._set_broker_page_status("登入中…", C["yellow_l"])
 
         def _do_connect():
@@ -1287,12 +1301,6 @@ class App(QMainWindow):
                     acc = result.selected
                     msg = f"已連線：{acc.display}" if acc else "已連線"
                     acc_display = acc.display if acc else "—"
-                    saved_path = ""
-                    persist_error = ""
-                    try:
-                        saved_path = self._persist_broker_settings(settings)
-                    except Exception as e:
-                        persist_error = str(e)
                     cfg = self._collect_config()
                     self.cfg = cfg
                     preview_summary = self._load_dashboard_preview_summary(adapter, cfg)
@@ -1301,21 +1309,9 @@ class App(QMainWindow):
                     self._dispatch_ui(lambda msg=msg: self._set_broker_page_status(msg, C["green"]))
                     self._dispatch_ui(lambda: self._toggles["mock_mode"].set(False))
                     self._dispatch_ui(lambda: self._update_mock_mode_label(False))
-                    if saved_path:
-                        self._dispatch_ui(lambda saved_path=saved_path: push_log("INFO", f"券商設定已儲存至：{saved_path}", include_traceback=False))
-                    if persist_error:
-                        self._dispatch_ui(lambda persist_error=persist_error: push_log("WARN", f"券商連線成功，但設定儲存失敗：{persist_error}", include_traceback=False))
                     self._dispatch_ui(lambda acc_display=acc_display: push_log("INFO", f"富邦券商已連線：{acc_display}", include_traceback=False))
-                    if persist_error:
-                        self._dispatch_ui(lambda acc_display=acc_display, persist_error=persist_error: QMessageBox.warning(
-                            self,
-                            "連線成功，但儲存失敗",
-                            f"已成功連線富邦券商！\n帳號：{acc_display}\n\n"
-                            f"但券商設定未能寫入 broker_settings.json：\n{persist_error}",
-                        ))
-                    else:
-                        self._dispatch_ui(lambda acc_display=acc_display, saved_path=saved_path: QMessageBox.information(
-                            self, "連線成功", f"已成功連線富邦券商！\n帳號：{acc_display}\n\n設定已儲存至：\n{saved_path}"))
+                    self._dispatch_ui(lambda acc_display=acc_display, saved_path=saved_path: QMessageBox.information(
+                        self, "連線成功", f"已成功連線富邦券商！\n帳號：{acc_display}\n\n設定已儲存至：\n{saved_path}"))
                 else:
                     err = result.message or "登入失敗"
                     push_log("ERROR", f"富邦券商登入失敗：{err}")
