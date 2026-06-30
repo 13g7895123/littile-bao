@@ -301,6 +301,34 @@ class TestTradingEngineStrategyRules(unittest.TestCase):
         self.assertEqual(trades, [])
         self.assertEqual(strategy_events, [])
 
+    def test_f5_ratio_mode_uses_fixed_queue_qty_after_lock_confirmation(self):
+        cfg = TradingConfig(
+            f9_enabled=False,
+            f4_enabled=False,
+            volume_spike_sell_mode="ratio",
+            volume_spike_sell_ratio_percent=30,
+        )
+        engine, _logs, trades, strategy_events = self._make_engine(cfg)
+        state = self._arm_exit_state(engine)
+        state.effective_bid0_price = Decimal(str(state.info.limit_up))
+        state.effective_bid0_volume = 2000
+        state.bid0_price = Decimal(str(state.info.limit_up))
+        state.bid0_volume = 2000
+        state.f5_ratio_base_queue_qty = 2000
+        state.last_1s_vol = 400
+
+        # Simulate later queue shrink after the lock was confirmed.
+        state.effective_bid0_volume = 1000
+        state.bid0_volume = 1000
+        now = time.time()
+        state.tick_vols.append((now, 400))
+
+        engine._tick(state, now)
+
+        self.assertEqual(state.position_qty, 1)
+        self.assertEqual(trades, [])
+        self.assertEqual(strategy_events, [])
+
     def test_sell_prefers_f5_when_spike_occurs_before_open_board(self):
         cfg = TradingConfig(
             f9_enabled=False,
@@ -501,6 +529,45 @@ class TestTradingEngineStrategyRules(unittest.TestCase):
         self.assertEqual(trades[-1]["action"], "SELL")
         self.assertIn("鎖板前委賣進場停損", trades[-1]["note"])
         self.assertEqual(strategy_events[-1]["strategy"], "鎖前停損")
+
+    def test_intraday_state_survives_restart_and_blocks_reentry(self):
+        cfg = TradingConfig(
+            f9_enabled=False,
+            f10_enabled=False,
+            f11_enabled=False,
+            f_prelock_ask_entry_enabled=True,
+            per_stock_amount=2_000_000,
+        )
+        engine, _logs, _trades, _strategy_events = self._make_engine(cfg)
+        old_state = engine._states["2330"]
+        old_state.entry_blocked = True
+        old_state.entry_blocked_reason = "已賣出"
+        old_state.sold_today = True
+        old_state.candle_index = 1
+        old_state.touched_limit_up_today = True
+        engine._daily_trade_codes = {"2330"}
+        engine._daily_trade_count = 1
+
+        snapshot = engine.export_intraday_runtime_state()
+
+        restarted, _logs2, _trades2, _strategy_events2 = self._make_engine(cfg)
+        restarted.import_intraday_runtime_state(snapshot)
+        state = restarted._states["2330"]
+        state.ask0_price = Decimal(str(state.info.limit_up))
+        state.ask0_volume = 44
+        state.ask_qty_at_limit = 44
+        state.last_price = Decimal(str(state.info.limit_up))
+        state.is_at_limit_up = False
+
+        restarted._tick(state, time.time())
+
+        self.assertTrue(state.entry_blocked)
+        self.assertEqual(state.entry_blocked_reason, "已賣出")
+        self.assertTrue(state.sold_today)
+        self.assertFalse(state.pending)
+        self.assertEqual(state.position_qty, 0)
+        self.assertEqual(restarted._daily_trade_codes, {"2330"})
+        self.assertEqual(restarted._daily_trade_count, 1)
 
     def test_prelock_stop_does_not_apply_to_regular_limit_lock_entry(self):
         cfg = TradingConfig(

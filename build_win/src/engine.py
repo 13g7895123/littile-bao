@@ -125,6 +125,7 @@ class StockState:
         self.f5_first_trigger_at: Optional[float] = None
         self.f4_trigger_snapshot: Optional[dict] = None
         self.f5_trigger_snapshot: Optional[dict] = None
+        self.f5_ratio_base_queue_qty: Optional[int] = None
         self.prelock_stop_first_trigger_at: Optional[float] = None
         self.prelock_stop_trigger_snapshot: Optional[dict] = None
         self.exit_monitor_start_event_ts: Optional[float] = None
@@ -471,6 +472,89 @@ class TradingEngine:
             "kept_protected": sorted(kept_protected),
         }
 
+    def export_intraday_runtime_state(self) -> dict:
+        """匯出同日重啟後仍需保留的策略狀態。"""
+        with self._lock:
+            state_rows = {}
+            for code, state in self._states.items():
+                if not (
+                    state.position_qty > 0
+                    or state.entry_blocked
+                    or state.sold_today
+                    or state.entry_price is not None
+                    or state.entry_via_prelock_ask
+                    or state.candle_index > 0
+                ):
+                    continue
+                state_rows[code] = {
+                    "candle_index": int(state.candle_index),
+                    "position_qty": int(state.position_qty),
+                    "entry_blocked": bool(state.entry_blocked),
+                    "entry_blocked_reason": str(state.entry_blocked_reason or ""),
+                    "sold_today": bool(state.sold_today),
+                    "entry_price": (
+                        str(state.entry_price)
+                        if state.entry_price is not None
+                        else None
+                    ),
+                    "touched_limit_up_today": bool(state.touched_limit_up_today),
+                    "entry_via_prelock_ask": bool(state.entry_via_prelock_ask),
+                    "prelock_relocked_after_entry": bool(state.prelock_relocked_after_entry),
+                }
+            return {
+                "trading_date": self._trading_date.isoformat(),
+                "daily_trade_codes": sorted(str(code) for code in self._daily_trade_codes),
+                "states": state_rows,
+            }
+
+    def import_intraday_runtime_state(self, snapshot: Optional[dict]) -> None:
+        """還原同日重啟前的策略狀態，避免重啟後重複進場。"""
+        if not isinstance(snapshot, dict):
+            return
+        snapshot_day = snapshot.get("trading_date")
+        if snapshot_day != self._trading_date.isoformat():
+            return
+        snapshot_states = snapshot.get("states")
+        if not isinstance(snapshot_states, dict):
+            snapshot_states = {}
+        snapshot_trade_codes = snapshot.get("daily_trade_codes")
+        if not isinstance(snapshot_trade_codes, list):
+            snapshot_trade_codes = []
+
+        with self._lock:
+            self._daily_trade_codes = {
+                str(code) for code in snapshot_trade_codes if str(code)
+            }
+            self._daily_trade_count = len(self._daily_trade_codes)
+
+            for code, row in snapshot_states.items():
+                state = self._states.get(str(code))
+                if state is None or not isinstance(row, dict):
+                    continue
+                state.candle_index = max(0, int(row.get("candle_index", state.candle_index) or 0))
+                state.position_qty = max(0, int(row.get("position_qty", state.position_qty) or 0))
+                state.entry_blocked = bool(row.get("entry_blocked", False))
+                state.entry_blocked_reason = str(row.get("entry_blocked_reason", "") or "")
+                state.sold_today = bool(row.get("sold_today", False))
+                state.touched_limit_up_today = bool(
+                    row.get("touched_limit_up_today", state.touched_limit_up_today)
+                )
+                state.entry_via_prelock_ask = bool(
+                    row.get("entry_via_prelock_ask", state.entry_via_prelock_ask)
+                )
+                state.prelock_relocked_after_entry = bool(
+                    row.get(
+                        "prelock_relocked_after_entry",
+                        state.prelock_relocked_after_entry,
+                    )
+                )
+                entry_price = row.get("entry_price")
+                state.entry_price = (
+                    Decimal(str(entry_price))
+                    if entry_price not in (None, "")
+                    else None
+                )
+
     def resubscribe_feed(self) -> None:
         """以目前 _states 重新訂閱 feed（呼叫前應確保 feed 已 stop）。"""
         if self.feed is None or SymbolMeta is None:
@@ -791,6 +875,7 @@ class TradingEngine:
             if not state.startup_limitup_blocked:
                 state.touched_limit_up_today = True
                 self._mark_limit_up_touched(state, now)
+                self._capture_f5_ratio_base_queue_qty(state)
                 if state.position_qty > 0 and state.entry_via_prelock_ask:
                     state.prelock_relocked_after_entry = True
         else:
@@ -1634,12 +1719,23 @@ class TradingEngine:
             return int(state.bid0_volume)
         return 0
 
+    def _capture_f5_ratio_base_queue_qty(self, state: StockState) -> None:
+        if state.position_qty <= 0 or state.f5_ratio_base_queue_qty is not None:
+            return
+        queue_qty = self._limit_bid_queue_qty(state)
+        if queue_qty > 0:
+            state.f5_ratio_base_queue_qty = queue_qty
+
     def _f5_sell_trigger_snapshot(self, state: StockState) -> Optional[dict]:
         if not self.config.f5_enabled:
             return None
         mode = str(getattr(self.config, "volume_spike_sell_mode", "qty") or "qty").strip().lower()
         if mode == "ratio":
-            queue_qty = self._limit_bid_queue_qty(state)
+            queue_qty = (
+                int(state.f5_ratio_base_queue_qty)
+                if state.f5_ratio_base_queue_qty is not None
+                else self._limit_bid_queue_qty(state)
+            )
             ratio_percent = max(0.0, float(getattr(self.config, "volume_spike_sell_ratio_percent", 0.0) or 0.0))
             if queue_qty <= 0 or ratio_percent <= 0:
                 return None
@@ -1681,6 +1777,7 @@ class TradingEngine:
         state.prelock_stop_first_trigger_at = None
         state.f4_trigger_snapshot = None
         state.f5_trigger_snapshot = None
+        state.f5_ratio_base_queue_qty = None
         state.prelock_stop_trigger_snapshot = None
 
     def _reset_post_entry_exit_state(self, state: StockState) -> None:
@@ -2132,6 +2229,7 @@ class TradingEngine:
                             state.entry_price = ev.price
                     except Exception:
                         state.entry_price = ev.price
+                self._capture_f5_ratio_base_queue_qty(state)
                 if ev.code not in self._daily_trade_codes:
                     self._daily_trade_codes.add(ev.code)
                     self._daily_trade_count = len(self._daily_trade_codes)
@@ -2287,6 +2385,7 @@ class TradingEngine:
             "prelock_relocked_after_entry": state.prelock_relocked_after_entry,
             "f4_trigger_snapshot": state.f4_trigger_snapshot,
             "f5_trigger_snapshot": state.f5_trigger_snapshot,
+            "f5_ratio_base_queue_qty": state.f5_ratio_base_queue_qty,
             "prelock_stop_trigger_snapshot": state.prelock_stop_trigger_snapshot,
             "entry_via_prelock_ask": state.entry_via_prelock_ask,
             "pending_entry_strategy": state.pending_entry_strategy,

@@ -164,6 +164,7 @@ class App(QMainWindow):
         self._last_socket_restart_requested_at: Optional[datetime] = None
         self._last_socket_restart_result = "idle"
         self._last_socket_restart_token = 0
+        self._engine_resume_snapshot: Optional[dict] = None
         self._broker_event_source = None
         self._current_tab = "dashboard"
         self._hidden_tabs = {"risk", "limitup_test"}
@@ -2538,6 +2539,8 @@ class App(QMainWindow):
                 symbol_infos=symbol_infos,
                 broker=broker,
             )
+            if self._engine_resume_snapshot:
+                engine.import_intraday_runtime_state(self._engine_resume_snapshot)
             engine.start()
 
             if not self._is_start_token_current(token):
@@ -3036,6 +3039,7 @@ class App(QMainWindow):
                 f"token={token} last_disconnect={self._last_socket_disconnect_reason}",
                 include_traceback=False,
             )
+        self._engine_resume_snapshot = None
         self._start_pool_swap_timer()
 
     def _fail_start_trading(self, token: int, error: Exception) -> None:
@@ -3061,6 +3065,10 @@ class App(QMainWindow):
             except Exception as e:
                 push_log("WARN", f"[Latency] 寫入統計摘要失敗：{e}", include_traceback=False)
         if self.engine:
+            try:
+                self._engine_resume_snapshot = self.engine.export_intraday_runtime_state()
+            except Exception as e:
+                push_log("WARN", f"保存策略狀態快照失敗：{e}", include_traceback=False)
             threading.Thread(target=self.engine.stop, daemon=True).start()
         # Phase 1：停止盤中錄製並 flush 檔案
         self._stop_recorder()
